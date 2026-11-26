@@ -17,15 +17,15 @@ exactly once.
 {
   "id": "closet",
   "name": "Supply closet",
-  "legend": { "#": "wall", ".": "floor", "<": "stairs_up", ">": "stairs_down" },
+  "legend": { "#": "wall", ".": "floor", ">": "stairs_up", "<": "stairs_down" },
   "decks": [
     { "name": "Lower closet",
       "rows": ["#####",
-               "#.@<#",
+               "#.@>#",
                "#####"] },
     { "name": "Upper closet",
       "rows": ["#####",
-               "#..>#",
+               "#..<#",
                "#####"] }
   ]
 }
@@ -43,7 +43,7 @@ exactly once.
 
 ### Stairs
 
-Stairs come in pairs. Stairs up (`<` in the example) need stairs down (`>`) at
+Stairs come in pairs. Stairs up (`>` in the example) need stairs down (`<`) at
 **exactly the same row and column on the deck above**, and stairs down need
 stairs up below them. A staircase without its partner is an error naming
 its spot, for example

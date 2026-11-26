@@ -172,8 +172,8 @@ impl App {
         match loaded {
             Ok(Some(world)) => {
                 self.log = vec![format!(
-                    "Game loaded at {}, seed {}. The ship is as you left it.",
-                    crate::ui::clock(world.seconds()),
+                    "Game loaded: {}, seed {}. The ship is as you left it.",
+                    world.now(),
                     world.seed()
                 )];
                 self.screen = Screen::Playing(world);
@@ -372,7 +372,7 @@ mod tests {
         assert_eq!(world(&app), &played, "Continue brings back the same game");
         assert_eq!(
             app.log[0],
-            "Game loaded at 0:00:03, seed 7. The ship is as you left it."
+            "Game loaded: 25 Nov 2631 08:42:03, seed 7. The ship is as you left it."
         );
     }
 
@@ -573,7 +573,7 @@ mod tests {
         let (mut app, dir) = new_app(Some(7));
         let route = std::iter::repeat_n('k', 5)
             .chain(std::iter::repeat_n('l', 23))
-            .chain(['<', 'j', 'j', 'j', 'j', 'j']); // the last j opens the door
+            .chain(['>', 'j', 'j', 'j', 'j', 'j']); // > climbs; the last j opens the door
         for c in route {
             app.handle_key(key(KeyCode::Char(c)));
         }

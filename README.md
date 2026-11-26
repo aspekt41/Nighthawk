@@ -42,7 +42,8 @@ cargo test                                  # run all tests
 `c` (Continue), `q` (Quit). Continue is greyed out until you've saved.
 
 **In a game:** arrows, `hjkl` + `yubn` (vi keys) or the numpad to move; `.` or `5`
-to wait; `<` and `>` to climb a ladder up or down; walk into a door to open it,
+to wait; `>` to climb a ladder up and `<` to climb down (ladders are drawn with
+the same characters); walk into a door to open it,
 `c` then a direction to close one; `a` to show or hide the air overlay; `S` to save; `q` to save and return to the menu; `Q` to return without
 saving; Ctrl-C to save and exit.
 

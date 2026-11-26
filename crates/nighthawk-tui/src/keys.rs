@@ -42,7 +42,8 @@ pub enum TitleAction {
 }
 
 /// Movement, waiting and climbing while playing. Arrows, vi keys (hjkl +
-/// yubn) and the numpad all move; `<` and `>` climb up and down.
+/// yubn) and the numpad all move; `>` climbs up and `<` climbs down, the
+/// same characters the map draws ladders with (decision D31).
 ///
 /// It's a table rather than a big `match`, so adding a key is one line, and
 /// later the table can be loaded from a settings file to make keys remappable.
@@ -69,8 +70,8 @@ const KEYMAP: &[(KeyCode, Command)] = &[
     (KeyCode::Char('3'), Command::Move(Dir::SouthEast)),
     (KeyCode::Char('.'), Command::Wait),
     (KeyCode::Char('5'), Command::Wait),
-    (KeyCode::Char('<'), Command::Climb(Vertical::Up)),
-    (KeyCode::Char('>'), Command::Climb(Vertical::Down)),
+    (KeyCode::Char('>'), Command::Climb(Vertical::Up)),
+    (KeyCode::Char('<'), Command::Climb(Vertical::Down)),
 ];
 
 /// The action for a key pressed while playing, if any.
@@ -198,13 +199,13 @@ mod tests {
     }
 
     #[test]
-    fn angle_brackets_climb() {
+    fn greater_than_climbs_up_and_less_than_climbs_down() {
         assert_eq!(
-            command_for(KeyCode::Char('<')),
+            command_for(KeyCode::Char('>')),
             Some(Command::Climb(Vertical::Up))
         );
         assert_eq!(
-            command_for(KeyCode::Char('>')),
+            command_for(KeyCode::Char('<')),
             Some(Command::Climb(Vertical::Down))
         );
     }

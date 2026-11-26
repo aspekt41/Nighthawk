@@ -18,6 +18,7 @@
 //!   produce the same game.
 
 mod air;
+mod calendar;
 mod hash;
 mod map;
 mod map_file;
@@ -27,6 +28,7 @@ mod save;
 mod world;
 
 pub use air::{Gas, Mix};
+pub use calendar::{DateTime, SHIP_START};
 pub use map::{Map, StairsError, Tile};
 pub use map_file::{LoadedMap, MapError, parse_map};
 pub use pos::{Dir, Pos, Vertical};

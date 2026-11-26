@@ -2,6 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::calendar::{DateTime, SHIP_START};
 use crate::hash::Fnv64;
 use crate::map::{Map, Tile};
 use crate::map_file::LoadedMap;
@@ -155,6 +156,12 @@ impl World {
     /// Seconds of game time since the game began.
     pub fn seconds(&self) -> u64 {
         self.seconds
+    }
+
+    /// The date and time on the ship's clock: [`SHIP_START`] plus the
+    /// seconds that have passed.
+    pub fn now(&self) -> DateTime {
+        SHIP_START.plus_seconds(self.seconds)
     }
 
     pub fn seed(&self) -> u64 {
@@ -429,6 +436,14 @@ mod tests {
         world.apply(Command::Move(Dir::SouthWest));
         assert_eq!(world.player(), Pos::new(1, 2, 0));
         assert_eq!(world.seconds(), DIAGONAL_STEP_SECONDS);
+    }
+
+    #[test]
+    fn the_ship_clock_starts_at_0842_and_moves_with_the_seconds() {
+        let mut world = test_world();
+        assert_eq!(world.now(), SHIP_START);
+        world.apply(Command::Wait);
+        assert_eq!(world.now().to_string(), "25 Nov 2631 08:42:05");
     }
 
     #[test]
