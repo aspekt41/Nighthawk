@@ -80,6 +80,13 @@ impl Dir {
         Dir::NorthWest,
     ];
 
+    /// Whether this is one of the four diagonals. A diagonal step covers
+    /// about 1.4 m instead of 1 m, so it takes longer.
+    pub fn is_diagonal(self) -> bool {
+        let (dx, dy) = self.delta();
+        dx != 0 && dy != 0
+    }
+
     /// The `(dx, dy)` this direction moves by.
     pub fn delta(self) -> (i32, i32) {
         match self {
@@ -110,6 +117,20 @@ mod tests {
         unique.sort_unstable();
         unique.dedup();
         assert_eq!(unique.len(), 8, "all eight directions differ");
+    }
+
+    #[test]
+    fn exactly_four_directions_are_diagonal() {
+        let diagonals: Vec<Dir> = Dir::ALL.into_iter().filter(|d| d.is_diagonal()).collect();
+        assert_eq!(
+            diagonals,
+            vec![
+                Dir::NorthEast,
+                Dir::SouthEast,
+                Dir::SouthWest,
+                Dir::NorthWest
+            ]
+        );
     }
 
     #[test]

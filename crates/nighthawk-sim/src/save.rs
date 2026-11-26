@@ -6,8 +6,8 @@
 //! ```json
 //! {
 //!   "format": "nighthawk-save",
-//!   "version": 3,
-//!   "world": { "deck_names": ["Stasis bay"], "turn": 12, ... }
+//!   "version": 4,
+//!   "world": { "deck_names": ["Stasis bay"], "seconds": 36, ... }
 //! }
 //! ```
 //!
@@ -33,7 +33,7 @@ pub const SAVE_FORMAT: &str = "nighthawk-save";
 
 /// The save layout this build reads and writes. Bump it when `World` (or
 /// anything inside it) changes shape, and update the save-format test.
-pub const SAVE_VERSION: u32 = 3;
+pub const SAVE_VERSION: u32 = 4;
 
 /// Everything that can be wrong with a save file.
 #[derive(Debug)]
@@ -189,7 +189,7 @@ mod tests {
     fn save_text_is_tagged_and_versioned() {
         let text = save_to_string(&small_world());
         assert!(text.contains(r#""format": "nighthawk-save""#));
-        assert!(text.contains(r#""version": 3"#));
+        assert!(text.contains(r#""version": 4"#));
     }
 
     #[test]
@@ -204,7 +204,7 @@ mod tests {
         let world = World::new(parse_map(&json).unwrap(), 7);
         let expected = r#"{
   "format": "nighthawk-save",
-  "version": 3,
+  "version": 4,
   "world": {
     "deck_names": [
       "Deck 0"
@@ -235,7 +235,7 @@ mod tests {
       "y": 0,
       "z": 0
     },
-    "turn": 0,
+    "seconds": 0,
     "seed": 7,
     "ambient_rng": {
       "state": 8301130017339275205,
@@ -269,26 +269,26 @@ mod tests {
 
     #[test]
     fn a_save_without_a_version_is_not_a_save() {
-        let text = save_with("\"version\": 3,", "");
+        let text = save_with("\"version\": 4,", "");
         assert!(matches!(load_from_str(&text), Err(SaveError::NotASave)));
     }
 
     #[test]
     fn saves_from_other_versions_are_rejected_clearly() {
-        // A save from before tiles held air: exactly what an old save file
+        // A save from before the clock counted seconds: exactly what an old save file
         // on disk looks like after this build is installed.
-        let text = save_with(r#""version": 3"#, r#""version": 2"#);
+        let text = save_with(r#""version": 4"#, r#""version": 3"#);
         let err = load_from_str(&text).unwrap_err();
-        assert!(matches!(err, SaveError::UnsupportedVersion { found: 2 }));
+        assert!(matches!(err, SaveError::UnsupportedVersion { found: 3 }));
         assert_eq!(
             err.to_string(),
-            "save file is version 2, but this build only reads version 3"
+            "save file is version 3, but this build only reads version 4"
         );
     }
 
     #[test]
     fn unknown_fields_are_rejected() {
-        let text = save_with(r#""turn": 0"#, r#""turn": 0, "cheats": true"#);
+        let text = save_with(r#""seconds": 0"#, r#""seconds": 0, "cheats": true"#);
         assert!(matches!(load_from_str(&text), Err(SaveError::Json(_))));
     }
 

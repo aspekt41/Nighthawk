@@ -12,7 +12,7 @@ graphics. The background is in [`docs/`](docs/):
 
 | Read this | When |
 |---|---|
-| [Decision log](docs/scoping/03-decisions.md) | **Before any design or architecture work.** Every decision so far (D1–D28) with its reasoning. |
+| [Decision log](docs/scoping/03-decisions.md) | **Before any design or architecture work.** Every decision so far (D1–D30) with its reasoning. |
 | [Scope and roadmap](docs/scoping/02-scope-and-roadmap.md) | To find the next step (milestones M0–M6) and what is out of scope |
 | [Tech stack research](docs/research/03-terminal-tech-stack.md) | Before adding a library or touching terminal handling |
 | [Progression loop](docs/research/02-progression-loop-design.md) | Before designing a game system |
@@ -31,7 +31,9 @@ decision in the log first.
    All game state lives in `World`, which is also the save file (D23). If a
    change alters the save layout, bump `SAVE_VERSION`.
 3. **Time moves only when the player acts.** `World::apply` is the only thing
-   that changes the world or advances `turn`. Nothing runs in the background (D7).
+   that changes the world or advances the clock (`seconds`). Each action takes
+   a set number of seconds, simulated one second at a time (D29). Nothing runs
+   in the background (D7).
 4. **Everything is 3D.** Positions are always `Pos { x, y, z }`, even when
    there's one deck (D8).
 5. **Content is data.** Maps, and later items and recipes, are JSON in `data/`,

@@ -9,7 +9,9 @@
 //!
 //! Two rules from the decision log are visible in the code from day one:
 //! - **D7, time only moves when you act.** The only thing that advances
-//!   `World::turn` is [`World::apply`]. Nothing runs in the background.
+//!   [`World::seconds`] is [`World::apply`]. Nothing runs in the background.
+//! - **D29, units.** A tile is 1 m and the clock counts seconds; each action
+//!   takes a set number of seconds, simulated one second at a time.
 //! - **D8, the world is 3D.** Every [`Pos`] has a `z` (the deck).
 //! - **Determinism (D22).** All randomness comes from [`GameRng`] streams
 //!   seeded from the world's seed, so the same seed and commands always
@@ -24,10 +26,13 @@ mod rng;
 mod save;
 mod world;
 
-pub use air::{Gas, Mix, SPREAD_DIVISOR};
+pub use air::{Gas, Mix};
 pub use map::{Map, StairsError, Tile};
 pub use map_file::{LoadedMap, MapError, parse_map};
 pub use pos::{Dir, Pos, Vertical};
 pub use rng::{GameRng, Stream};
 pub use save::{SAVE_FORMAT, SAVE_VERSION, SaveError, load_from_str, save_to_string};
-pub use world::{Command, Event, Sound, World};
+pub use world::{
+    CLIMB_SECONDS, Command, DIAGONAL_STEP_SECONDS, DOOR_SECONDS, Event, STEP_SECONDS, Sound,
+    WAIT_SECONDS, World,
+};

@@ -77,6 +77,23 @@ impl Tile {
     }
 }
 
+/// The tile that names `i`'s group in a union-find: follow parents until a
+/// tile is its own parent. On the way back, point every tile passed straight
+/// at that root ("path compression"), so later lookups are quick.
+fn root(parent: &mut [usize], i: usize) -> usize {
+    let mut r = i;
+    while parent[r] != r {
+        r = parent[r];
+    }
+    let mut j = i;
+    while parent[j] != r {
+        let next = parent[j];
+        parent[j] = r;
+        j = next;
+    }
+    r
+}
+
 /// Stairs at `at` lead `way`, but there's no matching stairs there.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StairsError {
@@ -176,19 +193,69 @@ impl Map {
         })
     }
 
-    /// One turn of air spreading. Every pair of connected air-holding tiles
-    /// moves part of the difference between them (see [`Mix::flow_to`]).
+    /// One second of air movement (decision D30).
     ///
-    /// All flows are worked out from a snapshot taken *before* any air moves,
-    /// then applied. So the order tiles are visited in can't change the
-    /// result, and air moves the same way in every direction.
+    /// Tiles are 1 m and a step of the simulation is 1 s. Air pressure evens
+    /// out at about the speed of sound, 340 m/s, so within one second every
+    /// connected open space (tiles joined through open floor, open doors and
+    /// ladders) reaches a single, even pressure and mix. What slows real
+    /// air down is the size of an opening, such as a small hull breach;
+    /// that arrives with breaches.
     pub(crate) fn spread_air(&mut self) {
-        let before = self.air.clone();
-        for (a, b) in self.air_links() {
-            let flow = before[a].flow_to(before[b]);
-            self.air[a] = self.air[a].plus(flow.map(|f| -f));
-            self.air[b] = self.air[b].plus(flow);
+        for space in self.connected_spaces() {
+            self.even_out(&space);
         }
+    }
+
+    /// Shares the air in `space` (indexes into `air`, in ascending order)
+    /// evenly between its tiles.
+    ///
+    /// Each gas's total is split into equal whole pascals; the few left
+    /// over go one each to the first tiles in the list. So nothing is lost
+    /// to rounding, tiles differ by at most 1 Pa per gas, and the same
+    /// space always splits the same way.
+    fn even_out(&mut self, space: &[usize]) {
+        let totals = space.iter().fold([0u64; 3], |sum, &i| {
+            let amounts = self.air[i].amounts();
+            [
+                sum[0] + amounts[0],
+                sum[1] + amounts[1],
+                sum[2] + amounts[2],
+            ]
+        });
+        let count = space.len() as u64;
+        for (k, &i) in space.iter().enumerate() {
+            let share = totals.map(|total| total / count + u64::from((k as u64) < total % count));
+            self.air[i] = Mix::from_amounts(share);
+        }
+    }
+
+    /// Every connected open space, as lists of indexes into `air`. Each list
+    /// is in ascending order and the lists are ordered by their first
+    /// tile, so the result never depends on how it was worked out.
+    ///
+    /// It uses *union-find*: every tile starts as its own group, and each
+    /// link between two tiles merges their groups. `root` follows a tile's
+    /// chain of parents up to the tile that names its group.
+    fn connected_spaces(&self) -> Vec<Vec<usize>> {
+        let mut parent: Vec<usize> = (0..self.air.len()).collect();
+        for (a, b) in self.air_links() {
+            let (ra, rb) = (root(&mut parent, a), root(&mut parent, b));
+            // Point the larger root at the smaller one: always the same
+            // choice, whatever order the links come in.
+            parent[ra.max(rb)] = ra.min(rb);
+        }
+        let mut group_of_root: Vec<Option<usize>> = vec![None; self.air.len()];
+        let mut spaces: Vec<Vec<usize>> = Vec::new();
+        for i in (0..self.air.len()).filter(|&i| self.tiles[i].holds_air()) {
+            let r = root(&mut parent, i);
+            let group = *group_of_root[r].get_or_insert_with(|| {
+                spaces.push(Vec::new());
+                spaces.len() - 1
+            });
+            spaces[group].push(i);
+        }
+        spaces
     }
 
     /// Every pair of tiles air can move between, as indexes into `air`.
@@ -470,6 +537,18 @@ mod tests {
         map.total_air().iter().sum()
     }
 
+    /// The largest difference in any one gas between any two tiles at `ps`.
+    fn spread_between(map: &Map, ps: &[Pos]) -> u64 {
+        let mixes: Vec<[u64; 3]> = ps.iter().map(|&p| map.air(p).unwrap().amounts()).collect();
+        (0..3)
+            .map(|g| {
+                let values = mixes.iter().map(|m| m[g]);
+                values.clone().max().unwrap() - values.min().unwrap()
+            })
+            .max()
+            .unwrap()
+    }
+
     #[test]
     fn only_open_tiles_hold_air() {
         for tile in [
@@ -504,26 +583,63 @@ mod tests {
     }
 
     #[test]
-    fn air_flows_from_full_to_empty() {
-        let mut map = corridor(2);
-        map.set_air(Pos::new(1, 0, 0), Mix::VACUUM);
+    fn a_connected_space_evens_out_in_one_second() {
+        // All the air at one end of a 30 m corridor: one second later it's
+        // spread evenly along it, as real air would be.
+        let mut map = corridor(30);
+        for x in 1..30 {
+            map.set_air(Pos::new(x, 0, 0), Mix::VACUUM);
+        }
         map.spread_air();
-        let (full, empty) = (
-            map.air(Pos::new(0, 0, 0)).unwrap(),
-            map.air(Pos::new(1, 0, 0)).unwrap(),
+        let all: Vec<Pos> = (0..30).map(|x| Pos::new(x, 0, 0)).collect();
+        assert!(
+            spread_between(&map, &all) <= 1,
+            "tiles differ by at most 1 Pa per gas"
         );
-        assert!(full.total() < Mix::STANDARD.total());
-        assert!(empty.total() > 0);
-        assert_eq!(
-            full.total() + empty.total(),
-            Mix::STANDARD.total(),
-            "nothing lost"
+        assert_eq!(total_pressure(&map), Mix::STANDARD.total(), "nothing lost");
+    }
+
+    #[test]
+    fn evening_out_splits_exactly_with_leftovers_going_first() {
+        // 10 Pa of O2 over 3 tiles: 4, 3, 3 (the leftover pascal goes to the
+        // first tile), never 3.33 and never a lost pascal.
+        let mut map = Map::filled(3, 1, 1, Tile::Floor);
+        map.set_air(
+            Pos::new(2, 0, 0),
+            Mix {
+                o2: 10,
+                n2: 0,
+                co2: 0,
+            },
         );
+        map.spread_air();
+        let o2: Vec<u32> = (0..3)
+            .map(|x| map.air(Pos::new(x, 0, 0)).unwrap().o2)
+            .collect();
+        assert_eq!(o2, vec![4, 3, 3]);
+    }
+
+    #[test]
+    fn an_even_space_stays_exactly_as_it_is() {
+        let mut map = Map::filled(3, 1, 1, Tile::Floor);
+        map.set_air(
+            Pos::new(2, 0, 0),
+            Mix {
+                o2: 10,
+                n2: 0,
+                co2: 0,
+            },
+        );
+        map.spread_air();
+        let settled = map.clone();
+        for _ in 0..100 {
+            map.spread_air();
+        }
+        assert_eq!(map, settled, "no creeping or oscillating");
     }
 
     #[test]
     fn a_sealed_space_never_gains_or_loses_a_single_pascal() {
-        // A lopsided start: everything in one end of a long corridor.
         let mut map = corridor(12);
         for x in 1..12 {
             map.set_air(Pos::new(x, 0, 0), Mix::VACUUM);
@@ -537,38 +653,14 @@ mod tests {
             },
         );
         let start = map.total_air();
-        for _ in 0..10_000 {
+        for _ in 0..1_000 {
             map.spread_air();
             assert_eq!(map.total_air(), start);
         }
     }
 
     #[test]
-    fn air_evens_out_along_a_corridor() {
-        let mut map = corridor(8);
-        for x in 1..8 {
-            map.set_air(Pos::new(x, 0, 0), Mix::VACUUM);
-        }
-        for _ in 0..2_000 {
-            map.spread_air();
-        }
-        let totals: Vec<u64> = (0..8)
-            .map(|x| map.air(Pos::new(x, 0, 0)).unwrap().total())
-            .collect();
-        let (min, max) = (totals.iter().min().unwrap(), totals.iter().max().unwrap());
-        // Whole-number flows stop once neighbours differ by less than half
-        // a divisor of a gas, so a faint slope can remain: at most
-        // (divisor / 2 - 1) Pa per gas per link. 7 links, 3 gases.
-        let limit = 7 * 3 * (crate::air::SPREAD_DIVISOR as u64 / 2 - 1);
-        assert!(
-            max - min <= limit,
-            "slope {} over limit {limit}: {totals:?}",
-            max - min
-        );
-    }
-
-    #[test]
-    fn walls_and_closed_doors_stop_air() {
+    fn walls_and_closed_doors_keep_spaces_apart() {
         for barrier in [Tile::Wall, Tile::DoorClosed] {
             let mut map = corridor(3);
             map.set(Pos::new(1, 0, 0), barrier);
@@ -587,6 +679,46 @@ mod tests {
     }
 
     #[test]
+    fn separate_spaces_even_out_on_their_own() {
+        // Two rooms either side of a wall, each lopsided inside.
+        let mut map = Map::filled(5, 1, 1, Tile::Floor);
+        map.set(Pos::new(2, 0, 0), Tile::Wall);
+        map.set_air(
+            Pos::new(0, 0, 0),
+            Mix {
+                o2: 100,
+                n2: 0,
+                co2: 0,
+            },
+        );
+        map.set_air(
+            Pos::new(4, 0, 0),
+            Mix {
+                o2: 0,
+                n2: 60,
+                co2: 0,
+            },
+        );
+        map.spread_air();
+        assert_eq!(
+            map.air(Pos::new(1, 0, 0)),
+            Some(Mix {
+                o2: 50,
+                n2: 0,
+                co2: 0
+            })
+        );
+        assert_eq!(
+            map.air(Pos::new(3, 0, 0)),
+            Some(Mix {
+                o2: 0,
+                n2: 30,
+                co2: 0
+            })
+        );
+    }
+
+    #[test]
     fn a_closed_door_keeps_its_air_and_releases_it_when_opened() {
         let mut map = corridor(3);
         map.set(Pos::new(1, 0, 0), Tile::DoorClosed); // the doorway still has air
@@ -601,10 +733,8 @@ mod tests {
         );
         map.set(Pos::new(1, 0, 0), Tile::DoorOpen);
         map.spread_air();
-        assert!(
-            map.air(Pos::new(2, 0, 0)).unwrap().total() > 0,
-            "flows once open"
-        );
+        let all: Vec<Pos> = (0..3).map(|x| Pos::new(x, 0, 0)).collect();
+        assert!(spread_between(&map, &all) <= 1, "one even space once open");
     }
 
     #[test]
@@ -613,14 +743,14 @@ mod tests {
         map.fill_deck_air(0, Mix::STANDARD);
         let before = total_pressure(&map);
         map.spread_air();
+        let all: Vec<Pos> = map.positions().collect();
         assert!(
-            map.air(Pos::new(0, 0, 1)).unwrap().total() > 0,
-            "up the ladder"
+            spread_between(&map, &all) <= 1,
+            "both decks share one space"
         );
-        assert_eq!(
-            map.air(Pos::new(1, 0, 1)),
-            Some(Mix::VACUUM),
-            "not yet past it"
+        assert!(
+            map.air(Pos::new(1, 0, 1)).unwrap().total() > 0,
+            "air reached upstairs"
         );
         assert_eq!(total_pressure(&map), before);
     }
@@ -636,26 +766,36 @@ mod tests {
     }
 
     #[test]
-    fn spreading_is_the_same_in_both_directions() {
-        // Mirror images must end as mirror images: the visiting order
-        // of tiles can't favour one side.
+    fn evening_out_does_not_favour_either_end() {
+        // Mirror images end as mirror images, give or take the 1 Pa of
+        // leftover each gas can have.
         let mut left = corridor(5);
         let mut right = corridor(5);
         for x in 1..5 {
             left.set_air(Pos::new(x, 0, 0), Mix::VACUUM);
             right.set_air(Pos::new(4 - x, 0, 0), Mix::VACUUM);
         }
-        for _ in 0..37 {
-            left.spread_air();
-            right.spread_air();
-        }
+        left.spread_air();
+        right.spread_air();
         for x in 0..5 {
-            assert_eq!(
-                left.air(Pos::new(x, 0, 0)),
-                right.air(Pos::new(4 - x, 0, 0)),
-                "x = {x}"
+            let (l, r) = (
+                left.air(Pos::new(x, 0, 0)).unwrap(),
+                right.air(Pos::new(4 - x, 0, 0)).unwrap(),
+            );
+            assert!(
+                l.total().abs_diff(r.total()) <= 3,
+                "x = {x}: {l:?} vs {r:?}"
             );
         }
+    }
+
+    #[test]
+    fn union_find_roots_point_every_tile_at_its_group() {
+        // 0 -> 1 -> 2 -> 2: the root of 0 is 2, and afterwards 0 points
+        // straight at it.
+        let mut parent = vec![1, 2, 2];
+        assert_eq!(root(&mut parent, 0), 2);
+        assert_eq!(parent, vec![2, 2, 2]);
     }
 
     #[test]

@@ -251,7 +251,10 @@ mod tests {
         slot.save(&world).unwrap();
         world.apply(Command::Wait);
         slot.save(&world).unwrap();
-        assert_eq!(slot.load().unwrap().map(|w| w.turn()), Some(1));
+        assert_eq!(
+            slot.load().unwrap().map(|w| w.seconds()),
+            Some(nighthawk_sim::WAIT_SECONDS)
+        );
     }
 
     #[test]

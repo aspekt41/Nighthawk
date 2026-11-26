@@ -4,7 +4,7 @@ A terminal-native survival and base-building game where the systems run deep. It
 the Dwarf Fortress / Cataclysm: DDA tradition and is built around the explore → find →
 craft → build loop of Subnautica, Abiotic Factor and Minecraft.
 
-**Status:** M1.2. A title menu, save and load, air that spreads tile by tile (O2, N2 and CO2), and two decks to explore, the Stasis bay and the Crew quarters above it (with doors to open and close), joined by a ladder (loaded from [`data/maps/aft_ring.json`](data/maps/aft_ring.json)), while the ship creaks around you. Every game comes from a seed, so the same seed and moves replay exactly. See [Running it](#running-it).
+**Status:** M1.2. A title menu, save and load, a clock in real seconds, air (O2, N2 and CO2) that evens out across every connected space each second, and two decks to explore, the Stasis bay and the Crew quarters above it (with doors to open and close), joined by a ladder (loaded from [`data/maps/aft_ring.json`](data/maps/aft_ring.json)), while the ship creaks around you. Every game comes from a seed, so the same seed and moves replay exactly. See [Running it](#running-it).
 
 ## Documents
 
@@ -22,7 +22,7 @@ craft → build loop of Subnautica, Abiotic Factor and Minecraft.
 
 - **Concept:** *Nighthawk*. You wake alone on a drifting, dead starship and take it back one sealed, powered and pressurised room at a time. Base expansion and world progression are the same mechanic.
 - **Stack:** Rust, with ratatui + crossterm for the terminal UI. The simulation core is a deterministic library crate with no I/O, and it can also target the browser (Ratzilla/WASM) and SSH later.
-- **Play model:** a single avatar, turn-based with action costs. Air, heat and power are simulated per tile.
+- **Play model:** a single avatar, turn-based: each action takes a set number of seconds (a step 3 s, a ladder 20 s), and the world is simulated one second at a time on 1 m tiles. Air, heat and power are simulated per tile.
 
 ## Reviewing
 

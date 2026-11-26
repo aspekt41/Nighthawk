@@ -223,7 +223,7 @@ fn sidebar_lines(world: &World) -> Vec<Line<'static>> {
     let mut lines = vec![
         Line::raw(format!("Deck  {} of {}", p.z, world.map().depth())),
         Line::raw(format!("Pos   {}, {}", p.x, p.y)),
-        Line::raw(format!("Turn  {}", world.turn())),
+        Line::raw(format!("Time  {}", clock(world.seconds()))),
         Line::raw(format!("Seed  {}", world.seed())),
         Line::raw(""),
     ];
@@ -253,6 +253,16 @@ fn air_lines(mix: Mix) -> [Line<'static>; 3] {
         Line::raw(format!("O2 {}  N2 {}", percent(o2), percent(n2))),
         Line::raw(format!("CO2 {}", percent(co2))),
     ]
+}
+
+/// Seconds of game time as a clock, hours:minutes:seconds: 3725 → "1:02:05".
+pub fn clock(seconds: u64) -> String {
+    format!(
+        "{}:{:02}:{:02}",
+        seconds / 3600,
+        seconds / 60 % 60,
+        seconds % 60
+    )
 }
 
 /// Pascals as kilopascals with one decimal place, rounded: 101325 → "101.3".
@@ -347,7 +357,7 @@ mod tests {
             screen.contains(" Deck 0 "),
             "map panel is titled with the deck's name (a number when it has none)"
         );
-        assert!(screen.contains("Turn  0"));
+        assert!(screen.contains("Time  0:00:00"));
         assert!(screen.contains("Deck  0 of 1"));
         assert!(screen.contains("Seed  1"));
         assert!(screen.contains("save S  menu q/Q"));
@@ -464,6 +474,15 @@ mod tests {
     }
 
     // --- Air ------------------------------------------------------------------
+
+    #[test]
+    fn the_clock_shows_hours_minutes_and_seconds() {
+        assert_eq!(clock(0), "0:00:00");
+        assert_eq!(clock(59), "0:00:59");
+        assert_eq!(clock(60), "0:01:00");
+        assert_eq!(clock(3725), "1:02:05");
+        assert_eq!(clock(100 * 3600), "100:00:00", "hours keep counting");
+    }
 
     #[test]
     fn pressures_and_shares_are_formatted_with_one_decimal() {

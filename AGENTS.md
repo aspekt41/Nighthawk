@@ -55,7 +55,9 @@ rather than accepting a skipped step.
    saved automatically. If it changes the save layout, bump `SAVE_VERSION` in
    `crates/nighthawk-sim/src/save.rs` and update the save-format test.
 3. **`World::apply(Command) -> Vec<Event>` is the only way the world changes**,
-   and the only place `turn` advances. Failed actions, like bumping a wall,
+   and the only place the clock (`seconds`) advances. Actions cost seconds
+   (`STEP_SECONDS`, `CLIMB_SECONDS` and so on in `world.rs`; D29), and the world
+   is simulated one second at a time. Failed actions, like bumping a wall,
    cost no time. Never add real-time ticking (D7).
 4. **Positions are always 3D** (`Pos { x, y, z }`) (D8).
 5. **Content is strict JSON:** `#[serde(deny_unknown_fields)]`, validated on

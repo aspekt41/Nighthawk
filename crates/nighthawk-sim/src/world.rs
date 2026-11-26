@@ -78,17 +78,24 @@ impl Sound {
     ];
 }
 
-/// How many turns each action costs. Real action costs (crafting takes
-/// longer than a step) arrive with the energy scheduler.
-const MOVE_COST: u64 = 1;
-const WAIT_COST: u64 = 1;
-/// Climbing between decks is slower than a step.
-const CLIMB_COST: u64 = 2;
-/// Opening or closing a door takes a turn.
-const DOOR_COST: u64 = 1;
+// How long each action takes, in seconds (decision D29). The world is
+// simulated one second at a time, so an action that takes 20 seconds lets
+// 20 seconds of air, heat and everything else happen.
 
-/// Each turn that passes has a 1 in this many chance of an ambient sound.
-const AMBIENT_ONE_IN: u32 = 8;
+/// One step across flat floor: 1 m.
+pub const STEP_SECONDS: u64 = 3;
+/// One diagonal step: about 1.4 m, so about 1.4 times as long.
+pub const DIAGONAL_STEP_SECONDS: u64 = 4;
+/// Climbing a ladder to the next deck.
+pub const CLIMB_SECONDS: u64 = 20;
+/// Opening or closing a door.
+pub const DOOR_SECONDS: u64 = 2;
+/// Waiting (`.`): a short pause.
+pub const WAIT_SECONDS: u64 = 5;
+
+/// Each second has a 1 in this many chance of an ambient sound, so about
+/// one sound every 25 seconds.
+const AMBIENT_ONE_IN: u32 = 25;
 
 /// Everything about the game at one moment.
 ///
@@ -103,7 +110,8 @@ pub struct World {
     deck_names: Vec<String>,
     map: Map,
     player: Pos,
-    turn: u64,
+    /// Seconds of game time since the game began.
+    seconds: u64,
     /// The seed this game started from. Same seed + same commands = same game.
     seed: u64,
     ambient_rng: GameRng,
@@ -111,13 +119,13 @@ pub struct World {
 
 impl World {
     /// A new game on a loaded map, with the player at the map's `@`, the
-    /// clock at turn 0, and all randomness derived from `seed`.
+    /// clock at 0 seconds, and all randomness derived from `seed`.
     pub fn new(loaded: LoadedMap, seed: u64) -> Self {
         Self {
             deck_names: loaded.deck_names,
             map: loaded.map,
             player: loaded.player_start,
-            turn: 0,
+            seconds: 0,
             seed,
             ambient_rng: GameRng::new(seed, Stream::Ambient),
         }
@@ -144,9 +152,9 @@ impl World {
         self.player
     }
 
-    /// How many turns have passed since the game began.
-    pub fn turn(&self) -> u64 {
-        self.turn
+    /// Seconds of game time since the game began.
+    pub fn seconds(&self) -> u64 {
+        self.seconds
     }
 
     pub fn seed(&self) -> u64 {
@@ -165,7 +173,7 @@ impl World {
             Command::Close(dir) => self.close(dir),
             Command::Wait => {
                 let mut events = vec![Event::Waited];
-                self.pass_time(WAIT_COST, &mut events);
+                self.pass_time(WAIT_SECONDS, &mut events);
                 events
             }
         }
@@ -180,18 +188,23 @@ impl World {
             Some(_) => {
                 self.player = target;
                 let mut events = vec![Event::Moved { to: target }];
-                self.pass_time(MOVE_COST, &mut events);
+                let seconds = if dir.is_diagonal() {
+                    DIAGONAL_STEP_SECONDS
+                } else {
+                    STEP_SECONDS
+                };
+                self.pass_time(seconds, &mut events);
                 events
             }
         }
     }
 
     /// Opens the closed door at `at`. The player stays put: opening takes
-    /// the turn, and the next step walks through.
+    /// the time, and the next step walks through.
     fn open(&mut self, at: Pos) -> Vec<Event> {
         self.map.set(at, Tile::DoorOpen);
         let mut events = vec![Event::DoorOpened { at }];
-        self.pass_time(DOOR_COST, &mut events);
+        self.pass_time(DOOR_SECONDS, &mut events);
         events
     }
 
@@ -204,7 +217,7 @@ impl World {
         }
         self.map.set(at, Tile::DoorClosed);
         let mut events = vec![Event::DoorClosed { at }];
-        self.pass_time(DOOR_COST, &mut events);
+        self.pass_time(DOOR_SECONDS, &mut events);
         events
     }
 
@@ -224,17 +237,17 @@ impl World {
         }
         self.player = target;
         let mut events = vec![Event::Climbed { to: target, way }];
-        self.pass_time(CLIMB_COST, &mut events);
+        self.pass_time(CLIMB_SECONDS, &mut events);
         events
     }
 
-    /// Advances the clock one turn at a time, letting the world react to
-    /// each turn. Every system that runs "while time passes" (air, heat,
+    /// Advances the clock one second at a time, letting the world react to
+    /// each second. Every system that runs "while time passes" (air, heat,
     /// power, creatures) will hook in here, so it only ever runs because the
     /// player did something.
-    fn pass_time(&mut self, turns: u64, events: &mut Vec<Event>) {
-        for _ in 0..turns {
-            self.turn += 1;
+    fn pass_time(&mut self, seconds: u64, events: &mut Vec<Event>) {
+        for _ in 0..seconds {
+            self.seconds += 1;
             self.map.spread_air();
             if self.ambient_rng.one_in(AMBIENT_ONE_IN)
                 && let Some(&sound) = self.ambient_rng.pick(&Sound::ALL)
@@ -280,7 +293,7 @@ impl World {
         }
         self.map.hash_into(&mut h);
         h.i32(self.player.x).i32(self.player.y).i32(self.player.z);
-        h.u64(self.turn)
+        h.u64(self.seconds)
             .u64(self.seed)
             .u64(self.ambient_rng.fingerprint());
         h.finish()
@@ -332,9 +345,9 @@ mod tests {
     }
 
     #[test]
-    fn a_new_world_starts_at_turn_zero_on_the_start_tile() {
+    fn a_new_world_starts_at_zero_seconds_on_the_start_tile() {
         let world = test_world();
-        assert_eq!(world.turn(), 0);
+        assert_eq!(world.seconds(), 0);
         assert_eq!(world.player(), Pos::new(2, 1, 0));
         assert_eq!(world.area_name(), "Deck 0", "unnamed decks get a number");
         assert_eq!(world.map().width(), 6);
@@ -342,7 +355,7 @@ mod tests {
     }
 
     #[test]
-    fn walking_onto_floor_moves_and_takes_a_turn() {
+    fn a_step_moves_one_tile_and_takes_three_seconds() {
         let mut world = test_world();
         let start = world.player();
 
@@ -350,7 +363,8 @@ mod tests {
 
         let to = start.step(Dir::East);
         assert_eq!(world.player(), to);
-        assert_eq!(world.turn(), 1);
+        assert_eq!(world.seconds(), STEP_SECONDS);
+        assert_eq!(STEP_SECONDS, 3);
         assert_eq!(without_ambient(events), vec![Event::Moved { to }]);
     }
 
@@ -361,7 +375,7 @@ mod tests {
         let events = world.apply(Command::Move(Dir::North));
 
         assert_eq!(world.player(), Pos::new(2, 1, 0));
-        assert_eq!(world.turn(), 0);
+        assert_eq!(world.seconds(), 0);
         assert_eq!(
             events,
             vec![Event::Bumped {
@@ -383,7 +397,7 @@ mod tests {
                 ..
             }]
         ));
-        assert_eq!(world.turn(), 0);
+        assert_eq!(world.seconds(), 0);
     }
 
     #[test]
@@ -395,7 +409,7 @@ mod tests {
 
         assert_eq!(events, vec![Event::BlockedByEdge]);
         assert_eq!(world.player(), Pos::new(1, 0, 0));
-        assert_eq!(world.turn(), 0);
+        assert_eq!(world.seconds(), 0);
     }
 
     #[test]
@@ -405,7 +419,32 @@ mod tests {
         world.apply(Command::Wait);
         world.apply(Command::Wait);
         assert_eq!(world.player(), start);
-        assert_eq!(world.turn(), 2);
+        assert_eq!(world.seconds(), 2 * WAIT_SECONDS);
+    }
+
+    #[test]
+    fn a_diagonal_step_takes_longer_than_a_straight_one() {
+        // From (2, 1) south-west to (1, 2): open floor.
+        let mut world = test_world();
+        world.apply(Command::Move(Dir::SouthWest));
+        assert_eq!(world.player(), Pos::new(1, 2, 0));
+        assert_eq!(world.seconds(), DIAGONAL_STEP_SECONDS);
+    }
+
+    #[test]
+    fn the_time_costs_are_the_agreed_ones() {
+        // Decision D29. Changing one is a design change: update the
+        // decision log and the golden determinism test with it.
+        assert_eq!(
+            [
+                STEP_SECONDS,
+                DIAGONAL_STEP_SECONDS,
+                CLIMB_SECONDS,
+                DOOR_SECONDS,
+                WAIT_SECONDS
+            ],
+            [3, 4, 20, 2, 5]
+        );
     }
 
     #[test]
@@ -439,15 +478,16 @@ mod tests {
     }
 
     #[test]
-    fn ambient_sounds_happen_about_one_turn_in_eight() {
+    fn ambient_sounds_happen_about_once_every_25_seconds() {
         let mut world = test_world();
-        let heard: usize = (0..800)
+        let heard: usize = (0..1000)
             .map(|_| count_ambient(&world.apply(Command::Wait)))
             .sum();
-        // Expect about 100. Wide bounds: the test is about the rate, not luck.
+        // 1000 waits of 5 s = 5000 s, so expect about 200. Wide bounds: the
+        // test is about the rate, not luck.
         assert!(
-            (60..=140).contains(&heard),
-            "heard {heard} sounds in 800 turns"
+            (150..=250).contains(&heard),
+            "heard {heard} sounds in 5000 seconds"
         );
     }
 
@@ -494,11 +534,11 @@ mod tests {
 
         let mut moved = test_world();
         moved.apply(Command::Move(Dir::East));
-        assert_ne!(moved.state_hash(), start, "position and turn");
+        assert_ne!(moved.state_hash(), start, "position and time");
 
         let mut waited = test_world();
         waited.apply(Command::Wait);
-        assert_ne!(waited.state_hash(), start, "turn and RNG");
+        assert_ne!(waited.state_hash(), start, "time and RNG");
 
         let other_seed = World::new(
             parse_map(
@@ -553,12 +593,12 @@ mod tests {
     #[test]
     fn climbing_up_arrives_at_the_same_spot_one_deck_higher() {
         let mut world = on_stairs_up();
-        let turn = world.turn();
+        let before = world.seconds();
 
         let events = world.apply(Command::Climb(Vertical::Up));
 
         assert_eq!(world.player(), Pos::new(3, 1, 1));
-        assert_eq!(world.turn(), turn + CLIMB_COST);
+        assert_eq!(world.seconds(), before + CLIMB_SECONDS);
         assert_eq!(
             without_ambient(events),
             vec![Event::Climbed {
@@ -604,13 +644,13 @@ mod tests {
             );
         }
         assert_eq!(world.player(), Pos::new(1, 1, 0));
-        assert_eq!(world.turn(), 0);
+        assert_eq!(world.seconds(), 0);
     }
 
     #[test]
     fn stairs_only_go_their_own_way() {
         let mut world = on_stairs_up();
-        let turn = world.turn();
+        let before = world.seconds();
         let events = world.apply(Command::Climb(Vertical::Down));
         assert_eq!(
             events,
@@ -618,7 +658,7 @@ mod tests {
                 way: Vertical::Down
             }]
         );
-        assert_eq!(world.turn(), turn);
+        assert_eq!(world.seconds(), before);
 
         world.apply(Command::Climb(Vertical::Up)); // now on stairs down
         let events = world.apply(Command::Climb(Vertical::Up));
@@ -668,7 +708,7 @@ mod tests {
     const DOOR: Pos = Pos::new(2, 1, 0);
 
     #[test]
-    fn walking_into_a_closed_door_opens_it_and_takes_a_turn() {
+    fn walking_into_a_closed_door_opens_it_and_takes_two_seconds() {
         let mut world = door_world();
 
         let events = world.apply(Command::Move(Dir::East));
@@ -683,7 +723,7 @@ mod tests {
             Pos::new(1, 1, 0),
             "opening doesn't move you"
         );
-        assert_eq!(world.turn(), DOOR_COST);
+        assert_eq!(world.seconds(), DOOR_SECONDS);
     }
 
     #[test]
@@ -696,10 +736,10 @@ mod tests {
     }
 
     #[test]
-    fn closing_an_open_door_beside_you_takes_a_turn() {
+    fn closing_an_open_door_beside_you_takes_two_seconds() {
         let mut world = door_world();
         world.apply(Command::Move(Dir::East)); // open
-        let turn = world.turn();
+        let before = world.seconds();
 
         let events = world.apply(Command::Close(Dir::East));
 
@@ -708,7 +748,7 @@ mod tests {
             vec![Event::DoorClosed { at: DOOR }]
         );
         assert_eq!(world.map().get(DOOR), Some(Tile::DoorClosed));
-        assert_eq!(world.turn(), turn + DOOR_COST);
+        assert_eq!(world.seconds(), before + DOOR_SECONDS);
     }
 
     #[test]
@@ -722,7 +762,7 @@ mod tests {
                 vec![Event::NothingToClose { at }]
             );
         }
-        assert_eq!(world.turn(), 0);
+        assert_eq!(world.seconds(), 0);
         assert_eq!(world.map().get(DOOR), Some(Tile::DoorClosed));
     }
 
@@ -746,24 +786,29 @@ mod tests {
         let closed = door_world();
         let mut opened = door_world();
         opened.apply(Command::Move(Dir::East));
-        opened.turn = closed.turn; // so only the door differs
+        opened.seconds = closed.seconds; // so only the door differs
         opened.ambient_rng = closed.ambient_rng.clone();
         assert_ne!(closed.state_hash(), opened.state_hash());
     }
 
     #[test]
-    fn air_spreads_once_for_every_turn_that_passes() {
-        // Thin air on one side of an open doorway: each turn that passes
-        // moves some across; a turn that doesn't pass moves nothing.
+    fn air_moves_only_when_time_passes() {
+        // Vacuum beyond a closed door: nothing moves while it's shut or
+        // while no time passes; the moment time passes with it open, the
+        // two sides share one even pressure.
         let mut world = door_world();
-        world
-            .map
-            .set_air(Pos::new(3, 1, 0), crate::air::Mix::VACUUM);
-        world.apply(Command::Move(Dir::East)); // open the door: one turn
-        let after_open = world.map.air(Pos::new(3, 1, 0));
+        let beyond = Pos::new(3, 1, 0);
+        world.map.set_air(beyond, crate::air::Mix::VACUUM);
         world.apply(Command::Move(Dir::North)); // bump a wall: no time
-        assert_eq!(world.map.air(Pos::new(3, 1, 0)), after_open);
-        world.apply(Command::Wait);
-        assert!(world.map.air(Pos::new(3, 1, 0)).unwrap().total() > after_open.unwrap().total());
+        assert_eq!(world.map.air(beyond), Some(crate::air::Mix::VACUUM));
+
+        world.apply(Command::Move(Dir::East)); // open the door: 2 seconds
+        let here = world.map.air(world.player()).unwrap().total();
+        let there = world.map.air(beyond).unwrap().total();
+        assert!(there > 0, "air rushed through the open door");
+        assert!(
+            here.abs_diff(there) <= 3,
+            "one even space: {here} vs {there}"
+        );
     }
 }

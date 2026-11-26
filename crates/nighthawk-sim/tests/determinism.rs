@@ -25,8 +25,8 @@ const SEED: u64 = 0x4e49_4748_5448_4157; // "NIGHTHAW" in ASCII
 const TURNS: usize = 500;
 
 /// The stored fingerprints. See "If this test fails" above.
-const EXPECTED_STATE_HASH: u64 = 0x18f4_3442_a77e_0fea;
-const EXPECTED_AMBIENT_COUNT: usize = 64;
+const EXPECTED_STATE_HASH: u64 = 0xdbe1_88f6_b294_62cb;
+const EXPECTED_AMBIENT_COUNT: usize = 74;
 
 fn start_world() -> World {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../data/maps/aft_ring.json");
@@ -101,9 +101,9 @@ fn a_scripted_game_always_ends_in_the_same_state() {
     assert_eq!(
         (world.state_hash(), ambient),
         (EXPECTED_STATE_HASH, EXPECTED_AMBIENT_COUNT),
-        "the scripted game changed: state hash {:#018x}, {ambient} ambient sounds, turn {}",
+        "the scripted game changed: state hash {:#018x}, {ambient} ambient sounds, {} seconds",
         world.state_hash(),
-        world.turn(),
+        world.seconds(),
     );
 }
 
@@ -187,8 +187,8 @@ fn the_ship_never_gains_or_loses_air() {
         assert_eq!(
             world.map().total_air(),
             start,
-            "after turn {}",
-            world.turn()
+            "after {} seconds",
+            world.seconds()
         );
     }
 }

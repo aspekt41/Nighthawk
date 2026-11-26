@@ -134,7 +134,7 @@ mod tests {
     fn loads_the_real_starting_map() {
         let world = nighthawk_sim::World::new(load_map(&repo_data_dir(), START_MAP).unwrap(), 1);
         assert_eq!(world.area_name(), "Stasis bay");
-        assert_eq!(world.turn(), 0);
+        assert_eq!(world.seconds(), 0);
     }
 
     #[test]

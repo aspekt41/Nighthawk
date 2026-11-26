@@ -172,8 +172,8 @@ impl App {
         match loaded {
             Ok(Some(world)) => {
                 self.log = vec![format!(
-                    "Game loaded: turn {}, seed {}. The ship is as you left it.",
-                    world.turn(),
+                    "Game loaded at {}, seed {}. The ship is as you left it.",
+                    crate::ui::clock(world.seconds()),
                     world.seed()
                 )];
                 self.screen = Screen::Playing(world);
@@ -323,7 +323,7 @@ mod tests {
     fn new_game_starts_on_a_fresh_seed() {
         let (mut app, _dir) = new_app(None);
         app.on_title(TitleAction::Choose);
-        assert_eq!(world(&app).turn(), 0);
+        assert_eq!(world(&app).seconds(), 0);
         assert_eq!(world(&app).seed(), CLOCK_SEED);
     }
 
@@ -372,7 +372,7 @@ mod tests {
         assert_eq!(world(&app), &played, "Continue brings back the same game");
         assert_eq!(
             app.log[0],
-            "Game loaded: turn 1, seed 7. The ship is as you left it."
+            "Game loaded at 0:00:03, seed 7. The ship is as you left it."
         );
     }
 
@@ -449,7 +449,7 @@ mod tests {
             "{message}"
         );
         app.on_title(TitleAction::Pick(MenuItem::NewGame));
-        assert_eq!(world(&app).turn(), 0);
+        assert_eq!(world(&app).seconds(), 0);
     }
 
     #[test]
@@ -496,7 +496,7 @@ mod tests {
 
         app.on_game(Sim(Command::Wait));
 
-        assert_eq!(world(&app).turn(), 1);
+        assert_eq!(world(&app).seconds(), nighthawk_sim::WAIT_SECONDS);
         // "You wait." comes first; an ambient sound may follow it.
         assert_eq!(app.log[log_len], "You wait.");
         assert!(app.log[log_len + 1..].iter().all(|l| is_ambient_line(l)));
@@ -509,7 +509,7 @@ mod tests {
         for _ in 0..3 {
             app.on_game(Sim(Command::Move(Dir::East)));
         }
-        assert_eq!(world(&app).turn(), 3);
+        assert_eq!(world(&app).seconds(), 3 * nighthawk_sim::STEP_SECONDS);
         assert!(app.log[log_len..].iter().all(|l| is_ambient_line(l)));
     }
 
@@ -542,7 +542,7 @@ mod tests {
         app.handle_key(press('n')); // title: New game
         assert!(current_world(&app).is_some());
         app.handle_key(press('.')); // game: wait
-        assert_eq!(world(&app).turn(), 1);
+        assert_eq!(world(&app).seconds(), nighthawk_sim::WAIT_SECONDS);
         app.handle_key(press('Q')); // game: leave without saving
         app.handle_key(press('q')); // title: quit
         assert!(app.quit);
@@ -588,7 +588,7 @@ mod tests {
     #[test]
     fn c_then_a_direction_closes_the_door() {
         let (mut app, _dir) = beside_an_open_door();
-        let turn = world(&app).turn();
+        let before = world(&app).seconds();
 
         app.handle_key(key(KeyCode::Char('c')));
         assert!(last_log(&app).starts_with("Close which way?"));
@@ -598,18 +598,18 @@ mod tests {
             world(&app).map().get(DOOR),
             Some(nighthawk_sim::Tile::DoorClosed)
         );
-        assert_eq!(world(&app).turn(), turn + 1);
+        assert_eq!(world(&app).seconds(), before + nighthawk_sim::DOOR_SECONDS);
         assert!(app.log.iter().any(|l| l == "You close the door."));
     }
 
     #[test]
     fn any_other_key_cancels_closing() {
         let (mut app, _dir) = beside_an_open_door();
-        let turn = world(&app).turn();
+        let before = world(&app).seconds();
         app.handle_key(key(KeyCode::Char('c')));
         app.handle_key(key(KeyCode::Char('x')));
         assert_eq!(last_log(&app), "Never mind.");
-        assert_eq!(world(&app).turn(), turn);
+        assert_eq!(world(&app).seconds(), before);
         assert_eq!(
             world(&app).map().get(DOOR),
             Some(nighthawk_sim::Tile::DoorOpen)
@@ -617,7 +617,7 @@ mod tests {
 
         // And the prompt is over: the next key is an ordinary key again.
         app.handle_key(key(KeyCode::Char('.')));
-        assert_eq!(world(&app).turn(), turn + 1);
+        assert_eq!(world(&app).seconds(), before + nighthawk_sim::WAIT_SECONDS);
     }
 
     #[test]
@@ -639,13 +639,13 @@ mod tests {
     }
 
     #[test]
-    fn a_toggles_the_air_overlay_without_spending_a_turn() {
+    fn a_toggles_the_air_overlay_without_spending_any_time() {
         let (mut app, _dir) = new_app(Some(7));
         assert!(!app.show_air);
         app.handle_key(key(KeyCode::Char('a')));
         assert!(app.show_air);
         app.handle_key(key(KeyCode::Char('a')));
         assert!(!app.show_air);
-        assert_eq!(world(&app).turn(), 0);
+        assert_eq!(world(&app).seconds(), 0);
     }
 }

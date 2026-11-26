@@ -1,4 +1,4 @@
-//! Air: the gases in each tile (decision D28).
+//! Air: the gases in each tile (decisions D28 and D30).
 //!
 //! Every tile that can hold air stores how much of each gas it contains, as a
 //! *partial pressure* in pascals (Pa). Tiles are all the same size, so a
@@ -6,11 +6,13 @@
 //! the tile's total pressure. Normal ship air is 101,325 Pa (one Earth
 //! atmosphere): 21% oxygen, 78.96% nitrogen, 0.04% carbon dioxide.
 //!
-//! The amounts are whole numbers (`u32`), never floating point. Moving air
-//! between tiles only ever moves whole pascals from one tile to another, so
-//! air is never created or destroyed by rounding. A sealed ship keeps exactly
-//! the same total forever, and every machine computes exactly the same
-//! result (D22).
+//! The amounts are whole numbers (`u32`), never floating point. Air only
+//! ever moves in whole pascals from one tile to another, so it's never
+//! created or destroyed by rounding. A sealed ship keeps exactly the same
+//! total forever, and every machine computes exactly the same result (D22).
+//!
+//! How air moves is in [`crate::Map`]: each second, every connected open
+//! space evens out (decision D30).
 
 use serde::{Deserialize, Serialize};
 
@@ -37,24 +39,6 @@ impl Gas {
         }
     }
 }
-
-/// `diff / SPREAD_DIVISOR`, rounded to the nearest whole number, with
-/// halves rounded away from zero (5 → 1, -5 → -1, 4 → 0).
-fn divide_rounding_to_nearest(diff: i64) -> i64 {
-    let half = SPREAD_DIVISOR / 2;
-    if diff >= 0 {
-        (diff + half) / SPREAD_DIVISOR
-    } else {
-        (diff - half) / SPREAD_DIVISOR
-    }
-}
-
-/// How fast air evens out. Each turn, each pair of connected tiles moves
-/// 1/`SPREAD_DIVISOR` of their difference. A tile has at most five
-/// connections (four sides, plus a ladder), and five tenths is one half, so
-/// a tile can never give away more than half its air in one turn. That keeps
-/// the spreading smooth: values approach each other without overshooting.
-pub const SPREAD_DIVISOR: i64 = 10;
 
 /// The air in one tile: a partial pressure in pascals for each gas.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -90,8 +74,18 @@ impl Mix {
     }
 
     /// The three amounts as an array, in [`Gas::ALL`] order.
-    fn amounts(self) -> [u64; 3] {
+    pub(crate) fn amounts(self) -> [u64; 3] {
         Gas::ALL.map(|gas| u64::from(self.get(gas)))
+    }
+
+    /// A mix from three amounts in [`Gas::ALL`] order.
+    ///
+    /// # Panics
+    /// If an amount doesn't fit in a `u32`. A tile never holds more than the
+    /// whole ship's air, which is far below that.
+    pub(crate) fn from_amounts(amounts: [u64; 3]) -> Mix {
+        let [o2, n2, co2] = amounts.map(|a| u32::try_from(a).expect("a tile's air fits in u32"));
+        Mix { o2, n2, co2 }
     }
 
     /// Total pressure in pascals.
@@ -135,37 +129,6 @@ impl Mix {
             shares[i] += 1;
         }
         Some(shares.map(|share| u32::try_from(share).expect("a share is at most 1000")))
-    }
-
-    /// How much of each gas should move from `self` to `other` in one turn
-    /// (negative means it moves the other way): 1/[`SPREAD_DIVISOR`] of
-    /// the difference, rounded to the nearest whole pascal.
-    ///
-    /// Why nearest, not down: flow stops once neighbours differ by less than
-    /// half a divisor (5 Pa), and those small leftovers add up along a long
-    /// corridor into a faint slope. Rounding to nearest keeps that slope half
-    /// as steep as rounding down would. It's still safe: a tile with `a` Pa
-    /// next to empty tiles gives at most `round(a / 10)` to each of at most
-    /// five neighbours, which is never more than `a`, so no gas goes negative.
-    pub(crate) fn flow_to(self, other: Mix) -> [i64; 3] {
-        let (here, there) = (self.amounts(), other.amounts());
-        [0, 1, 2].map(|i| divide_rounding_to_nearest(here[i] as i64 - there[i] as i64))
-    }
-
-    /// This mix with `delta` of each gas added (or removed, when negative).
-    ///
-    /// # Panics
-    /// If a gas would go below zero. The spreading rules guarantee it never
-    /// does, so this would be a bug worth stopping for.
-    pub(crate) fn plus(self, delta: [i64; 3]) -> Mix {
-        let add = |amount: u32, change: i64| {
-            u32::try_from(i64::from(amount) + change).expect("air never goes negative or overflows")
-        };
-        Mix {
-            o2: add(self.o2, delta[0]),
-            n2: add(self.n2, delta[1]),
-            co2: add(self.co2, delta[2]),
-        }
     }
 }
 
@@ -269,75 +232,25 @@ mod tests {
         assert_eq!(read, vec![1, 2, 3]);
         assert_eq!(Gas::ALL.map(Gas::symbol), ["O2", "N2", "CO2"]);
     }
+}
+
+#[cfg(test)]
+mod from_amounts_tests {
+    use super::*;
 
     #[test]
-    fn flow_is_a_tenth_of_the_difference_and_runs_downhill() {
-        let full = Mix {
-            o2: 1000,
-            n2: 500,
-            co2: 9,
-        };
-        let empty = Mix::VACUUM;
-        assert_eq!(full.flow_to(empty), [100, 50, 1], "9 / 10 rounds to 1");
-        assert_eq!(empty.flow_to(full), [-100, -50, -1]);
-        assert_eq!(full.flow_to(full), [0, 0, 0]);
-    }
-
-    #[test]
-    fn flows_round_to_the_nearest_pascal_symmetrically() {
-        let cases = [
-            (0, 0),
-            (4, 0),
-            (5, 1),
-            (14, 1),
-            (15, 2),
-            (-4, 0),
-            (-5, -1),
-            (-15, -2),
-        ];
-        for (diff, expected) in cases {
-            assert_eq!(divide_rounding_to_nearest(diff), expected, "diff {diff}");
-        }
-    }
-
-    #[test]
-    fn no_tile_can_give_away_more_air_than_it_has() {
-        // The worst case: a tile with five links, all to empty tiles. For
-        // every small amount, the total given away must fit in the tile.
-        for amount in 0..=1000u32 {
-            let tile = Mix {
-                o2: amount,
-                n2: 0,
-                co2: 0,
-            };
-            let given = 5 * tile.flow_to(Mix::VACUUM)[0];
-            assert!(
-                given <= i64::from(amount),
-                "{amount} Pa would give away {given}"
-            );
-        }
-    }
-
-    #[test]
-    fn plus_adds_and_removes() {
+    fn from_amounts_is_the_reverse_of_amounts() {
         let mix = Mix {
-            o2: 10,
-            n2: 10,
-            co2: 10,
+            o2: 1,
+            n2: 2,
+            co2: 3,
         };
-        assert_eq!(
-            mix.plus([5, -10, 0]),
-            Mix {
-                o2: 15,
-                n2: 0,
-                co2: 10
-            }
-        );
+        assert_eq!(Mix::from_amounts(mix.amounts()), mix);
     }
 
     #[test]
-    #[should_panic(expected = "never goes negative")]
-    fn plus_refuses_to_go_negative() {
-        Mix::VACUUM.plus([-1, 0, 0]);
+    #[should_panic(expected = "fits in u32")]
+    fn from_amounts_refuses_impossible_amounts() {
+        Mix::from_amounts([u64::MAX, 0, 0]);
     }
 }
