@@ -2,6 +2,7 @@
 
 use serde::Deserialize;
 
+use crate::hash::Fnv64;
 use crate::pos::Pos;
 
 /// What a single tile is made of. This grows into material-backed terrain
@@ -21,6 +22,15 @@ impl Tile {
         match self {
             Tile::Floor => true,
             Tile::Wall => false,
+        }
+    }
+
+    /// A fixed number per tile type, for [`Map::hash_into`]. These numbers
+    /// are part of the determinism contract: never change or reuse one.
+    fn hash_id(self) -> u8 {
+        match self {
+            Tile::Floor => 0,
+            Tile::Wall => 1,
         }
     }
 
@@ -90,6 +100,14 @@ impl Map {
     pub fn set(&mut self, p: Pos, tile: Tile) {
         if let Some(i) = self.index(p) {
             self.tiles[i] = tile;
+        }
+    }
+
+    /// Feeds the map's size and every tile into a state hash.
+    pub(crate) fn hash_into(&self, h: &mut Fnv64) {
+        h.i32(self.width).i32(self.height).i32(self.depth);
+        for tile in &self.tiles {
+            h.u8(tile.hash_id());
         }
     }
 

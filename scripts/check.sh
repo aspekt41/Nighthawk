@@ -10,6 +10,16 @@ cd "$(dirname "$0")/.."
 
 step() { printf '\n==> %s\n' "$1"; }
 
+# Locally a missing optional tool is skipped with a hint. In CI (where the
+# CI environment variable is set) every tool must be present.
+missing() {
+    echo "skipped: $1"
+    if [ -n "${CI:-}" ]; then
+        echo "error: CI must run every check" >&2
+        exit 1
+    fi
+}
+
 step "Format (rustfmt)"
 cargo fmt --all -- --check
 
@@ -26,14 +36,14 @@ step "Coverage (cargo-llvm-cov; at least 90% of lines)"
 if command -v cargo-llvm-cov >/dev/null; then
     cargo llvm-cov --workspace --summary-only --fail-under-lines 90
 else
-    echo "skipped: install with 'cargo install cargo-llvm-cov' and 'rustup component add llvm-tools-preview'"
+    missing "install with 'cargo install cargo-llvm-cov' and 'rustup component add llvm-tools-preview'"
 fi
 
 step "Cyclomatic complexity (lizard; no function over 10)"
 if command -v lizard >/dev/null; then
     lizard --languages rust --CCN 10 --warnings_only crates/ && echo "ok: no function over CCN 10"
 else
-    echo "skipped: install with 'pipx install lizard' (or 'pip install lizard')"
+    missing "install with 'pipx install lizard' (or 'pip install lizard')"
 fi
 
 printf '\nAll checks passed.\n'

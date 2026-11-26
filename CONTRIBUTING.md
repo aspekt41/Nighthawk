@@ -12,7 +12,7 @@ graphics. The background is in [`docs/`](docs/):
 
 | Read this | When |
 |---|---|
-| [Decision log](docs/scoping/03-decisions.md) | **Before any design or architecture work.** Every decision so far (D1–D20) with its reasoning. |
+| [Decision log](docs/scoping/03-decisions.md) | **Before any design or architecture work.** Every decision so far (D1–D22) with its reasoning. |
 | [Scope and roadmap](docs/scoping/02-scope-and-roadmap.md) | To find the next step (milestones M0–M6) and what is out of scope |
 | [Tech stack research](docs/research/03-terminal-tech-stack.md) | Before adding a library or touching terminal handling |
 | [Progression loop](docs/research/02-progression-loop-design.md) | Before designing a game system |
@@ -22,18 +22,21 @@ graphics. The background is in [`docs/`](docs/):
 These hold everywhere. Breaking one is a design change and needs a new
 decision in the log first.
 
-1. **The sim is pure.** `crates/nighthawk-sim` has no terminal, no file I/O,
-   no clock and no unseeded randomness. Front-ends read files and pass the
-   *text* in (D18).
-2. **Time moves only when the player acts.** `World::apply` is the only thing
+1. **The sim is pure.** `crates/nighthawk-sim` has no terminal, no file I/O
+   and no clock. Front-ends read files and pass the *text* in (D18).
+2. **The sim is deterministic.** All randomness goes through `GameRng`, on a
+   `Stream` of its own, seeded from the world seed. Any new state is added
+   to `World::state_hash`. The golden determinism test must pass, or be
+   updated on purpose with the reason in the commit message (D22).
+3. **Time moves only when the player acts.** `World::apply` is the only thing
    that changes the world or advances `turn`. Nothing runs in the background (D7).
-3. **Everything is 3D.** Positions are always `Pos { x, y, z }`, even when
+4. **Everything is 3D.** Positions are always `Pos { x, y, z }`, even when
    there's one deck (D8).
-4. **Content is data.** Maps, and later items and recipes, are JSON in `data/`,
+5. **Content is data.** Maps, and later items and recipes, are JSON in `data/`,
    loaded with strict checking: unknown fields are errors (D17).
-5. **Plain keys work everywhere.** The default keymap needs no special
+6. **Plain keys work everywhere.** The default keymap needs no special
    terminal features, so it works in tmux over SSH (D16).
-6. **No `unsafe`.** It's forbidden by the workspace lints.
+7. **No `unsafe`.** It's forbidden by the workspace lints.
 
 ## The workflow
 
@@ -59,6 +62,7 @@ decision in the log first.
 ## Definition of done
 
 - [ ] `scripts/check.sh` passes, with no steps skipped
+- [ ] CI is green on Linux and macOS
 - [ ] New logic has unit tests, including its failure cases
 - [ ] The game runs and the change works when played
 - [ ] Roadmap, decision log and READMEs match the code

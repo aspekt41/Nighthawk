@@ -43,16 +43,22 @@ rather than accepting a skipped step.
 
 ## Architecture rules (do not break)
 
-1. **The sim is pure.** No terminal, file I/O, clock or unseeded randomness
-   in `nighthawk-sim`. Front-ends read files and pass text in (`parse_map(&str)`).
-2. **`World::apply(Command) -> Vec<Event>` is the only way the world changes**,
+1. **The sim is pure.** No terminal, file I/O or clock in `nighthawk-sim`.
+   Front-ends read files and pass text in (`parse_map(&str)`), and pass the
+   seed in (`World::new(map, seed)`).
+2. **The sim is deterministic (D22).** Randomness only via `GameRng`
+   (`crates/nighthawk-sim/src/rng.rs`): add a new `Stream` variant with a
+   new number for each new system; never renumber or reuse one; never use
+   `rand`'s helpers, `rand::rng()` or the clock. New state goes into
+   `World::state_hash`. New tile types get a new, never-reused `hash_id`.
+3. **`World::apply(Command) -> Vec<Event>` is the only way the world changes**,
    and the only place `turn` advances. Failed actions, like bumping a wall,
    cost no time. Never add real-time ticking (D7).
-3. **Positions are always 3D** (`Pos { x, y, z }`) (D8).
-4. **Content is strict JSON:** `#[serde(deny_unknown_fields)]`, validated on
+4. **Positions are always 3D** (`Pos { x, y, z }`) (D8).
+5. **Content is strict JSON:** `#[serde(deny_unknown_fields)]`, validated on
    load, with errors that name the exact location (D17).
-5. **Default keys are plain keys**, with no kitty keyboard protocol required (D16).
-6. **No `unsafe`** (forbidden in the workspace lints). **Single-player only** (D3).
+6. **Default keys are plain keys**, with no kitty keyboard protocol required (D16).
+7. **No `unsafe`** (forbidden in the workspace lints). **Single-player only** (D3).
 
 ## How to work
 
@@ -74,6 +80,19 @@ rather than accepting a skipped step.
   (recipe below) and look at the screen. Report real results, including
   failures.
 
+## The golden determinism test
+
+`crates/nighthawk-sim/tests/determinism.rs` compares a scripted game's
+`state_hash` with a stored value. If your change *shouldn't* alter gameplay
+and the test fails, you introduced a bug or non-determinism: fix it. If it
+*should* (a new rule, roll or map change), update `EXPECTED_STATE_HASH` and
+`EXPECTED_AMBIENT_COUNT` from the failure message, and explain why in the
+commit message. Never "fix" it by loosening the test.
+
+CI (`.github/workflows/ci.yml`) runs `scripts/check.sh` on Linux and the tests
+on Linux and macOS, including this test in release mode. With `CI` set, the
+check script fails on missing tools instead of skipping them.
+
 ## Running the TUI headlessly (tmux)
 
 The game needs a terminal. Use a private tmux socket so you never touch the
@@ -81,12 +100,15 @@ owner's sessions, and never run `tmux kill-server`:
 
 ```sh
 cargo build -p nighthawk-tui
-tmux -L nhtest new-session -d -s nh -x 100 -y 30 ./target/debug/nighthawk-tui
+tmux -L nhtest new-session -d -s nh -x 100 -y 30 "./target/debug/nighthawk-tui --seed 42"
 sleep 1
 tmux -L nhtest send-keys -t nh l l k .   # keys: right, right, up, wait
 tmux -L nhtest capture-pane -t nh -p     # read the screen
 tmux -L nhtest send-keys -t nh q         # quit; the session ends with the game
 ```
+
+Pass `--seed` so the screen is reproducible: the same seed and keys give a
+byte-identical `capture-pane`, which is an easy end-to-end determinism check.
 
 To check error handling without a terminal, point the game at a bad data
 folder: `NIGHTHAWK_DATA=/some/dir ./target/debug/nighthawk-tui`. It prints a

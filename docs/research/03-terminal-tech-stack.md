@@ -81,7 +81,7 @@ attraction, Go + Bubble Tea + Wish gets there with far less effort. Decide this 
 
 4. **Reality bubble plus lazy catch-up.** Simulate the chunks near the player at full fidelity. Distant chunks are frozen and "caught up" approximately when they're loaded again, or they run at low frequency. This keeps the cost bounded however large the world gets.
 
-5. **Deterministic RNG.** Use seeded PCG (`rand_pcg` **0.10.3**) with separate streams per subsystem (worldgen, combat, loot), so adding a dice roll in one system doesn't change every other outcome.
+5. **Deterministic RNG.** Use seeded PCG (`rand_pcg` **0.10.3**) with separate streams per subsystem (worldgen, combat, loot), so adding a dice roll in one system doesn't change every other outcome. Only the raw generator is used; range and choice helpers are our own, so library upgrades can't change outcomes (D22).
 
 6. **Content is data in JSON (D17), loaded at startup and hot-reloaded in dev builds.** Materials → items → recipes → buildables → map pieces. Recipes ask for **qualities and material classes** (the CDDA pattern), not specific item IDs.
 

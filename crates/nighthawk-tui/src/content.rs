@@ -64,24 +64,25 @@ pub fn find_data_dir(candidates: &[PathBuf]) -> Option<&Path> {
     candidates.iter().map(PathBuf::as_path).find(|p| p.is_dir())
 }
 
-/// Loads `data/maps/<map_id>.json` and starts a new game on it.
-pub fn load_world(data_dir: &Path, map_id: &str) -> Result<World, LoadError> {
+/// Loads `data/maps/<map_id>.json` and starts a new game on it, with all
+/// randomness coming from `seed`.
+pub fn load_world(data_dir: &Path, map_id: &str, seed: u64) -> Result<World, LoadError> {
     let path = data_dir.join("maps").join(format!("{map_id}.json"));
     let text = fs::read_to_string(&path).map_err(|source| LoadError::Read {
         path: path.clone(),
         source,
     })?;
     let loaded = parse_map(&text).map_err(|source| LoadError::Map { path, source })?;
-    Ok(World::new(loaded))
+    Ok(World::new(loaded, seed))
 }
 
 /// Finds the data folder and loads the starting map.
-pub fn load_start_world() -> Result<World, LoadError> {
+pub fn load_start_world(seed: u64) -> Result<World, LoadError> {
     let candidates = data_dir_candidates();
     let dir = find_data_dir(&candidates).ok_or_else(|| LoadError::NoDataDir {
         tried: candidates.clone(),
     })?;
-    load_world(dir, START_MAP)
+    load_world(dir, START_MAP, seed)
 }
 
 #[cfg(test)]
@@ -126,20 +127,20 @@ mod tests {
 
     #[test]
     fn the_start_world_loads_from_the_default_locations() {
-        let world = load_start_world().unwrap();
+        let world = load_start_world(1).unwrap();
         assert_eq!(world.area_name(), "Stasis bay");
     }
 
     #[test]
     fn loads_the_real_starting_map() {
-        let world = load_world(&repo_data_dir(), START_MAP).unwrap();
+        let world = load_world(&repo_data_dir(), START_MAP, 1).unwrap();
         assert_eq!(world.area_name(), "Stasis bay");
         assert_eq!(world.turn(), 0);
     }
 
     #[test]
     fn missing_map_file_is_a_read_error() {
-        let err = load_world(&repo_data_dir(), "no_such_map").unwrap_err();
+        let err = load_world(&repo_data_dir(), "no_such_map", 1).unwrap_err();
         assert!(matches!(err, LoadError::Read { .. }));
         assert!(err.to_string().contains("no_such_map.json"));
     }
@@ -150,7 +151,7 @@ mod tests {
         fs::create_dir(dir.path().join("maps")).unwrap();
         fs::write(dir.path().join("maps/bad.json"), r#"{ "id": "bad" }"#).unwrap();
 
-        let err = load_world(dir.path(), "bad").unwrap_err();
+        let err = load_world(dir.path(), "bad", 1).unwrap_err();
 
         assert!(matches!(err, LoadError::Map { .. }));
         assert!(err.to_string().contains("bad.json"));

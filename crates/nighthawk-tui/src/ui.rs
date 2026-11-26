@@ -96,6 +96,7 @@ fn sidebar(world: &World) -> Paragraph<'static> {
         Line::raw(format!("Deck  {}", p.z)),
         Line::raw(format!("Pos   {}, {}", p.x, p.y)),
         Line::raw(format!("Turn  {}", world.turn())),
+        Line::raw(format!("Seed  {}", world.seed())),
         Line::raw(""),
         Line::styled("move  arrows hjkl", dim),
         Line::styled("      yubn numpad", dim),
@@ -127,7 +128,7 @@ mod tests {
             r##"{{ "id": "t", "name": "T", "legend": {{ "#": "wall", ".": "floor" }},
                  "decks": [ {{ "rows": {rows:?} }} ] }}"##
         );
-        World::new(parse_map(&json).unwrap())
+        World::new(parse_map(&json).unwrap(), 1)
     }
 
     /// Renders the map into an off-screen buffer and returns its rows as text.
@@ -177,6 +178,7 @@ mod tests {
         );
         assert!(screen.contains("Turn  0"));
         assert!(screen.contains("Deck  0"));
+        assert!(screen.contains("Seed  1"));
         assert!(screen.contains("You wake in the stasis bay."));
     }
 

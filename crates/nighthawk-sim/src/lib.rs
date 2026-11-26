@@ -11,13 +11,19 @@
 //! - **D7, time only moves when you act.** The only thing that advances
 //!   `World::turn` is [`World::apply`]. Nothing runs in the background.
 //! - **D8, the world is 3D.** Every [`Pos`] has a `z` (the deck).
+//! - **Determinism (D22).** All randomness comes from [`GameRng`] streams
+//!   seeded from the world's seed, so the same seed and commands always
+//!   produce the same game.
 
+mod hash;
 mod map;
 mod map_file;
 mod pos;
+mod rng;
 mod world;
 
 pub use map::{Map, Tile};
 pub use map_file::{LoadedMap, MapError, parse_map};
 pub use pos::{Dir, Pos};
-pub use world::{Command, Event, World};
+pub use rng::{GameRng, Stream};
+pub use world::{Command, Event, Sound, World};

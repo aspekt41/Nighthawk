@@ -4,7 +4,7 @@ A terminal-native survival and base-building game where the systems run deep. It
 the Dwarf Fortress / Cataclysm: DDA tradition and is built around the explore → find →
 craft → build loop of Subnautica, Abiotic Factor and Minecraft.
 
-**Status:** M0.2. You can walk an `@` around one room, loaded from [`data/maps/stasis_bay.json`](data/maps/stasis_bay.json). See [Running it](#running-it).
+**Status:** M0.3. You can walk an `@` around one room, loaded from [`data/maps/stasis_bay.json`](data/maps/stasis_bay.json), while the ship creaks around you. Every game comes from a seed, so the same seed and moves replay exactly. See [Running it](#running-it).
 
 ## Documents
 
@@ -33,12 +33,13 @@ The same documents are also published as a commentable Claude doc, *Nighthawk: R
 You need [rustup](https://rustup.rs). The Rust version is pinned in `rust-toolchain.toml` and installs itself on first use. Full setup, including Debian packages and tmux settings, is in [TOOLING.md](TOOLING.md).
 
 ```sh
-cargo run -p nighthawk-tui     # play
-cargo test                     # run all tests
+cargo run -p nighthawk-tui                  # play (a new seed each time)
+cargo run -p nighthawk-tui -- --seed 42     # replay a specific ship
+cargo test                                  # run all tests
 ```
 
 Controls: arrows, `hjkl` + `yubn` (vi keys) or the numpad to move; `.` or `5` to wait; `q` to quit.
-Time only passes when you act, so it's safe to leave running in tmux.
+Time only passes when you act, so it's safe to leave running in tmux. The seed is shown in the sidebar and in the first log line.
 
 Recommended `~/.tmux.conf` lines for the primary setup (macOS terminal → SSH → Debian → tmux):
 

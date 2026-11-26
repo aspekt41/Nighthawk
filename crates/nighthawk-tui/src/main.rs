@@ -7,8 +7,11 @@
 
 use std::io;
 use std::process::ExitCode;
+use std::time::{SystemTime, UNIX_EPOCH};
 
-use nighthawk_sim::{Command, Dir, Event, World};
+use args::{Parsed, USAGE};
+
+use nighthawk_sim::{Command, Dir, Event, Sound, World};
 use ratatui::crossterm::event::{
     self, Event as TermEvent, KeyCode, KeyEvent, KeyEventKind, KeyModifiers,
 };
@@ -16,6 +19,7 @@ use ratatui::crossterm::execute;
 use ratatui::crossterm::terminal::{BeginSynchronizedUpdate, EndSynchronizedUpdate};
 use ratatui::{DefaultTerminal, Frame};
 
+mod args;
 mod content;
 mod ui;
 
@@ -23,9 +27,22 @@ mod ui;
 const LOG_LIMIT: usize = 100;
 
 fn main() -> ExitCode {
+    let options = match args::parse_args(std::env::args().skip(1)) {
+        Ok(Parsed::Run(options)) => options,
+        Ok(Parsed::Help) => {
+            println!("{USAGE}");
+            return ExitCode::SUCCESS;
+        }
+        Err(e) => {
+            eprintln!("nighthawk: {e}\n\n{USAGE}");
+            return ExitCode::from(2);
+        }
+    };
+    let seed = options.seed.unwrap_or_else(seed_from_clock);
+
     // Load content before touching the terminal, so a bad map file prints a
     // normal error message instead of garbling the screen.
-    let world = match content::load_start_world() {
+    let world = match content::load_start_world(seed) {
         Ok(world) => world,
         Err(e) => {
             eprintln!("nighthawk: {e}");
@@ -45,6 +62,15 @@ fn main() -> ExitCode {
     }
 }
 
+/// A seed for a new game when the player didn't pick one: the current time
+/// in seconds. Reading the clock is fine here in the front-end. The sim never
+/// does it (D18), it just receives the number.
+fn seed_from_clock() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
+}
+
 /// What a key press means. Keeping this separate from the sim's `Command`
 /// leaves room for UI-only actions (open inventory, look mode) later.
 enum Action {
@@ -60,9 +86,11 @@ pub struct App {
 
 impl App {
     fn new(world: World) -> Self {
+        let seed = world.seed();
         Self {
             world,
             log: vec![
+                format!("Seed {seed}. Run with --seed {seed} to replay this ship."),
                 "You wake in the stasis bay. The air is thin and cold.".into(),
                 "Emergency lighting flickers. Nothing else is moving.".into(),
             ],
@@ -178,7 +206,18 @@ fn describe(event: Event) -> Option<String> {
         Event::Moved { .. } => None,
         Event::Bumped { tile, .. } => Some(format!("You bump into the {}.", tile.name())),
         Event::BlockedByEdge => Some("There is nowhere to go that way.".into()),
-        Event::Waited => Some("You wait. The ventilation ticks.".into()),
+        Event::Waited => Some("You wait.".into()),
+        Event::Ambient(sound) => Some(sound_text(sound).into()),
+    }
+}
+
+/// What each ambient sound sounds like, in the gritty tone of D4.
+fn sound_text(sound: Sound) -> &'static str {
+    match sound {
+        Sound::VentTick => "A ventilation fan ticks somewhere overhead.",
+        Sound::HullCreak => "The hull creaks as it cools.",
+        Sound::DistantClang => "Something metal clangs, far off.",
+        Sound::CoolantDrip => "Coolant drips onto a grating nearby.",
     }
 }
 
@@ -296,8 +335,10 @@ mod tests {
     }
 
     fn test_app() -> App {
-        App::new(content::load_start_world().expect("starting map loads"))
+        App::new(content::load_start_world(TEST_SEED).expect("starting map loads"))
     }
+
+    const TEST_SEED: u64 = 1234;
 
     #[test]
     fn quit_action_stops_the_game() {
@@ -314,20 +355,51 @@ mod tests {
         app.handle(Action::Sim(Command::Wait));
 
         assert_eq!(app.world.turn(), 1);
-        assert_eq!(app.log.len(), log_len + 1);
+        // "You wait." comes first; an ambient sound may follow it.
+        assert_eq!(app.log[log_len], "You wait.");
+        assert!(app.log[log_len + 1..].iter().all(|l| is_ambient_line(l)));
+    }
+
+    #[test]
+    fn plain_steps_only_log_ambient_sounds() {
+        let mut app = test_app();
+        let log_len = app.log.len();
+        for _ in 0..3 {
+            app.handle(Action::Sim(Command::Move(Dir::East)));
+        }
+        assert_eq!(app.world.turn(), 3);
+        assert!(app.log[log_len..].iter().all(|l| is_ambient_line(l)));
+    }
+
+    fn is_ambient_line(line: &str) -> bool {
+        Sound::ALL.iter().any(|&s| sound_text(s) == line)
+    }
+
+    #[test]
+    fn the_log_starts_with_the_seed_so_a_game_can_be_replayed() {
+        let app = test_app();
         assert_eq!(
-            app.log.last().map(String::as_str),
-            Some("You wait. The ventilation ticks.")
+            app.log[0],
+            "Seed 1234. Run with --seed 1234 to replay this ship."
         );
     }
 
     #[test]
-    fn plain_steps_do_not_add_log_lines() {
-        let mut app = test_app();
-        let log_len = app.log.len();
-        app.handle(Action::Sim(Command::Move(Dir::East)));
-        assert_eq!(app.world.turn(), 1);
-        assert_eq!(app.log.len(), log_len);
+    fn every_ambient_sound_has_its_own_line() {
+        let lines: Vec<_> = Sound::ALL
+            .iter()
+            .map(|&s| describe(Event::Ambient(s)).unwrap())
+            .collect();
+        for (i, line) in lines.iter().enumerate() {
+            assert!(!line.is_empty());
+            assert!(!lines[i + 1..].contains(line), "{line:?} is used twice");
+        }
+    }
+
+    #[test]
+    fn the_clock_seed_is_a_plausible_time() {
+        // Any time after 2025 means the clock was read, not defaulted to 0.
+        assert!(seed_from_clock() > 1_735_689_600);
     }
 
     #[test]
@@ -337,6 +409,7 @@ mod tests {
                 .join("../../data")
                 .as_path(),
             content::START_MAP,
+            TEST_SEED,
         )
         .unwrap();
         let mut app = App::new(world);

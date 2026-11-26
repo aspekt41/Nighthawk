@@ -86,6 +86,7 @@ it uses the same Rust as everyone else.
 
 ```sh
 cargo run -p nighthawk-tui        # build and play (debug build)
+cargo run -p nighthawk-tui -- --seed 42   # replay a specific seed (args go after --)
 cargo run -p nighthawk-tui --release   # optimised build, slower to compile
 cargo build --workspace           # build everything without running
 cargo check --workspace           # type-check only: the fastest way to see errors
@@ -237,7 +238,28 @@ keymap in `nighthawk-tui/src/main.rs` does.
 
 ---
 
-## 10. All checks at once
+## 10. Determinism and the golden test
+
+The same seed and the same moves must always give the same game (decision
+D22). `crates/nighthawk-sim/tests/determinism.rs` plays a fixed 500-command
+script and compares the world's fingerprint (`World::state_hash`) against a
+stored value.
+
+```sh
+cargo test -p nighthawk-sim --test determinism            # run just this test
+cargo test --release -p nighthawk-sim --test determinism  # and in an optimised build
+```
+
+If it fails, the message shows the new hash and ambient-sound count.
+**Didn't mean to change gameplay?** Find what changed; don't update the
+value. **Did mean to** (a new rule, a new random roll, a map edit)? Paste the
+new values into `EXPECTED_STATE_HASH` / `EXPECTED_AMBIENT_COUNT` and say why
+in the commit message.
+
+To reproduce a game by hand, run with the seed from its sidebar:
+`cargo run -p nighthawk-tui -- --seed <n>`.
+
+## 11. All checks at once
 
 ```sh
 scripts/check.sh
@@ -250,14 +272,27 @@ everything else still runs.
 
 ---
 
-## 11. Testing the game in tmux without touching your session
+## 12. Continuous integration (GitHub Actions)
+
+[`.github/workflows/ci.yml`](.github/workflows/ci.yml) runs on every push and
+pull request:
+
+| Job | Runs on | Does |
+|---|---|---|
+| All checks | Linux | `scripts/check.sh`, the same gate you run locally, with every tool installed |
+| Tests and determinism | Linux and macOS | `cargo test --workspace`, then the golden test in release mode. Matching on both proves the game is identical across machines. |
+
+When `CI` is set, `scripts/check.sh` fails instead of skipping a missing tool.
+Results show on the repository's **Actions** tab and next to each commit.
+
+## 13. Testing the game in tmux without touching your session
 
 Handy for checking a change in a real terminal, or for scripted checks. A
 private tmux socket (`-L nhtest`) keeps it separate from your own sessions:
 
 ```sh
 cargo build -p nighthawk-tui
-tmux -L nhtest new-session -d -s nh -x 100 -y 30 ./target/debug/nighthawk-tui
+tmux -L nhtest new-session -d -s nh -x 100 -y 30 "./target/debug/nighthawk-tui --seed 42"
 tmux -L nhtest send-keys -t nh l l k .      # press keys: right, right, up, wait
 tmux -L nhtest capture-pane -t nh -p        # print what's on screen
 tmux -L nhtest send-keys -t nh q            # quit
@@ -265,7 +300,7 @@ tmux -L nhtest send-keys -t nh q            # quit
 
 ---
 
-## 12. Dependencies
+## 14. Dependencies
 
 ```sh
 cargo add serde@1.0.229 --features derive -p nighthawk-sim   # add, pinned to an exact version
@@ -283,7 +318,7 @@ adding crossterm separately, so the two versions can never disagree.
 
 ---
 
-## 13. Troubleshooting
+## 15. Troubleshooting
 
 | Symptom | Fix |
 |---|---|
@@ -294,3 +329,4 @@ adding crossterm separately, so the two versions can never disagree.
 | `could not find the data folder` | Run from the repo root, or set `NIGHTHAWK_DATA` |
 | A test string full of `#` won't compile | See the raw-string note in [AGENTS.md](AGENTS.md#gotchas) |
 | `cargo llvm-cov` says llvm-tools are missing | `rustup component add llvm-tools-preview` |
+| The determinism test fails | See section 10: fix the accident, or update the stored value on purpose |

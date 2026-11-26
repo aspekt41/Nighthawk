@@ -1,0 +1,59 @@
+# Continuous integration: runs on every push and pull request.
+#
+# - "checks" runs scripts/check.sh, the same gate everyone runs locally.
+# - "determinism" runs the tests on Linux and macOS. The golden test in
+#   crates/nighthawk-sim/tests/determinism.rs must give the same world
+#   fingerprint on both, which proves the game is identical across machines.
+#
+# The Rust version comes from rust-toolchain.toml, so CI and local builds match.
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  checks:
+    name: All checks (Linux)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install the pinned Rust toolchain
+        run: rustup toolchain install
+
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-llvm-cov
+
+      - name: Install lizard
+        run: pipx install lizard==1.26.1
+
+      - name: Run scripts/check.sh
+        run: scripts/check.sh
+
+  determinism:
+    name: Tests and determinism (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install the pinned Rust toolchain
+        run: rustup toolchain install
+
+      - name: Run all tests
+        run: cargo test --workspace
+
+      - name: Run the determinism test in release mode too
+        run: cargo test --release -p nighthawk-sim --test determinism
