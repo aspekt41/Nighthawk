@@ -58,6 +58,28 @@ pub enum Event {
     Waited,
     /// A background noise from the ship, heard while time passes.
     Ambient(Sound),
+    /// The space the player is in lost air to vacuum during this action.
+    AirEscaping,
+    /// The player's breath fell to, or recovered past, a level worth a
+    /// warning.
+    Breath(BreathLevel),
+    /// The player's breath ran out: they've blacked out, and the world
+    /// takes no more commands.
+    BlackedOut,
+}
+
+/// Breath levels the player is warned about as their breath runs down,
+/// plus recovering from being short of breath.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BreathLevel {
+    /// Fell to 75%.
+    Short,
+    /// Fell to 50%.
+    Struggling,
+    /// Fell to 25%.
+    Fading,
+    /// Climbed back above 75%.
+    Recovered,
 }
 
 /// Noises the dead ship makes. Pure atmosphere for now. Later, sounds will
@@ -98,6 +120,28 @@ pub const WAIT_SECONDS: u64 = 5;
 /// one sound every 25 seconds.
 const AMBIENT_ONE_IN: u32 = 25;
 
+// The breath meter (decision D33): how much oxygen the player's body has
+// left, from 0 (blacked out) to 1000 (full), shown as 0 to 100%.
+
+/// A full breath meter.
+pub const BREATH_FULL: u32 = 1000;
+/// Oxygen partial pressure (Pa) below which breath runs down. Normal air
+/// has about 21,300 Pa; 14,000 Pa is like being 3 km up a mountain, where
+/// people get breathless but don't pass out.
+pub const SAFE_O2_PA: u32 = 14_000;
+/// How fast breath runs down: each second it falls by the oxygen shortfall
+/// (Pa) divided by this. In vacuum that's 28 a second, so a full meter
+/// lasts about 36 seconds; in thin air it lasts minutes.
+const BREATH_LOSS_DIVISOR: u32 = 500;
+/// How much breath comes back each second in good air: full in 20 seconds.
+const BREATH_RECOVERY: u32 = 50;
+/// The warning levels as the meter falls, highest first.
+const BREATH_WARNINGS: [(u32, BreathLevel); 3] = [
+    (750, BreathLevel::Short),
+    (500, BreathLevel::Struggling),
+    (250, BreathLevel::Fading),
+];
+
 /// Everything about the game at one moment.
 ///
 /// This struct *is* the save game: everything in it is written to the save
@@ -116,6 +160,8 @@ pub struct World {
     /// The seed this game started from. Same seed + same commands = same game.
     seed: u64,
     ambient_rng: GameRng,
+    /// The player's breath meter, 0 to [`BREATH_FULL`].
+    breath: u32,
 }
 
 impl World {
@@ -129,6 +175,7 @@ impl World {
             seconds: 0,
             seed,
             ambient_rng: GameRng::new(seed, Stream::Ambient),
+            breath: BREATH_FULL,
         }
     }
 
@@ -174,6 +221,10 @@ impl World {
     /// moves forward (decision D7). An action that fails, like bumping a
     /// wall, costs no time.
     pub fn apply(&mut self, command: Command) -> Vec<Event> {
+        // A blacked-out player can't do anything.
+        if !self.is_conscious() {
+            return Vec::new();
+        }
         match command {
             Command::Move(dir) => self.walk(dir),
             Command::Climb(way) => self.climb(way),
@@ -252,16 +303,57 @@ impl World {
     /// each second. Every system that runs "while time passes" (air, heat,
     /// power, creatures) will hook in here, so it only ever runs because the
     /// player did something.
+    ///
+    /// If the player blacks out, time stops there: the rest of the action
+    /// never happens.
     fn pass_time(&mut self, seconds: u64, events: &mut Vec<Event>) {
+        let mut heard_escaping = false;
         for _ in 0..seconds {
             self.seconds += 1;
-            self.map.spread_air();
+            let venting = self.map.spread_air();
+            if !heard_escaping
+                && self
+                    .map
+                    .index_of(self.player)
+                    .is_some_and(|i| venting.contains(&i))
+            {
+                heard_escaping = true;
+                events.push(Event::AirEscaping);
+            }
+            self.breathe(events);
+            if !self.is_conscious() {
+                return;
+            }
             if self.ambient_rng.one_in(AMBIENT_ONE_IN)
                 && let Some(&sound) = self.ambient_rng.pick(&Sound::ALL)
             {
                 events.push(Event::Ambient(sound));
             }
         }
+    }
+
+    /// One second of breathing the air on the player's tile.
+    fn breathe(&mut self, events: &mut Vec<Event>) {
+        let o2 = self.map.air(self.player).map_or(0, |mix| mix.o2);
+        let before = self.breath;
+        self.breath = if o2 >= SAFE_O2_PA {
+            (self.breath + BREATH_RECOVERY).min(BREATH_FULL)
+        } else {
+            self.breath
+                .saturating_sub(((SAFE_O2_PA - o2) / BREATH_LOSS_DIVISOR).max(1))
+        };
+        events.extend(breath_events(before, self.breath));
+    }
+
+    /// The player's breath meter, 0 (blacked out) to [`BREATH_FULL`].
+    pub fn breath(&self) -> u32 {
+        self.breath
+    }
+
+    /// Whether the player is still awake. Once breath runs out they black
+    /// out, and [`World::apply`] does nothing more.
+    pub fn is_conscious(&self) -> bool {
+        self.breath > 0
     }
 
     /// Checks rules that a world built by [`World::new`] always follows, for
@@ -272,6 +364,12 @@ impl World {
         let (names, depth) = (self.deck_names.len(), self.map.depth());
         if i64::try_from(names).ok() != Some(i64::from(depth)) {
             return Err(format!("{names} deck names for {depth} decks"));
+        }
+        if self.breath > BREATH_FULL {
+            return Err(format!(
+                "breath {} is over the full {BREATH_FULL}",
+                self.breath
+            ));
         }
         match self.map.get(self.player) {
             None => Err(format!("player at {:?} is outside the map", self.player)),
@@ -302,9 +400,29 @@ impl World {
         h.i32(self.player.x).i32(self.player.y).i32(self.player.z);
         h.u64(self.seconds)
             .u64(self.seed)
-            .u64(self.ambient_rng.fingerprint());
+            .u64(self.ambient_rng.fingerprint())
+            .u64(u64::from(self.breath));
         h.finish()
     }
+}
+
+/// The events for a breath meter going from `before` to `after` in one
+/// second: a warning for each level it fell to, "recovered" if it climbed
+/// back past the first level, and blacking out at zero.
+fn breath_events(before: u32, after: u32) -> Vec<Event> {
+    let mut events: Vec<Event> = BREATH_WARNINGS
+        .iter()
+        .filter(|&&(level, _)| before > level && after <= level)
+        .map(|&(_, warning)| Event::Breath(warning))
+        .collect();
+    let (first_level, _) = BREATH_WARNINGS[0];
+    if before <= first_level && after > first_level {
+        events.push(Event::Breath(BreathLevel::Recovered));
+    }
+    if before > 0 && after == 0 {
+        events.push(Event::BlackedOut);
+    }
+    events
 }
 
 #[cfg(test)]
@@ -825,5 +943,175 @@ mod tests {
             here.abs_diff(there) <= 3,
             "one even space: {here} vs {there}"
         );
+    }
+
+    // --- Breath --------------------------------------------------------------
+
+    /// The test room, with its air replaced by `mix` everywhere.
+    fn world_in(mix: crate::air::Mix) -> World {
+        let mut world = test_world();
+        let all: Vec<Pos> = world.map.positions().collect();
+        for p in all {
+            if world.map.get(p).is_some_and(Tile::holds_air) {
+                world.map.set_air(p, mix);
+            }
+        }
+        world
+    }
+
+    fn breath_events_of(events: &[Event]) -> Vec<Event> {
+        events
+            .iter()
+            .copied()
+            .filter(|e| matches!(e, Event::Breath(_) | Event::BlackedOut))
+            .collect()
+    }
+
+    #[test]
+    fn breath_starts_full_and_stays_full_in_normal_air() {
+        let mut world = test_world();
+        assert_eq!(world.breath(), BREATH_FULL);
+        for _ in 0..20 {
+            world.apply(Command::Wait);
+        }
+        assert_eq!(world.breath(), BREATH_FULL);
+        assert!(world.is_conscious());
+    }
+
+    #[test]
+    fn in_vacuum_you_black_out_in_about_36_seconds_with_warnings_on_the_way() {
+        let mut world = world_in(crate::air::Mix::VACUUM);
+        let mut events = Vec::new();
+        while world.is_conscious() {
+            events.extend(world.apply(Command::Wait));
+        }
+        assert!(
+            (35..=40).contains(&world.seconds()),
+            "blacked out after {} s",
+            world.seconds()
+        );
+        assert_eq!(
+            breath_events_of(&events),
+            vec![
+                Event::Breath(BreathLevel::Short),
+                Event::Breath(BreathLevel::Struggling),
+                Event::Breath(BreathLevel::Fading),
+                Event::BlackedOut,
+            ]
+        );
+    }
+
+    #[test]
+    fn blacking_out_stops_time_and_ignores_commands() {
+        let mut world = world_in(crate::air::Mix::VACUUM);
+        while world.is_conscious() {
+            world.apply(Command::Wait);
+        }
+        let frozen = world.clone();
+        assert_eq!(world.apply(Command::Wait), vec![]);
+        assert_eq!(world.apply(Command::Move(Dir::East)), vec![]);
+        assert_eq!(world, frozen);
+        // Time stopped at the second breath ran out, not at the end of the
+        // last action: a 5-second wait can end early.
+        assert_eq!(world.breath(), 0);
+    }
+
+    #[test]
+    fn thin_air_drains_breath_more_slowly_than_vacuum() {
+        let thin = crate::air::Mix::STANDARD.scaled(50); // about 10.6 kPa of O2
+        let mut thin_world = world_in(thin);
+        let mut vacuum_world = world_in(crate::air::Mix::VACUUM);
+        for _ in 0..2 {
+            thin_world.apply(Command::Wait);
+            vacuum_world.apply(Command::Wait);
+        }
+        assert!(thin_world.breath() > vacuum_world.breath());
+        assert!(thin_world.breath() < BREATH_FULL);
+    }
+
+    #[test]
+    fn breath_comes_back_in_good_air() {
+        let mut world = world_in(crate::air::Mix::VACUUM);
+        world.apply(Command::Wait);
+        world.apply(Command::Wait); // 10 s of vacuum
+        let low = world.breath();
+        assert!(low < 750);
+        let all: Vec<Pos> = world.map.positions().collect();
+        for p in all {
+            if world.map.get(p).is_some_and(Tile::holds_air) {
+                world.map.set_air(p, crate::air::Mix::STANDARD);
+            }
+        }
+        world.apply(Command::Wait);
+        assert_eq!(world.breath(), low + 5 * BREATH_RECOVERY);
+        world.apply(Command::Wait);
+        world.apply(Command::Wait);
+        assert_eq!(world.breath(), BREATH_FULL);
+    }
+
+    #[test]
+    fn breath_events_mark_each_level_once() {
+        assert_eq!(breath_events(1000, 760), vec![]);
+        assert_eq!(
+            breath_events(760, 750),
+            vec![Event::Breath(BreathLevel::Short)]
+        );
+        assert_eq!(
+            breath_events(800, 400),
+            vec![
+                Event::Breath(BreathLevel::Short),
+                Event::Breath(BreathLevel::Struggling)
+            ]
+        );
+        assert_eq!(breath_events(10, 0), vec![Event::BlackedOut]);
+        assert_eq!(
+            breath_events(740, 790),
+            vec![Event::Breath(BreathLevel::Recovered)]
+        );
+        assert_eq!(
+            breath_events(800, 1000),
+            vec![],
+            "already above: nothing to say"
+        );
+    }
+
+    #[test]
+    fn standing_in_a_venting_space_says_air_is_escaping_once_per_action() {
+        // The test room with a breach in its north wall above the player.
+        let mut world = test_world();
+        world.map.set(Pos::new(2, 0, 0), Tile::HullBreach);
+        let events = world.apply(Command::Wait);
+        let escaping = events.iter().filter(|e| **e == Event::AirEscaping).count();
+        assert_eq!(escaping, 1, "{events:?}");
+        assert_eq!(
+            test_world()
+                .apply(Command::Wait)
+                .iter()
+                .filter(|e| **e == Event::AirEscaping)
+                .count(),
+            0
+        );
+    }
+
+    #[test]
+    fn a_world_with_too_much_breath_is_inconsistent() {
+        let mut world = test_world();
+        world.breath = BREATH_FULL + 1;
+        assert!(
+            world
+                .check_consistent()
+                .unwrap_err()
+                .contains("over the full")
+        );
+    }
+
+    #[test]
+    fn breath_is_part_of_the_state_hash() {
+        let a = test_world();
+        let b = World {
+            breath: 999,
+            ..test_world()
+        };
+        assert_ne!(a.state_hash(), b.state_hash());
     }
 }

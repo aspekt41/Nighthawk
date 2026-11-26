@@ -27,7 +27,7 @@ mod rng;
 mod save;
 mod world;
 
-pub use air::{Gas, Mix};
+pub use air::{Gas, Mix, TILE_VOLUME_CM3, VENT_SPEED_CM_PER_S, vent_ppm, vented_amount};
 pub use calendar::{DateTime, SHIP_START};
 pub use map::{Map, StairsError, Tile};
 pub use map_file::{LoadedMap, MapError, parse_map};
@@ -35,6 +35,6 @@ pub use pos::{Dir, Pos, Vertical};
 pub use rng::{GameRng, Stream};
 pub use save::{SAVE_FORMAT, SAVE_VERSION, SaveError, load_from_str, save_to_string};
 pub use world::{
-    CLIMB_SECONDS, Command, DIAGONAL_STEP_SECONDS, DOOR_SECONDS, Event, STEP_SECONDS, Sound,
-    WAIT_SECONDS, World,
+    BREATH_FULL, BreathLevel, CLIMB_SECONDS, Command, DIAGONAL_STEP_SECONDS, DOOR_SECONDS, Event,
+    SAFE_O2_PA, STEP_SECONDS, Sound, WAIT_SECONDS, World,
 };

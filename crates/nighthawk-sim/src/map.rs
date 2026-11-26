@@ -2,9 +2,9 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::air::Mix;
+use crate::air::{Mix, vent_ppm, vented_amount};
 use crate::hash::Fnv64;
-use crate::pos::{Pos, Vertical};
+use crate::pos::{Dir, Pos, Vertical};
 
 /// What a single tile is made of. This grows into material-backed terrain
 /// later (decision D10). For now it's just enough to walk around a room.
@@ -26,22 +26,35 @@ pub enum Tile {
     DoorClosed,
     /// An open door: walkable, and air passes through.
     DoorOpen,
+    /// A small crack in the hull (about 2 × 2 cm): solid, but the space
+    /// beside it slowly leaks to vacuum.
+    HullCrack,
+    /// A hole torn in the hull (about 20 × 20 cm): solid, but the space
+    /// beside it vents to vacuum in seconds.
+    HullBreach,
 }
 
 impl Tile {
     pub fn is_walkable(self) -> bool {
         match self {
             Tile::Floor | Tile::StairsUp | Tile::StairsDown | Tile::DoorOpen => true,
-            Tile::Wall | Tile::DoorClosed => false,
+            Tile::Wall | Tile::DoorClosed | Tile::HullCrack | Tile::HullBreach => false,
         }
     }
 
     /// Whether air can be in this tile and move through it. Walls and
     /// closed doors are solid: air on either side can't get past them.
     pub fn holds_air(self) -> bool {
+        self.is_walkable()
+    }
+
+    /// The area of the hole to space in this tile, in cm². Zero for
+    /// everything except damaged hull.
+    pub fn hole_cm2(self) -> u64 {
         match self {
-            Tile::Floor | Tile::StairsUp | Tile::StairsDown | Tile::DoorOpen => true,
-            Tile::Wall | Tile::DoorClosed => false,
+            Tile::HullCrack => 4,
+            Tile::HullBreach => 400,
+            _ => 0,
         }
     }
 
@@ -61,6 +74,8 @@ impl Tile {
             Tile::StairsDown => 3,
             Tile::DoorClosed => 4,
             Tile::DoorOpen => 5,
+            Tile::HullCrack => 6,
+            Tile::HullBreach => 7,
         }
     }
 
@@ -73,6 +88,8 @@ impl Tile {
             Tile::StairsDown => "ladder down",
             Tile::DoorClosed => "closed door",
             Tile::DoorOpen => "open door",
+            Tile::HullCrack => "cracked hull",
+            Tile::HullBreach => "hull breach",
         }
     }
 }
@@ -138,6 +155,10 @@ pub struct Map {
     /// hold air are vacuum, except a closed door, which keeps whatever air
     /// was in the doorway when it shut until it opens again.
     air: Vec<Mix>,
+    /// How much of each gas has escaped to space through hull damage, in
+    /// pascal-tiles, in [`crate::Gas::ALL`] order. Air on the ship plus air
+    /// vented always equals the air the ship started with.
+    vented: [u64; 3],
 }
 
 impl Map {
@@ -154,6 +175,7 @@ impl Map {
             depth,
             tiles: vec![fill; len],
             air: vec![Mix::VACUUM; len],
+            vented: [0; 3],
         }
     }
 
@@ -193,29 +215,74 @@ impl Map {
         })
     }
 
-    /// One second of air movement (decision D30).
+    /// How much of each gas has escaped to space so far, in [`crate::Gas::ALL`]
+    /// order. Together with [`Map::total_air`] it always adds up to the air
+    /// the ship started with.
+    pub fn vented(&self) -> [u64; 3] {
+        self.vented
+    }
+
+    /// One second of air movement (decisions D30 and D33).
     ///
     /// Tiles are 1 m and a step of the simulation is 1 s. Air pressure evens
     /// out at about the speed of sound, 340 m/s, so within one second every
     /// connected open space (tiles joined through open floor, open doors and
-    /// ladders) reaches a single, even pressure and mix. What slows real
-    /// air down is the size of an opening, such as a small hull breach;
-    /// that arrives with breaches.
-    pub(crate) fn spread_air(&mut self) {
+    /// ladders) reaches a single, even pressure and mix. A space beside hull
+    /// damage also loses a share of its air to vacuum, sized by the holes'
+    /// area against the space's volume (see [`vent_ppm`]).
+    ///
+    /// Returns the tiles of every space that lost air this second, so the
+    /// game can tell the player when the air around them is escaping.
+    pub(crate) fn spread_air(&mut self) -> Vec<usize> {
+        let mut venting = Vec::new();
         for space in self.connected_spaces() {
-            self.even_out(&space);
+            let hole = self.hole_area_around(&space);
+            self.settle(&space, hole);
+            if hole > 0 {
+                venting.extend_from_slice(&space);
+            }
         }
+        venting
+    }
+
+    /// The total hole area (cm²) of the hull damage touching `space`: every
+    /// cracked or breached tile beside one of its tiles, each counted once.
+    fn hole_area_around(&self, space: &[usize]) -> u64 {
+        let mut holes: Vec<usize> = space.iter().flat_map(|&i| self.damage_beside(i)).collect();
+        holes.sort_unstable();
+        holes.dedup();
+        holes.iter().map(|&h| self.tiles[h].hole_cm2()).sum()
+    }
+
+    /// The hull-damage tiles on the four sides of tile `i` (same deck).
+    fn damage_beside(&self, i: usize) -> Vec<usize> {
+        let p = self.pos_of(i);
+        let sides = [Dir::North, Dir::East, Dir::South, Dir::West].map(|d| p.step(d));
+        sides
+            .into_iter()
+            .filter_map(|q| self.index(q))
+            .filter(|&q| self.tiles[q].hole_cm2() > 0)
+            .collect()
+    }
+
+    /// The position of index `i` in the flat tile and air vectors: the
+    /// reverse of `index`.
+    fn pos_of(&self, i: usize) -> Pos {
+        let i = i32::try_from(i).expect("map index fits in i32");
+        let per_deck = self.width * self.height;
+        Pos::new(i % self.width, i % per_deck / self.width, i / per_deck)
     }
 
     /// Shares the air in `space` (indexes into `air`, in ascending order)
-    /// evenly between its tiles.
+    /// evenly between its tiles, after letting out what escapes through
+    /// `hole_cm2` of hull damage this second.
     ///
     /// Each gas's total is split into equal whole pascals; the few left
     /// over go one each to the first tiles in the list. So nothing is lost
     /// to rounding, tiles differ by at most 1 Pa per gas, and the same
     /// space always splits the same way.
-    fn even_out(&mut self, space: &[usize]) {
-        let totals = space.iter().fold([0u64; 3], |sum, &i| {
+    fn settle(&mut self, space: &[usize], hole_cm2: u64) {
+        let mut totals = space.iter().fold([0u64; 3], |sum, &i| {
             let amounts = self.air[i].amounts();
             [
                 sum[0] + amounts[0],
@@ -224,6 +291,12 @@ impl Map {
             ]
         });
         let count = space.len() as u64;
+        let ppm = vent_ppm(hole_cm2, count);
+        for (gas, total) in totals.iter_mut().enumerate() {
+            let lost = vented_amount(*total, ppm);
+            *total -= lost;
+            self.vented[gas] += lost;
+        }
         for (k, &i) in space.iter().enumerate() {
             let share = totals.map(|total| total / count + u64::from((k as u64) < total % count));
             self.air[i] = Mix::from_amounts(share);
@@ -369,11 +442,20 @@ impl Map {
         for tile in &self.tiles {
             h.u8(tile.hash_id());
         }
+        for lost in self.vented {
+            h.u64(lost);
+        }
         for mix in &self.air {
             h.u64(u64::from(mix.o2))
                 .u64(u64::from(mix.n2))
                 .u64(u64::from(mix.co2));
         }
+    }
+
+    /// Where `p` lives in the flat tile and air vectors, for matching it
+    /// against the tiles [`Map::spread_air`] reports.
+    pub(crate) fn index_of(&self, p: Pos) -> Option<usize> {
+        self.index(p)
     }
 
     /// Where `p` lives in the flat `tiles` vector.
@@ -819,6 +901,142 @@ mod tests {
             m.hash_into(&mut h);
             h.finish()
         };
+        assert_ne!(hash(&a), hash(&b));
+    }
+
+    // --- Hull damage and venting -------------------------------------------------
+
+    /// A 3-tile room `#...#` in a wall, full of normal air, with `damage`
+    /// in the west wall: `D...#`.
+    fn holed_room(damage: Tile) -> Map {
+        let mut map = Map::filled(5, 3, 1, Tile::Wall);
+        for x in 1..4 {
+            map.set(Pos::new(x, 1, 0), Tile::Floor);
+        }
+        map.fill_deck_air(0, Mix::STANDARD);
+        map.set(Pos::new(0, 1, 0), damage);
+        map
+    }
+
+    fn room_pressure(map: &Map) -> u64 {
+        map.air(Pos::new(2, 1, 0)).unwrap().total()
+    }
+
+    #[test]
+    fn hull_damage_is_solid_airless_and_has_a_hole() {
+        for tile in [Tile::HullCrack, Tile::HullBreach] {
+            assert!(
+                !tile.is_walkable() && !tile.holds_air() && !tile.is_passable(),
+                "{tile:?}"
+            );
+        }
+        assert_eq!(Tile::HullCrack.hole_cm2(), 4);
+        assert_eq!(Tile::HullBreach.hole_cm2(), 400);
+        assert_eq!(Tile::Wall.hole_cm2(), 0);
+        assert_eq!(Tile::HullCrack.name(), "cracked hull");
+        assert_eq!(Tile::HullBreach.name(), "hull breach");
+        assert_eq!(
+            [Tile::HullCrack, Tile::HullBreach].map(Tile::hash_id),
+            [6, 7]
+        );
+    }
+
+    #[test]
+    fn a_breach_vents_a_small_room_to_vacuum_in_seconds() {
+        let mut map = holed_room(Tile::HullBreach);
+        for _ in 0..10 {
+            map.spread_air();
+        }
+        assert!(
+            room_pressure(&map) < Mix::STANDARD.total() / 100,
+            "{}",
+            room_pressure(&map)
+        );
+    }
+
+    #[test]
+    fn a_crack_leaks_slowly() {
+        let mut map = holed_room(Tile::HullCrack);
+        for _ in 0..10 {
+            map.spread_air();
+        }
+        assert!(room_pressure(&map) > Mix::STANDARD.total() * 9 / 10);
+        assert!(room_pressure(&map) < Mix::STANDARD.total());
+    }
+
+    #[test]
+    fn air_on_board_plus_air_vented_never_changes() {
+        let mut map = holed_room(Tile::HullBreach);
+        let start = map.total_air();
+        for _ in 0..100 {
+            map.spread_air();
+            let (on_board, vented) = (map.total_air(), map.vented());
+            let accounted = [0, 1, 2].map(|g| on_board[g] + vented[g]);
+            assert_eq!(accounted, start);
+        }
+        assert_eq!(map.total_air(), [0, 0, 0], "fully vented in the end");
+    }
+
+    #[test]
+    fn spread_air_reports_the_spaces_that_lost_air() {
+        let mut breached = holed_room(Tile::HullBreach);
+        let room: Vec<usize> = (1..4)
+            .map(|x| breached.index_of(Pos::new(x, 1, 0)).unwrap())
+            .collect();
+        assert_eq!(breached.spread_air(), room);
+        assert!(
+            holed_room(Tile::Wall).spread_air().is_empty(),
+            "sealed rooms report nothing"
+        );
+    }
+
+    #[test]
+    fn a_closed_door_protects_the_room_behind_it() {
+        // `X.+.#`: breach, room, closed door, room.
+        let mut map = holed_room(Tile::HullBreach);
+        map.set(Pos::new(2, 1, 0), Tile::DoorClosed);
+        let behind = Pos::new(3, 1, 0);
+        for _ in 0..60 {
+            map.spread_air();
+        }
+        assert_eq!(map.air(behind), Some(Mix::STANDARD), "sealed off");
+        map.set(Pos::new(2, 1, 0), Tile::DoorOpen);
+        for _ in 0..60 {
+            map.spread_air();
+        }
+        assert!(
+            map.air(behind).unwrap().total() < Mix::STANDARD.total() / 100,
+            "vented once open"
+        );
+    }
+
+    #[test]
+    fn a_hole_touching_a_space_twice_counts_once() {
+        // A breach in a corner, beside two tiles of the same L-shaped room.
+        let mut map = Map::filled(3, 3, 1, Tile::Floor);
+        map.set(Pos::new(1, 1, 0), Tile::HullBreach);
+        let space: Vec<usize> = map.positions().filter_map(|p| map.air_index(p)).collect();
+        assert_eq!(map.hole_area_around(&space), 400);
+    }
+
+    #[test]
+    fn positions_and_indexes_convert_both_ways() {
+        let map = Map::filled(3, 2, 2, Tile::Floor);
+        for p in map.positions() {
+            assert_eq!(map.pos_of(map.index_of(p).unwrap()), p);
+        }
+    }
+
+    #[test]
+    fn vented_air_is_part_of_the_state_hash() {
+        let hash = |m: &Map| {
+            let mut h = Fnv64::new();
+            m.hash_into(&mut h);
+            h.finish()
+        };
+        let a = holed_room(Tile::HullBreach);
+        let mut b = a.clone();
+        b.vented = [1, 0, 0];
         assert_ne!(hash(&a), hash(&b));
     }
 }

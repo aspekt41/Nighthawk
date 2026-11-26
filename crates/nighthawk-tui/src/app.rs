@@ -209,6 +209,24 @@ impl App {
         for line in lines {
             self.push_log(line);
         }
+        self.end_game_if_blacked_out();
+    }
+
+    /// Until there's a base to wake up in (decision D5), blacking out ends
+    /// the game: back to the title menu, *without* saving, so Continue picks
+    /// up from the last save.
+    fn end_game_if_blacked_out(&mut self) {
+        let Screen::Playing(world) = &self.screen else {
+            return;
+        };
+        if world.is_conscious() {
+            return;
+        }
+        let message = format!(
+            "You blacked out from lack of air at {}. The game was not saved; Continue loads your last save.",
+            world.now()
+        );
+        self.show_title(Some(message));
     }
 
     /// Saves the current game and logs the result. Returns `false` only if a
@@ -647,5 +665,40 @@ mod tests {
         app.handle_key(key(KeyCode::Char('a')));
         assert!(!app.show_air);
         assert_eq!(world(&app).seconds(), 0);
+    }
+
+    // --- Blacking out ---------------------------------------------------------
+
+    #[test]
+    fn blacking_out_returns_to_the_title_without_saving() {
+        // Walk to the breached bunk room on the crew deck, open its door,
+        // and stand there until the air (and the player) give out.
+        let (mut app, dir) = new_app(Some(7));
+        let route = std::iter::repeat_n('k', 5)
+            .chain(std::iter::repeat_n('l', 23))
+            .chain(['>'])
+            .chain(std::iter::repeat_n('j', 4))
+            .chain(std::iter::repeat_n('h', 22))
+            .chain(['j']); // opens the breached room's door
+        for c in route {
+            app.handle_key(key(KeyCode::Char(c)));
+        }
+        for _ in 0..2_000 {
+            if current_world(&app).is_none() {
+                break;
+            }
+            app.handle_key(key(KeyCode::Char('.')));
+        }
+
+        let message = menu(&app).message().expect("a message on the title menu");
+        assert!(
+            message.starts_with("You blacked out from lack of air at 25 Nov 2631"),
+            "{message}"
+        );
+        assert!(message.contains("not saved"));
+        assert!(
+            !SaveSlot::in_dir(dir.path()).exists(),
+            "blacking out must not save"
+        );
     }
 }

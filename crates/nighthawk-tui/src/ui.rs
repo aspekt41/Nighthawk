@@ -13,7 +13,7 @@
 //! └───────────────────────────────────────────────────────┘
 //! ```
 
-use nighthawk_sim::{Mix, Pos, Tile, World};
+use nighthawk_sim::{BREATH_FULL, Mix, Pos, Tile, World};
 use ratatui::Frame;
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Constraint, Layout, Rect};
@@ -208,6 +208,11 @@ fn tile_glyph(tile: Tile) -> (&'static str, Style) {
         ),
         Tile::DoorClosed => ("+", Style::new().fg(Color::LightRed)),
         Tile::DoorOpen => ("'", Style::new().fg(Color::LightRed)),
+        Tile::HullCrack => ("x", Style::new().fg(Color::Red)),
+        Tile::HullBreach => (
+            "X",
+            Style::new().fg(Color::Red).add_modifier(Modifier::BOLD),
+        ),
     }
 }
 
@@ -229,6 +234,7 @@ fn sidebar_lines(world: &World) -> Vec<Line<'static>> {
         Line::raw(format!("Seed  {}", world.seed())),
         Line::raw(""),
     ];
+    lines.push(breath_line(world.breath()));
     lines.extend(air_lines(world.map().air(p).unwrap_or(Mix::VACUUM)));
     lines.extend([
         Line::raw(""),
@@ -238,6 +244,23 @@ fn sidebar_lines(world: &World) -> Vec<Line<'static>> {
         Line::styled("save S  menu q/Q", dim),
     ]);
     lines
+}
+
+/// The player's breath meter: a percentage and a five-block gauge, green
+/// when it's fine, yellow when it's dropping, red when it's nearly gone.
+fn breath_line(breath: u32) -> Line<'static> {
+    let percent = breath * 100 / BREATH_FULL;
+    let blocks = (breath * 5).div_ceil(BREATH_FULL) as usize; // any breath shows a block
+    let gauge = format!("{}{}", "█".repeat(blocks), "░".repeat(5 - blocks));
+    let colour = match percent {
+        75.. => Color::Green,
+        25..=74 => Color::Yellow,
+        _ => Color::Red,
+    };
+    Line::styled(
+        format!("Breath {percent:>3}% {gauge}"),
+        Style::new().fg(colour),
+    )
 }
 
 /// The air where the player stands: pressure, then each gas's share.
@@ -351,6 +374,7 @@ mod tests {
         );
         assert!(screen.contains("Date  25 Nov 2631"));
         assert!(screen.contains("Time  08:42:00"));
+        assert!(screen.contains("Breath 100%"));
         assert!(screen.contains("Deck  0 of 1"));
         assert!(screen.contains("Seed  1"));
         assert!(screen.contains("save S  menu q/Q"));
@@ -441,9 +465,11 @@ mod tests {
             Tile::StairsDown,
             Tile::DoorClosed,
             Tile::DoorOpen,
+            Tile::HullCrack,
+            Tile::HullBreach,
         ];
         let glyphs: Vec<&str> = tiles.iter().map(|&t| tile_glyph(t).0).collect();
-        assert_eq!(glyphs, vec![".", "#", ">", "<", "+", "'"]);
+        assert_eq!(glyphs, vec![".", "#", ">", "<", "+", "'", "x", "X"]);
     }
 
     #[test]
@@ -505,6 +531,24 @@ mod tests {
         assert_eq!(shade(20), "░");
         assert_eq!(shade(5), ".");
         assert_eq!(shade(0), ".");
+    }
+
+    #[test]
+    fn the_breath_gauge_shows_percent_blocks_and_colour() {
+        let line = |b| {
+            let l = breath_line(b);
+            (l.to_string(), l.style.fg)
+        };
+        assert_eq!(line(1000), ("Breath 100% █████".into(), Some(Color::Green)));
+        assert_eq!(line(750), ("Breath  75% ████░".into(), Some(Color::Green)));
+        assert_eq!(line(500), ("Breath  50% ███░░".into(), Some(Color::Yellow)));
+        assert_eq!(line(100), ("Breath  10% █░░░░".into(), Some(Color::Red)));
+        assert_eq!(
+            line(5),
+            ("Breath   0% █░░░░".into(), Some(Color::Red)),
+            "a sliver still shows"
+        );
+        assert_eq!(line(0), ("Breath   0% ░░░░░".into(), Some(Color::Red)));
     }
 
     #[test]

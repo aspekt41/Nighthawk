@@ -54,22 +54,29 @@ fn every_shipped_map_id_matches_its_file_name() {
 }
 
 #[test]
-fn the_starting_map_is_enclosed_by_walls_on_every_deck() {
-    // The starting room must not let the player walk off the map.
+fn the_starting_map_has_no_way_off_its_edges() {
+    // The player must not be able to walk off the map. Edge tiles are hull:
+    // plain bulkhead, or damaged hull (cracks and breaches leak air, but
+    // they're solid).
     let text = fs::read_to_string(maps_dir().join("aft_ring.json")).unwrap();
     let map = parse_map(&text).unwrap().map;
-    for z in 0..map.depth() {
-        for x in 0..map.width() {
-            for y in [0, map.height() - 1] {
-                assert_eq!(map.get(nighthawk_sim::Pos::new(x, y, z)), Some(Tile::Wall));
-            }
-        }
-        for y in 0..map.height() {
-            for x in [0, map.width() - 1] {
-                assert_eq!(map.get(nighthawk_sim::Pos::new(x, y, z)), Some(Tile::Wall));
-            }
-        }
+    let on_edge =
+        |p: &Pos| p.x == 0 || p.y == 0 || p.x == map.width() - 1 || p.y == map.height() - 1;
+    for p in map.positions().filter(on_edge) {
+        let tile = map.get(p).unwrap();
+        assert!(!tile.is_passable(), "{p:?} is a {}", tile.name());
     }
+}
+
+#[test]
+fn the_starting_map_has_hull_damage_to_vent_through() {
+    let text = fs::read_to_string(maps_dir().join("aft_ring.json")).unwrap();
+    let map = parse_map(&text).unwrap().map;
+    let holes: u64 = map
+        .positions()
+        .map(|p| map.get(p).unwrap().hole_cm2())
+        .sum();
+    assert_eq!(holes, 404, "one breach (400 cm²) and one crack (4 cm²)");
 }
 
 /// Every map file in `data/maps`, loaded.

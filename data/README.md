@@ -35,7 +35,7 @@ exactly once.
 |---|---|
 | `id` | Must match the file name (`closet.json` → `"closet"`) |
 | `name` | Shown as the map panel's title |
-| `legend` | One character → tile name. Tiles today: `wall`, `floor`, `stairs_up`, `stairs_down`, `door_closed`, `door_open`. `@` is reserved. |
+| `legend` | One character → tile name. Tiles today: `wall`, `floor`, `stairs_up`, `stairs_down`, `door_closed`, `door_open`, `hull_crack` (a 4 cm² leak to space), `hull_breach` (a 400 cm² hole to space). `@` is reserved. |
 | `decks` | Listed bottom to top: the first is deck 0. All decks must be the same size. |
 | `decks[].name` | Optional. Shown as the map panel's title on that deck. Without it the deck is "Deck 0", "Deck 1" and so on. |
 | `decks[].pressure` | Optional. The deck's starting air pressure as a percentage of normal ship air (101.3 kPa: 21% O2, 79% N2, a trace of CO2), from 0 (vacuum) to 200. Default 100. Each second, air evens out across every connected open space (joined by open floor, open doors and ladders), so a deck at 60% next to a full one shares their air as soon as time passes. |

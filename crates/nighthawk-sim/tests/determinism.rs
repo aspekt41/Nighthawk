@@ -25,7 +25,7 @@ const SEED: u64 = 0x4e49_4748_5448_4157; // "NIGHTHAW" in ASCII
 const TURNS: usize = 500;
 
 /// The stored fingerprints. See "If this test fails" above.
-const EXPECTED_STATE_HASH: u64 = 0xdbe1_88f6_b294_62cb;
+const EXPECTED_STATE_HASH: u64 = 0xe88b_4a55_711f_cb70;
 const EXPECTED_AMBIENT_COUNT: usize = 74;
 
 fn start_world() -> World {
@@ -175,22 +175,23 @@ fn the_script_opens_and_closes_a_door() {
 }
 
 #[test]
-fn the_ship_never_gains_or_loses_air() {
-    // The ship is sealed: no breaches, no machines. However much air moves
-    // around during the scripted game (doors opening and closing, air
-    // rising up the ladder), the total of every gas must stay exactly the
-    // same, down to the last pascal.
+fn air_is_never_created_or_destroyed() {
+    // However much air moves around during the scripted game (doors opening
+    // and closing, air rising up the ladder, two damaged bunk rooms venting
+    // to space), the air on board plus the air vented must always equal the
+    // air the ship started with, down to the last pascal.
     let start = start_world().map().total_air();
     let mut world = start_world();
     for command in script() {
         world.apply(command);
-        assert_eq!(
-            world.map().total_air(),
-            start,
-            "after {} seconds",
-            world.seconds()
-        );
+        let (on_board, vented) = (world.map().total_air(), world.map().vented());
+        let accounted = [0, 1, 2].map(|g| on_board[g] + vented[g]);
+        assert_eq!(accounted, start, "after {} seconds", world.seconds());
     }
+    assert!(
+        world.map().vented().iter().sum::<u64>() > 0,
+        "the damaged rooms really vented"
+    );
 }
 
 #[test]

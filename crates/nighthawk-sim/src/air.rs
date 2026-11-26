@@ -40,6 +40,41 @@ impl Gas {
     }
 }
 
+/// How much air one tile holds: 1 m × 1 m floor under a 2.5 m deck
+/// ceiling is 2.5 m³, or 2,500,000 cm³.
+pub const TILE_VOLUME_CM3: u64 = 2_500_000;
+
+/// How fast air escapes through a hole into vacuum, in cm per second.
+///
+/// Air rushing into vacuum is "choked": it leaves at roughly the speed of
+/// sound (343 m/s), slowed by the shape of the hole (a discharge
+/// coefficient of about 0.6) and by the gas thinning as it speeds up (a
+/// factor of 0.58 for air). 343 × 0.6 × 0.58 ≈ 120 m/s. So each second, a
+/// hole of area A lets out about 120 m/s × A of the air around it.
+pub const VENT_SPEED_CM_PER_S: u64 = 12_000;
+
+/// The share of a space's air that escapes through `hole_cm2` of holes in
+/// one second, in parts per million, for a space of `tiles` tiles.
+///
+/// It's the volume that streams out in a second (speed × area) over the
+/// volume of the space, capped at all of it. So a 20 cm × 20 cm breach
+/// (400 cm²) in a 21-tile room lets out 9% a second, and the room is near
+/// vacuum in under a minute; a 2 cm × 2 cm crack takes about twenty minutes.
+pub fn vent_ppm(hole_cm2: u64, tiles: u64) -> u64 {
+    if tiles == 0 {
+        return 0;
+    }
+    let ppm = VENT_SPEED_CM_PER_S * hole_cm2 * 1_000_000 / (tiles * TILE_VOLUME_CM3);
+    ppm.min(1_000_000)
+}
+
+/// How much of `total` escapes at `ppm` parts per million, rounded *up*, so
+/// a leaking space really does reach vacuum instead of keeping a last few
+/// pascals forever. Never more than `total`.
+pub fn vented_amount(total: u64, ppm: u64) -> u64 {
+    (total * ppm).div_ceil(1_000_000).min(total)
+}
+
 /// The air in one tile: a partial pressure in pascals for each gas.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -252,5 +287,58 @@ mod from_amounts_tests {
     #[should_panic(expected = "fits in u32")]
     fn from_amounts_refuses_impossible_amounts() {
         Mix::from_amounts([u64::MAX, 0, 0]);
+    }
+}
+
+#[cfg(test)]
+mod venting_tests {
+    use super::*;
+
+    #[test]
+    fn a_breach_empties_a_small_room_in_about_a_minute() {
+        // 400 cm² (20 × 20 cm) in a 21-tile room: about 9% a second.
+        assert_eq!(vent_ppm(400, 21), 91_428);
+        // Losing 9% a second, 60 seconds leaves under 1% of the air.
+        let mut air: u64 = 101_325 * 21;
+        for _ in 0..60 {
+            air -= vented_amount(air, vent_ppm(400, 21));
+        }
+        assert!(air < 101_325 * 21 / 100, "{air}");
+    }
+
+    #[test]
+    fn a_crack_leaks_slowly() {
+        // 4 cm² in the same room: under 0.1% a second.
+        assert_eq!(vent_ppm(4, 21), 914);
+    }
+
+    #[test]
+    fn a_big_enough_hole_empties_everything_in_one_second() {
+        assert_eq!(vent_ppm(1_000_000, 1), 1_000_000);
+        assert_eq!(vented_amount(500, 1_000_000), 500);
+    }
+
+    #[test]
+    fn bigger_spaces_leak_more_slowly_through_the_same_hole() {
+        assert!(vent_ppm(400, 400) < vent_ppm(400, 21));
+        assert_eq!(vent_ppm(400, 0), 0, "no space, nothing to vent");
+    }
+
+    #[test]
+    fn venting_rounds_up_so_a_leak_reaches_vacuum() {
+        assert_eq!(
+            vented_amount(1, 1),
+            1,
+            "even a tiny rate takes the last pascal"
+        );
+        assert_eq!(vented_amount(0, 500_000), 0);
+        assert_eq!(vented_amount(1_000, 500_000), 500);
+        let mut air = 101_325;
+        let mut seconds = 0;
+        while air > 0 {
+            air -= vented_amount(air, vent_ppm(4, 21));
+            seconds += 1;
+        }
+        assert!(seconds < 20_000, "reached vacuum after {seconds} s");
     }
 }
