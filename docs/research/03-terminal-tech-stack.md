@@ -75,15 +75,15 @@ attraction, Go + Bubble Tea + Wish gets there with far less effort. Decide this 
 
 1. **Sim and UI separation is non-negotiable.** The sim takes `Command`s (move, craft, build…) and emits `Event`s and state. It never touches the terminal. This gives us headless tests, multiple front-ends and replays for free. Commands and events are plain serialisable data, so a future web front-end could stream them over WebSockets or HTTP (D18).
 
-2. **Turn-based with action costs (an "energy" scheduler).** Each actor gains time and spends it on actions of different cost, as in CDDA's move-point model. Environmental systems (atmosphere, temperature, power) run on a fixed tick. A "turn" can be one second of game time, and long actions advance many ticks.
+2. **Turn-based with action costs (an "energy" scheduler).** Each actor gains time and spends it on actions of different cost, as in CDDA's move-point model. Time moves only when the player acts (D7): environmental systems (atmosphere, temperature, power) simulate exactly the time each action costs, never on a wall clock. Long actions advance many ticks.
 
-3. **Grid data does *not* live in the ECS.** Atmosphere, temperature, tiles and light are stored as **dense struct-of-arrays per chunk** (for example a 32×32 chunk with one `Vec<f32>` per gas). Flow solvers are tight loops over contiguous memory. The ECS holds *things*: creatures, items, machines.
+3. **Grid data does *not* live in the ECS.** Atmosphere, temperature, tiles and light are stored as **dense struct-of-arrays per chunk**, in 3D from day one (D8) (for example a 32×32 chunk with one `Vec<f32>` per gas). Flow solvers are tight loops over contiguous memory. The ECS holds *things*: creatures, items, machines.
 
 4. **Reality bubble plus lazy catch-up.** Simulate the chunks near the player at full fidelity. Distant chunks are frozen and "caught up" approximately when they're loaded again, or they run at low frequency. This keeps the cost bounded however large the world gets.
 
 5. **Deterministic RNG.** Use seeded PCG (`rand_pcg` **0.10.3**) with separate streams per subsystem (worldgen, combat, loot), so adding a dice roll in one system doesn't change every other outcome.
 
-6. **Content is data, loaded at startup and hot-reloaded in dev builds.** Materials → items → recipes → buildables → map pieces. Recipes ask for **qualities and material classes** (the CDDA pattern), not specific item IDs.
+6. **Content is data in JSON (D17), loaded at startup and hot-reloaded in dev builds.** Materials → items → recipes → buildables → map pieces. Recipes ask for **qualities and material classes** (the CDDA pattern), not specific item IDs.
 
 ---
 
@@ -91,7 +91,7 @@ attraction, Go + Bubble Tea + Wish gets there with far less effort. Decide this 
 
 | Purpose | Choice | Version / last update | Notes |
 |---|---|---|---|
-| Terminal I/O | **crossterm** | 0.29.0 (Apr 2025) | Cross-platform raw mode, events, synchronized updates, keyboard-enhancement flags. Stable and mature. |
+| Terminal I/O | **crossterm** | 0.29.0 (Apr 2025) | Cross-platform raw mode, events, synchronized updates, keyboard-enhancement flags. Stable and mature. Used through ratatui's re-export (`ratatui::crossterm`) so the versions always match. |
 | TUI layout and widgets | **ratatui** | 0.30.2 (Jun 2026) | Buffer-diffing renderer. Use widgets for panels, menus and logs. Draw the map viewport as a **custom widget** that writes cells directly into the buffer. |
 | ECS (**deferred**, D19: plain structs until entity counts force a choice) | **bevy_ecs** (standalone) | 0.20.1 (Oct 2026) | Schedules, system ordering, change detection, events, large community. Breaking changes about every 3–4 months, so **pin versions and upgrade deliberately**. |
 | ECS (alternative) | **hecs** | 0.11.2 (Oct 2026) | Minimal and stable. You'd write your own scheduling. A good fallback if bevy_ecs churn starts to hurt. |
@@ -105,7 +105,7 @@ attraction, Go + Bubble Tea + Wish gets there with far less effort. Decide this 
 | Noise / procgen | noise / fastnoise-lite | 0.9.0 / 1.1.1 | Both stable and slow-moving, which is fine. |
 | Release packaging | **cargo-dist** | 0.34.0 (Nov 2026) | Builds GitHub release binaries and installers for every platform. |
 | Browser build | **ratzilla** | 0.3.1 (Jun 2026) | Ratatui on WASM with DOM, Canvas and WebGL2 backends. Ships a Pong example. Prove it out early with a spike. |
-| SSH server | **russh** | 0.65.4 (Nov 2026) | Actively maintained. More hand-wiring than Go's Wish. |
+| SSH server | russh | 0.65.4 (Nov 2026) | Not needed: single-player over SSH is just tmux (D3). |
 | Snapshot testing | ratatui `TestBackend` + insta | — | Render into a buffer and snapshot it. Gives UI regression tests without a real terminal. |
 
 **Avoid (stale):** `bracket-lib`/`rltk` (last release Oct 2022), `legion` (last release 2021),

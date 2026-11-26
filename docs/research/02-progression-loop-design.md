@@ -88,13 +88,13 @@ each one reads in a terminal.
 | **Temperature per tile** | High: cold and heat zones, fire, cryo, reactors | Medium (shares atmosphere's grid code) | Yes (overlay) | **Core-lite**, add with atmosphere |
 | **Fluids** (water, coolant, fuel) | Medium-high: flooding, plumbing, hazards | High | Yes, but tricky | **Phase 2** |
 | **Body / health** (needs, injuries by body part) | Medium: survival tension | Low (needs) to high (body parts) | Yes | **Needs early, body parts later** |
-| **Life support: water and waste** (drinking water, recycling, waste disposal) | High: closes the ONI-style base loop | Medium (as items) to high (as plumbing) | Yes | **Water in the MVP, waste right after** (see D14) |
-| **Radiation** (sources, shielding by material, dose) | High: gates the reactor deck | Medium (shares the grid code) | Yes (overlay, dosimeter) | **Right after the MVP** |
 | **Lighting / visibility** | High for atmosphere and dread | Low-medium | Very good, a classic roguelike strength | **Core** |
 | **Sound / noise propagation** | Medium: stealth, creature behaviour | Medium | Yes (log, indicators) | Phase 2 |
 | **Ecology / creature AI with needs** | Medium-high: a world that is alive | High | Yes | Phase 2–3 |
 | **Automation / logistics** | Very high in the late game | High | Yes | Phase 3 |
 | **NPC crew / colony management** | High but changes the genre | Very high | Yes (DF proves it) | Phase 3+, or never |
+| **Life support: water and waste** (drinking water, recycling, waste disposal) | High: closes the ONI-style base loop | Medium (as items) to high (as plumbing) | Yes | **Water in the MVP, waste right after** (see D14) |
+| **Radiation** (sources, shielding by material, dose) | High: gates the reactor deck | Medium (shares the grid code) | Yes (overlay, dosimeter) | **Right after the MVP** |
 
 A useful rule: **pick systems that share infrastructure.** Atmosphere, temperature, fluids and
 power can all use the same dense per-tile grid and flow solver. One well-built grid engine

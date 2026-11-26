@@ -64,12 +64,12 @@ These are deliberately out of scope, so we can say no to them:
 | Temperature | Per tile, sharing the atmosphere grid; heaters; heat loss to vacuum |
 | Power | Network graph of generators, batteries, cables and consumers; brown-outs |
 | Player body | HP, O2, body heat, hunger, thirst, fatigue |
-| Death | Respawn at the stasis pod or base; difficulty decides keep vs drop items (D5) |
 | Items and crafting | Material-based items in physical containers with pockets; quality-based recipes; crafting from your inventory and containers within reach |
 | Construction | Place and deconstruct buildables, with time cost and tool qualities |
 | Turn system | Energy and action-cost scheduler, interruptible long actions |
 | UI | Map, sidebar status, message log, inventory, crafting screen, look mode, overlays (air, power, heat) |
 | Saves | Versioned binary saves, autosave |
+| Death | Respawn at the stasis pod or base; difficulty decides keep vs drop items (D5) |
 
 ### The MVP progression arc
 
