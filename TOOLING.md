@@ -329,4 +329,5 @@ adding crossterm separately, so the two versions can never disagree.
 | `could not find the data folder` | Run from the repo root, or set `NIGHTHAWK_DATA` |
 | A test string full of `#` won't compile | See the raw-string note in [AGENTS.md](AGENTS.md#gotchas) |
 | `cargo llvm-cov` says llvm-tools are missing | `rustup component add llvm-tools-preview` |
+| Coverage shows well-tested code as missed | Stale data from earlier builds: `cargo llvm-cov clean --workspace` (the check script does this itself) |
 | The determinism test fails | See section 10: fix the accident, or update the stored value on purpose |

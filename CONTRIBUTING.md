@@ -28,6 +28,8 @@ decision in the log first.
    `Stream` of its own, seeded from the world seed. Any new state is added
    to `World::state_hash`. The golden determinism test must pass, or be
    updated on purpose with the reason in the commit message (D22).
+   All game state lives in `World`, which is also the save file (D23). If a
+   change alters the save layout, bump `SAVE_VERSION`.
 3. **Time moves only when the player acts.** `World::apply` is the only thing
    that changes the world or advances `turn`. Nothing runs in the background (D7).
 4. **Everything is 3D.** Positions are always `Pos { x, y, z }`, even when

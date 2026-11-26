@@ -1,6 +1,6 @@
 //! The tile grid.
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::hash::Fnv64;
 use crate::pos::Pos;
@@ -10,7 +10,7 @@ use crate::pos::Pos;
 ///
 /// `Deserialize` lets map files name tiles in JSON. `rename_all` means the
 /// JSON spelling is lowercase: `"wall"`, `"floor"`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Tile {
     Floor,
@@ -49,7 +49,11 @@ impl Tile {
 /// "dense array" layout from the tech-stack research: later grid systems such
 /// as air and heat will use the same shape, so their solvers are simple loops
 /// over contiguous memory.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// It's saved as-is in save files. Because a save file could be edited or
+/// damaged, `check_consistent` verifies a loaded map before use.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Map {
     width: i32,
     height: i32,
@@ -101,6 +105,22 @@ impl Map {
         if let Some(i) = self.index(p) {
             self.tiles[i] = tile;
         }
+    }
+
+    /// Checks that the size is positive and the tile list holds exactly one
+    /// tile per position. A map built in code is always consistent. This
+    /// exists for maps read back from save files.
+    pub(crate) fn check_consistent(&self) -> Result<(), String> {
+        let (w, h, d) = (self.width, self.height, self.depth);
+        if w <= 0 || h <= 0 || d <= 0 {
+            return Err(format!("map size {w}×{h}×{d} must be positive"));
+        }
+        let expected = i64::from(w) * i64::from(h) * i64::from(d);
+        let found = self.tiles.len() as i64;
+        if found != expected {
+            return Err(format!("map should have {expected} tiles but has {found}"));
+        }
+        Ok(())
     }
 
     /// Feeds the map's size and every tile into a state hash.

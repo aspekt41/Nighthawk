@@ -1,5 +1,7 @@
 //! Positions and directions.
 
+use serde::{Deserialize, Serialize};
+
 /// A position in the world, in tiles.
 ///
 /// Positions are always 3D (decision D8). `z` is the deck: 0 is the deck you
@@ -7,7 +9,9 @@
 ///
 /// `Copy` means a `Pos` is copied when you pass it around, like an integer,
 /// so you never need to borrow it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+///
+/// `Serialize` and `Deserialize` let it be written into save files.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Pos {
     pub x: i32,
     pub y: i32,

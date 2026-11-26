@@ -1,5 +1,7 @@
 //! The world state and the one function that changes it.
 
+use serde::{Deserialize, Serialize};
+
 use crate::hash::Fnv64;
 use crate::map::{Map, Tile};
 use crate::map_file::LoadedMap;
@@ -59,7 +61,12 @@ const WAIT_COST: u64 = 1;
 const AMBIENT_ONE_IN: u32 = 8;
 
 /// Everything about the game at one moment.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// This struct *is* the save game: everything in it is written to the save
+/// file, and nothing else is (see `save.rs`). So any new piece of game state
+/// goes here, and into [`World::state_hash`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct World {
     area_name: String,
     map: Map,
@@ -148,6 +155,22 @@ impl World {
             {
                 events.push(Event::Ambient(sound));
             }
+        }
+    }
+
+    /// Checks rules that a world built by [`World::new`] always follows, for
+    /// worlds read back from a save file: the map is consistent and the
+    /// player stands on a walkable tile inside it.
+    pub(crate) fn check_consistent(&self) -> Result<(), String> {
+        self.map.check_consistent()?;
+        match self.map.get(self.player) {
+            None => Err(format!("player at {:?} is outside the map", self.player)),
+            Some(tile) if !tile.is_walkable() => Err(format!(
+                "player at {:?} is inside a {}",
+                self.player,
+                tile.name()
+            )),
+            Some(_) => Ok(()),
         }
     }
 

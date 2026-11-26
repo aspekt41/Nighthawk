@@ -20,10 +20,12 @@ mod map;
 mod map_file;
 mod pos;
 mod rng;
+mod save;
 mod world;
 
 pub use map::{Map, Tile};
 pub use map_file::{LoadedMap, MapError, parse_map};
 pub use pos::{Dir, Pos};
 pub use rng::{GameRng, Stream};
+pub use save::{SAVE_FORMAT, SAVE_VERSION, SaveError, load_from_str, save_to_string};
 pub use world::{Command, Event, Sound, World};

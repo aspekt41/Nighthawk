@@ -1,7 +1,8 @@
-//! The determinism check (decision D22).
+//! The determinism check (decisions D22 and D23).
 //!
 //! Plays a fixed script of commands on the real starting map with a fixed
-//! seed, then compares the world's fingerprint against a stored value. CI
+//! seed, then compares the world's fingerprint against a stored value. It
+//! also saves and reloads partway through, which must change nothing. CI
 //! runs this on Linux and macOS, so it also proves the game comes out the same
 //! on different machines.
 //!
@@ -16,7 +17,7 @@
 use std::fs;
 use std::path::PathBuf;
 
-use nighthawk_sim::{Command, Dir, Event, World, parse_map};
+use nighthawk_sim::{Command, Dir, Event, World, load_from_str, parse_map, save_to_string};
 
 const SEED: u64 = 0x4e49_4748_5448_4157; // "NIGHTHAW" in ASCII
 const TURNS: usize = 500;
@@ -83,4 +84,35 @@ fn playing_twice_gives_identical_games() {
     let (b, b_events) = play();
     assert_eq!(a, b);
     assert_eq!(a_events, b_events);
+}
+
+#[test]
+fn saving_and_loading_halfway_changes_nothing() {
+    // Play half the script, save, load the save into a brand-new world, and
+    // play the other half. If anything about the game isn't saved, such as
+    // the random generator's position, this ends in a different state.
+    let mut world = start_world();
+    let mut events: Vec<Event> = script()
+        .take(TURNS / 2)
+        .flat_map(|c| world.apply(c))
+        .collect();
+
+    let mut resumed = load_from_str(&save_to_string(&world)).expect("save loads");
+    events.extend(script().skip(TURNS / 2).flat_map(|c| resumed.apply(c)));
+
+    let (uninterrupted, uninterrupted_events) = play();
+    assert_eq!(resumed.state_hash(), EXPECTED_STATE_HASH);
+    assert_eq!(resumed, uninterrupted);
+    assert_eq!(events, uninterrupted_events);
+}
+
+#[test]
+fn saving_after_every_command_changes_nothing() {
+    // The harshest version: save and reload after every single command.
+    let mut world = start_world();
+    for command in script() {
+        world.apply(command);
+        world = load_from_str(&save_to_string(&world)).expect("save loads");
+    }
+    assert_eq!(world.state_hash(), EXPECTED_STATE_HASH);
 }

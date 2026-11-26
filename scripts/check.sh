@@ -34,6 +34,8 @@ RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --quiet
 
 step "Coverage (cargo-llvm-cov; at least 90% of lines)"
 if command -v cargo-llvm-cov >/dev/null; then
+    # Clear old coverage data first, so results never mix with earlier builds.
+    cargo llvm-cov clean --workspace
     cargo llvm-cov --workspace --summary-only --fail-under-lines 90
 else
     missing "install with 'cargo install cargo-llvm-cov' and 'rustup component add llvm-tools-preview'"

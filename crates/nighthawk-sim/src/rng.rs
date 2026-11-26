@@ -18,6 +18,7 @@
 //!    change between versions, so we don't use them.
 
 use rand_pcg::Pcg32;
+use serde::{Deserialize, Serialize};
 // `Rng` is the trait that provides `next_u32`. `as _` imports it only so its
 // methods can be called, without putting the name `Rng` in scope.
 use rand_pcg::rand_core::Rng as _;
@@ -32,7 +33,13 @@ pub enum Stream {
 }
 
 /// A seeded random number generator for one [`Stream`].
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// It can be saved and loaded: the save records the generator's exact
+/// position in its sequence, so a loaded game rolls the same numbers next
+/// as the game that was saved. `transparent` stores it as just the PCG state,
+/// with no extra wrapper in the JSON.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
 pub struct GameRng {
     pcg: Pcg32,
 }
