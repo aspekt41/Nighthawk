@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use crate::hash::Fnv64;
 use crate::map::{Map, Tile};
 use crate::map_file::LoadedMap;
-use crate::pos::{Dir, Pos};
+use crate::pos::{Dir, Pos, Vertical};
 use crate::rng::{GameRng, Stream};
 
 /// Something the player wants to do. Front-ends turn key presses into these.
@@ -13,6 +13,8 @@ use crate::rng::{GameRng, Stream};
 pub enum Command {
     Move(Dir),
     Wait,
+    /// Use the stairs you're standing on.
+    Climb(Vertical),
 }
 
 /// Something that happened, for the front-end to show or log.
@@ -28,6 +30,16 @@ pub enum Event {
     },
     /// The player tried to walk off the edge of the map. No time passes.
     BlockedByEdge,
+    /// The player used stairs and arrived at `to`, one deck up or down.
+    Climbed {
+        to: Pos,
+        way: Vertical,
+    },
+    /// The player tried to climb without standing on the right stairs. No
+    /// time passes.
+    NoStairs {
+        way: Vertical,
+    },
     Waited,
     /// A background noise from the ship, heard while time passes.
     Ambient(Sound),
@@ -56,6 +68,8 @@ impl Sound {
 /// longer than a step) arrive with the energy scheduler.
 const MOVE_COST: u64 = 1;
 const WAIT_COST: u64 = 1;
+/// Climbing between decks is slower than a step.
+const CLIMB_COST: u64 = 2;
 
 /// Each turn that passes has a 1 in this many chance of an ambient sound.
 const AMBIENT_ONE_IN: u32 = 8;
@@ -68,7 +82,9 @@ const AMBIENT_ONE_IN: u32 = 8;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct World {
-    area_name: String,
+    /// One name per deck, bottom to top. The map panel shows the name of
+    /// the deck the player is on.
+    deck_names: Vec<String>,
     map: Map,
     player: Pos,
     turn: u64,
@@ -82,7 +98,7 @@ impl World {
     /// clock at turn 0, and all randomness derived from `seed`.
     pub fn new(loaded: LoadedMap, seed: u64) -> Self {
         Self {
-            area_name: loaded.name,
+            deck_names: loaded.deck_names,
             map: loaded.map,
             player: loaded.player_start,
             turn: 0,
@@ -91,9 +107,17 @@ impl World {
         }
     }
 
-    /// The human-readable name of where the player is, like "Stasis bay".
+    /// The name of the deck the player is on, like "Stasis bay".
     pub fn area_name(&self) -> &str {
-        &self.area_name
+        self.deck_name(self.player.z)
+    }
+
+    /// The name of deck `z`, or `""` if there's no such deck.
+    pub fn deck_name(&self, z: i32) -> &str {
+        usize::try_from(z)
+            .ok()
+            .and_then(|z| self.deck_names.get(z))
+            .map_or("", String::as_str)
     }
 
     pub fn map(&self) -> &Map {
@@ -121,6 +145,7 @@ impl World {
     pub fn apply(&mut self, command: Command) -> Vec<Event> {
         match command {
             Command::Move(dir) => self.walk(dir),
+            Command::Climb(way) => self.climb(way),
             Command::Wait => {
                 let mut events = vec![Event::Waited];
                 self.pass_time(WAIT_COST, &mut events);
@@ -143,6 +168,26 @@ impl World {
         }
     }
 
+    /// Uses the stairs under the player. Stairs up only go up and stairs
+    /// down only go down; anywhere else nothing happens and no time passes.
+    /// Maps guarantee every staircase has a partner (`Map::check_stairs`),
+    /// but this still checks the destination is walkable, to stay safe.
+    fn climb(&mut self, way: Vertical) -> Vec<Event> {
+        let stairs = match way {
+            Vertical::Up => Tile::StairsUp,
+            Vertical::Down => Tile::StairsDown,
+        };
+        let target = self.player.climb(way);
+        let on_stairs = self.map.get(self.player) == Some(stairs);
+        if !on_stairs || !self.map.get(target).is_some_and(Tile::is_walkable) {
+            return vec![Event::NoStairs { way }];
+        }
+        self.player = target;
+        let mut events = vec![Event::Climbed { to: target, way }];
+        self.pass_time(CLIMB_COST, &mut events);
+        events
+    }
+
     /// Advances the clock one turn at a time, letting the world react to
     /// each turn. Every system that runs "while time passes" (air, heat,
     /// power, creatures) will hook in here, so it only ever runs because the
@@ -163,6 +208,10 @@ impl World {
     /// player stands on a walkable tile inside it.
     pub(crate) fn check_consistent(&self) -> Result<(), String> {
         self.map.check_consistent()?;
+        let (names, depth) = (self.deck_names.len(), self.map.depth());
+        if i64::try_from(names).ok() != Some(i64::from(depth)) {
+            return Err(format!("{names} deck names for {depth} decks"));
+        }
         match self.map.get(self.player) {
             None => Err(format!("player at {:?} is outside the map", self.player)),
             Some(tile) if !tile.is_walkable() => Err(format!(
@@ -183,7 +232,11 @@ impl World {
     pub fn state_hash(&self) -> u64 {
         let mut h = Fnv64::new();
         // A version tag: bump it if the hashing scheme itself changes.
-        h.str("nighthawk-world-v1").str(&self.area_name);
+        h.str("nighthawk-world-v2")
+            .u64(self.deck_names.len() as u64);
+        for name in &self.deck_names {
+            h.str(name);
+        }
         self.map.hash_into(&mut h);
         h.i32(self.player.x).i32(self.player.y).i32(self.player.z);
         h.u64(self.turn)
@@ -242,7 +295,7 @@ mod tests {
         let world = test_world();
         assert_eq!(world.turn(), 0);
         assert_eq!(world.player(), Pos::new(2, 1, 0));
-        assert_eq!(world.area_name(), "Test room");
+        assert_eq!(world.area_name(), "Deck 0", "unnamed decks get a number");
         assert_eq!(world.map().width(), 6);
         assert_eq!(world.seed(), TEST_SEED);
     }
@@ -425,5 +478,138 @@ mod tests {
             ..test_world()
         };
         assert_ne!(a.state_hash(), b.state_hash());
+    }
+
+    /// Two named decks joined by stairs at (3, 1):
+    ///
+    /// ```text
+    /// deck 0 "Lower"   deck 1 "Upper"
+    /// #####            #####
+    /// #@.<#            #..>#
+    /// #####            #####
+    /// ```
+    fn two_deck_world() -> World {
+        let lower = ["#####", "#@.<#", "#####"];
+        let upper = ["#####", "#..>#", "#####"];
+        let json = format!(
+            r##"{{ "id": "t", "name": "Test", "legend": {{ "#": "wall", ".": "floor",
+                     "<": "stairs_up", ">": "stairs_down" }},
+                  "decks": [ {{ "name": "Lower", "rows": {lower:?} }},
+                             {{ "name": "Upper", "rows": {upper:?} }} ] }}"##
+        );
+        World::new(parse_map(&json).expect("test map is valid"), TEST_SEED)
+    }
+
+    /// Walks the two-deck world's player onto the stairs up at (3, 1, 0).
+    fn on_stairs_up() -> World {
+        let mut world = two_deck_world();
+        world.apply(Command::Move(Dir::East));
+        world.apply(Command::Move(Dir::East));
+        assert_eq!(world.player(), Pos::new(3, 1, 0));
+        world
+    }
+
+    #[test]
+    fn climbing_up_arrives_at_the_same_spot_one_deck_higher() {
+        let mut world = on_stairs_up();
+        let turn = world.turn();
+
+        let events = world.apply(Command::Climb(Vertical::Up));
+
+        assert_eq!(world.player(), Pos::new(3, 1, 1));
+        assert_eq!(world.turn(), turn + CLIMB_COST);
+        assert_eq!(
+            without_ambient(events),
+            vec![Event::Climbed {
+                to: Pos::new(3, 1, 1),
+                way: Vertical::Up
+            }]
+        );
+    }
+
+    #[test]
+    fn climbing_down_brings_you_back() {
+        let mut world = on_stairs_up();
+        world.apply(Command::Climb(Vertical::Up));
+        let events = world.apply(Command::Climb(Vertical::Down));
+        assert_eq!(world.player(), Pos::new(3, 1, 0));
+        assert!(matches!(
+            events[0],
+            Event::Climbed {
+                way: Vertical::Down,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn the_area_name_follows_the_deck() {
+        let mut world = on_stairs_up();
+        assert_eq!(world.area_name(), "Lower");
+        world.apply(Command::Climb(Vertical::Up));
+        assert_eq!(world.area_name(), "Upper");
+        assert_eq!(world.deck_name(0), "Lower");
+        assert_eq!(world.deck_name(5), "", "no such deck");
+        assert_eq!(world.deck_name(-1), "", "no such deck");
+    }
+
+    #[test]
+    fn climbing_without_stairs_does_nothing_and_costs_no_time() {
+        let mut world = two_deck_world(); // standing on plain floor
+        for way in [Vertical::Up, Vertical::Down] {
+            assert_eq!(
+                world.apply(Command::Climb(way)),
+                vec![Event::NoStairs { way }]
+            );
+        }
+        assert_eq!(world.player(), Pos::new(1, 1, 0));
+        assert_eq!(world.turn(), 0);
+    }
+
+    #[test]
+    fn stairs_only_go_their_own_way() {
+        let mut world = on_stairs_up();
+        let turn = world.turn();
+        let events = world.apply(Command::Climb(Vertical::Down));
+        assert_eq!(
+            events,
+            vec![Event::NoStairs {
+                way: Vertical::Down
+            }]
+        );
+        assert_eq!(world.turn(), turn);
+
+        world.apply(Command::Climb(Vertical::Up)); // now on stairs down
+        let events = world.apply(Command::Climb(Vertical::Up));
+        assert_eq!(events, vec![Event::NoStairs { way: Vertical::Up }]);
+    }
+
+    #[test]
+    fn blocked_stairs_are_refused_safely() {
+        // Valid maps can't do this, but a world built another way might.
+        let mut world = on_stairs_up();
+        world.map.set(Pos::new(3, 1, 1), Tile::Wall);
+        let events = world.apply(Command::Climb(Vertical::Up));
+        assert_eq!(events, vec![Event::NoStairs { way: Vertical::Up }]);
+        assert_eq!(world.player(), Pos::new(3, 1, 0));
+    }
+
+    #[test]
+    fn deck_names_are_part_of_the_state_hash() {
+        let a = two_deck_world();
+        let mut b = two_deck_world();
+        b.deck_names[1] = "Renamed".into();
+        assert_ne!(a.state_hash(), b.state_hash());
+    }
+
+    #[test]
+    fn a_world_with_the_wrong_number_of_deck_names_is_inconsistent() {
+        let mut world = two_deck_world();
+        assert_eq!(world.check_consistent(), Ok(()));
+        world.deck_names.pop();
+        assert_eq!(
+            world.check_consistent(),
+            Err("1 deck names for 2 decks".to_string())
+        );
     }
 }

@@ -166,10 +166,23 @@ fn glyph_at(world: &World, pos: Pos) -> (&'static str, Style) {
             Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD),
         );
     }
-    match world.map().get(pos) {
-        Some(Tile::Wall) => ("#", Style::new().fg(Color::Gray)),
-        Some(Tile::Floor) => (".", Style::new().fg(Color::DarkGray)),
-        None => (" ", Style::new()),
+    world.map().get(pos).map_or((" ", Style::new()), tile_glyph)
+}
+
+/// How each kind of tile looks. `<` and `>` are the classic roguelike
+/// glyphs for ways up and down.
+fn tile_glyph(tile: Tile) -> (&'static str, Style) {
+    match tile {
+        Tile::Wall => ("#", Style::new().fg(Color::Gray)),
+        Tile::Floor => (".", Style::new().fg(Color::DarkGray)),
+        Tile::StairsUp => (
+            "<",
+            Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+        ),
+        Tile::StairsDown => (
+            ">",
+            Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+        ),
     }
 }
 
@@ -179,7 +192,7 @@ fn sidebar(world: &World) -> Paragraph<'static> {
     Paragraph::new(vec![
         Line::styled("NIGHTHAWK", Style::new().add_modifier(Modifier::BOLD)),
         Line::raw(""),
-        Line::raw(format!("Deck  {}", p.z)),
+        Line::raw(format!("Deck  {} of {}", p.z, world.map().depth())),
         Line::raw(format!("Pos   {}, {}", p.x, p.y)),
         Line::raw(format!("Turn  {}", world.turn())),
         Line::raw(format!("Seed  {}", world.seed())),
@@ -187,6 +200,7 @@ fn sidebar(world: &World) -> Paragraph<'static> {
         Line::styled("move  arrows hjkl", dim),
         Line::styled("      yubn numpad", dim),
         Line::styled("wait  . or 5", dim),
+        Line::styled("climb < or >", dim),
         Line::styled("save  S", dim),
         Line::styled("menu  q (saves)", dim),
         Line::styled("      Q (no save)", dim),
@@ -268,11 +282,11 @@ mod tests {
     fn whole_screen_shows_map_status_and_log() {
         let screen = game_screen(&test_world(), &["You wake in the stasis bay.".to_string()]);
         assert!(
-            screen.contains(" T "),
-            "map panel is titled with the area name"
+            screen.contains(" Deck 0 "),
+            "map panel is titled with the deck's name (a number when it has none)"
         );
         assert!(screen.contains("Turn  0"));
-        assert!(screen.contains("Deck  0"));
+        assert!(screen.contains("Deck  0 of 1"));
         assert!(screen.contains("Seed  1"));
         assert!(screen.contains("menu  q (saves)"));
         assert!(screen.contains("You wake in the stasis bay."));
@@ -351,6 +365,33 @@ mod tests {
         assert!(draw_screen(80, 24, |f| render(&on_title, f)).contains("N I G H T H A W K"));
         let playing = crate::app::App::new(map, None, Some(5), || 1);
         assert!(draw_screen(80, 24, |f| render(&playing, f)).contains("Seed  5"));
+    }
+
+    #[test]
+    fn every_tile_kind_has_a_distinct_glyph() {
+        let tiles = [Tile::Floor, Tile::Wall, Tile::StairsUp, Tile::StairsDown];
+        let glyphs: Vec<&str> = tiles.iter().map(|&t| tile_glyph(t).0).collect();
+        assert_eq!(glyphs, vec![".", "#", "<", ">"]);
+    }
+
+    #[test]
+    fn the_real_map_shows_its_ladder_and_deck_name() {
+        let map = crate::content::load_start_map().unwrap();
+        let mut world = World::new(map, 1);
+        // Walk to the ladder at (27, 2) and look at the screen there.
+        for _ in 0..5 {
+            world.apply(nighthawk_sim::Command::Move(Dir::North));
+        }
+        for _ in 0..22 {
+            world.apply(nighthawk_sim::Command::Move(Dir::East));
+        }
+        let screen = game_screen(&world, &[]);
+        assert!(
+            screen.contains(" Stasis bay "),
+            "deck name is the panel title"
+        );
+        assert!(screen.contains("@<"), "the ladder is right of the player");
+        assert!(screen.contains("Deck  0 of 2"));
     }
 
     #[test]

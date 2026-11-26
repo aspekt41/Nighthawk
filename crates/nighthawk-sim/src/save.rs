@@ -6,8 +6,8 @@
 //! ```json
 //! {
 //!   "format": "nighthawk-save",
-//!   "version": 1,
-//!   "world": { "area_name": "Stasis bay", "turn": 12, ... }
+//!   "version": 2,
+//!   "world": { "deck_names": ["Stasis bay"], "turn": 12, ... }
 //! }
 //! ```
 //!
@@ -33,7 +33,7 @@ pub const SAVE_FORMAT: &str = "nighthawk-save";
 
 /// The save layout this build reads and writes. Bump it when `World` (or
 /// anything inside it) changes shape, and update the save-format test.
-pub const SAVE_VERSION: u32 = 1;
+pub const SAVE_VERSION: u32 = 2;
 
 /// Everything that can be wrong with a save file.
 #[derive(Debug)]
@@ -189,7 +189,7 @@ mod tests {
     fn save_text_is_tagged_and_versioned() {
         let text = save_to_string(&small_world());
         assert!(text.contains(r#""format": "nighthawk-save""#));
-        assert!(text.contains(r#""version": 1"#));
+        assert!(text.contains(r#""version": 2"#));
     }
 
     #[test]
@@ -204,9 +204,11 @@ mod tests {
         let world = World::new(parse_map(&json).unwrap(), 7);
         let expected = r#"{
   "format": "nighthawk-save",
-  "version": 1,
+  "version": 2,
   "world": {
-    "area_name": "Nook",
+    "deck_names": [
+      "Deck 0"
+    ],
     "map": {
       "width": 2,
       "height": 1,
@@ -255,18 +257,20 @@ mod tests {
 
     #[test]
     fn a_save_without_a_version_is_not_a_save() {
-        let text = save_with("\"version\": 1,", "");
+        let text = save_with("\"version\": 2,", "");
         assert!(matches!(load_from_str(&text), Err(SaveError::NotASave)));
     }
 
     #[test]
     fn saves_from_other_versions_are_rejected_clearly() {
-        let text = save_with(r#""version": 1"#, r#""version": 2"#);
+        // A save from before decks had names: exactly what an old save file
+        // on disk looks like after this build is installed.
+        let text = save_with(r#""version": 2"#, r#""version": 1"#);
         let err = load_from_str(&text).unwrap_err();
-        assert!(matches!(err, SaveError::UnsupportedVersion { found: 2 }));
+        assert!(matches!(err, SaveError::UnsupportedVersion { found: 1 }));
         assert_eq!(
             err.to_string(),
-            "save file is version 2, but this build only reads version 1"
+            "save file is version 1, but this build only reads version 2"
         );
     }
 
@@ -314,5 +318,50 @@ mod tests {
         );
         let damaged = load_from_str("{").unwrap_err();
         assert!(damaged.to_string().starts_with("save file is damaged:"));
+    }
+
+    /// Two decks joined by stairs, the player upstairs.
+    fn two_deck_world() -> World {
+        let lower = ["@<"];
+        let upper = [".>"];
+        let json = format!(
+            r#"{{ "id": "t", "name": "T", "legend": {{ ".": "floor", "<": "stairs_up",
+                    ">": "stairs_down" }},
+                 "decks": [ {{ "name": "Lower", "rows": {lower:?} }},
+                            {{ "name": "Upper", "rows": {upper:?} }} ] }}"#
+        );
+        let mut world = World::new(parse_map(&json).unwrap(), 3);
+        world.apply(Command::Move(Dir::East));
+        world.apply(Command::Climb(crate::pos::Vertical::Up));
+        world
+    }
+
+    #[test]
+    fn multi_deck_worlds_save_and_load_with_the_player_upstairs() {
+        let world = two_deck_world();
+        assert_eq!(world.player().z, 1);
+        let loaded = load_from_str(&save_to_string(&world)).unwrap();
+        assert_eq!(loaded, world);
+        assert_eq!(loaded.area_name(), "Upper");
+    }
+
+    #[test]
+    fn a_save_with_broken_stairs_is_caught() {
+        let text = save_to_string(&two_deck_world()).replacen("\"stairs_up\"", "\"floor\"", 1);
+        let err = load_from_str(&text).unwrap_err();
+        assert!(matches!(err, SaveError::Inconsistent(_)));
+        assert!(err.to_string().contains("need stairs up"), "{err}");
+    }
+
+    #[test]
+    fn a_save_with_missing_deck_names_is_caught() {
+        let text = save_to_string(&two_deck_world()).replacen("\"Upper\"", "", 1);
+        // Removing a name leaves a dangling comma, so fix the JSON up too.
+        let text = text.replacen("\"Lower\",\n      \n", "\"Lower\"\n", 1);
+        let err = load_from_str(&text).unwrap_err();
+        assert!(
+            err.to_string().contains("1 deck names for 2 decks"),
+            "{err}"
+        );
     }
 }

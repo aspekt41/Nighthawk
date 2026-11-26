@@ -28,6 +28,27 @@ impl Pos {
         let (dx, dy) = dir.delta();
         Pos::new(self.x + dx, self.y + dy, self.z)
     }
+
+    /// The same spot one deck up or down.
+    pub fn climb(self, way: Vertical) -> Pos {
+        Pos::new(self.x, self.y, self.z + way.dz())
+    }
+}
+
+/// Up or down between decks. Up is `z + 1`: higher decks have higher numbers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Vertical {
+    Up,
+    Down,
+}
+
+impl Vertical {
+    pub fn dz(self) -> i32 {
+        match self {
+            Vertical::Up => 1,
+            Vertical::Down => -1,
+        }
+    }
 }
 
 /// The eight horizontal directions. Moving between decks (up and down)
@@ -104,6 +125,13 @@ mod tests {
     fn north_is_up_the_screen() {
         assert_eq!(Dir::North.delta(), (0, -1));
         assert_eq!(Dir::East.delta(), (1, 0));
+    }
+
+    #[test]
+    fn climbing_changes_only_the_deck() {
+        let p = Pos::new(3, 4, 1);
+        assert_eq!(p.climb(Vertical::Up), Pos::new(3, 4, 2));
+        assert_eq!(p.climb(Vertical::Down), Pos::new(3, 4, 0));
     }
 
     #[test]

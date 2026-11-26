@@ -1,6 +1,6 @@
 //! The words the game shows the player: log lines for sim events.
 
-use nighthawk_sim::{Event, Sound};
+use nighthawk_sim::{Event, Sound, Vertical};
 
 /// Turns a sim event into a log line. Ordinary steps aren't worth logging.
 pub fn describe(event: Event) -> Option<String> {
@@ -9,6 +9,17 @@ pub fn describe(event: Event) -> Option<String> {
         Event::Bumped { tile, .. } => Some(format!("You bump into the {}.", tile.name())),
         Event::BlockedByEdge => Some("There is nowhere to go that way.".into()),
         Event::Waited => Some("You wait.".into()),
+        Event::Climbed {
+            way: Vertical::Up, ..
+        } => Some("You climb the ladder up.".into()),
+        Event::Climbed {
+            way: Vertical::Down,
+            ..
+        } => Some("You climb the ladder down.".into()),
+        Event::NoStairs { way: Vertical::Up } => Some("There's no way up here.".into()),
+        Event::NoStairs {
+            way: Vertical::Down,
+        } => Some("There's no way down here.".into()),
         Event::Ambient(sound) => Some(sound_text(sound).into()),
     }
 }
@@ -53,6 +64,38 @@ mod tests {
             Some("There is nowhere to go that way.")
         );
         assert_eq!(describe(Event::Waited).as_deref(), Some("You wait."));
+    }
+
+    #[test]
+    fn climbing_has_lines_for_both_ways_and_for_no_stairs() {
+        let at = Pos::new(0, 0, 1);
+        assert_eq!(
+            describe(Event::Climbed {
+                to: at,
+                way: Vertical::Up
+            })
+            .as_deref(),
+            Some("You climb the ladder up.")
+        );
+        assert_eq!(
+            describe(Event::Climbed {
+                to: at,
+                way: Vertical::Down
+            })
+            .as_deref(),
+            Some("You climb the ladder down.")
+        );
+        assert_eq!(
+            describe(Event::NoStairs { way: Vertical::Up }).as_deref(),
+            Some("There's no way up here.")
+        );
+        assert_eq!(
+            describe(Event::NoStairs {
+                way: Vertical::Down
+            })
+            .as_deref(),
+            Some("There's no way down here.")
+        );
     }
 
     #[test]

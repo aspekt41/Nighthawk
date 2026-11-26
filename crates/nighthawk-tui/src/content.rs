@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use nighthawk_sim::{LoadedMap, MapError, parse_map};
 
 /// The map a new game starts on, as a file name in `data/maps/` (no `.json`).
-pub const START_MAP: &str = "stasis_bay";
+pub const START_MAP: &str = "aft_ring";
 
 /// Environment variable that points at a data folder somewhere else.
 const DATA_ENV: &str = "NIGHTHAWK_DATA";
@@ -126,7 +126,8 @@ mod tests {
     #[test]
     fn the_start_world_loads_from_the_default_locations() {
         let map = load_start_map().unwrap();
-        assert_eq!(map.name, "Stasis bay");
+        assert_eq!(map.name, "Aft habitation ring");
+        assert_eq!(map.deck_names[0], "Stasis bay");
     }
 
     #[test]

@@ -25,7 +25,7 @@ use std::fmt;
 
 use serde::Deserialize;
 
-use crate::map::{Map, Tile};
+use crate::map::{Map, StairsError, Tile};
 use crate::pos::Pos;
 
 /// The glyph that marks the player's starting position.
@@ -36,6 +36,8 @@ const PLAYER_START: char = '@';
 pub struct LoadedMap {
     pub id: String,
     pub name: String,
+    /// One name per deck, bottom to top, like "Stasis bay".
+    pub deck_names: Vec<String>,
     pub map: Map,
     pub player_start: Pos,
 }
@@ -79,6 +81,8 @@ pub enum MapError {
     PlayerStartCount {
         found: usize,
     },
+    /// Stairs without a matching pair on the next deck.
+    Stairs(StairsError),
 }
 
 impl fmt::Display for MapError {
@@ -116,6 +120,7 @@ impl fmt::Display for MapError {
                 f,
                 "deck {deck}, row {row}, column {col}: {glyph:?} is not in the legend"
             ),
+            MapError::Stairs(e) => write!(f, "{e}"),
             MapError::PlayerStartCount { found } => write!(
                 f,
                 "map must have exactly one '{PLAYER_START}' (player start); found {found}"
@@ -140,6 +145,10 @@ struct MapFile {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct DeckFile {
+    /// Shown as the map panel's title while you're on this deck. Optional:
+    /// without it the deck is called "Deck 0", "Deck 1" and so on.
+    #[serde(default)]
+    name: Option<String>,
     rows: Vec<String>,
 }
 
@@ -161,10 +170,14 @@ pub fn parse_map(json: &str) -> Result<LoadedMap, MapError> {
         }
     }
 
+    map.check_stairs().map_err(MapError::Stairs)?;
+    let deck_names = deck_names(&file.decks);
+
     match starts[..] {
         [player_start] => Ok(LoadedMap {
             id: file.id,
             name: file.name,
+            deck_names,
             map,
             player_start,
         }),
@@ -185,6 +198,15 @@ fn cells(decks: &[DeckFile]) -> impl Iterator<Item = (usize, usize, usize, char)
                 .map(move |(x, glyph)| (z, y, x, glyph))
         })
     })
+}
+
+/// Each deck's name, or "Deck N" for decks without one.
+fn deck_names(decks: &[DeckFile]) -> Vec<String> {
+    decks
+        .iter()
+        .enumerate()
+        .map(|(z, deck)| deck.name.clone().unwrap_or_else(|| format!("Deck {z}")))
+        .collect()
 }
 
 /// Turns the legend's one-character string keys into `char`s.
@@ -477,6 +499,39 @@ mod tests {
         assert_eq!(
             err.to_string(),
             "deck 0, row 1, column 2: 'x' is not in the legend"
+        );
+    }
+
+    #[test]
+    fn decks_are_named_or_numbered() {
+        let lower = ["#<#"];
+        let upper = ["@>."];
+        let json = format!(
+            r#"{{ "id": "t", "name": "T", "legend": {{ "\u0023": "wall", ".": "floor",
+                    "<": "stairs_up", ">": "stairs_down" }},
+                 "decks": [ {{ "rows": {lower:?} }}, {{ "name": "Upper", "rows": {upper:?} }} ] }}"#
+        );
+        let loaded = parse_map(&json).unwrap();
+        assert_eq!(
+            loaded.deck_names,
+            vec!["Deck 0".to_string(), "Upper".to_string()]
+        );
+        assert_eq!(loaded.map.get(Pos::new(1, 0, 0)), Some(Tile::StairsUp));
+        assert_eq!(loaded.map.get(Pos::new(1, 0, 1)), Some(Tile::StairsDown));
+    }
+
+    #[test]
+    fn unpaired_stairs_are_rejected_with_their_location() {
+        let rows = ["#@.<#"];
+        let json = format!(
+            r#"{{ "id": "t", "name": "T", "legend": {{ "\u0023": "wall", ".": "floor",
+                    "<": "stairs_up" }}, "decks": [ {{ "rows": {rows:?} }} ] }}"#
+        );
+        let err = parse_map(&json).unwrap_err();
+        assert!(matches!(err, MapError::Stairs(_)));
+        assert_eq!(
+            err.to_string(),
+            "stairs up at deck 0, row 0, column 3 need stairs down at the same spot on deck 1"
         );
     }
 }

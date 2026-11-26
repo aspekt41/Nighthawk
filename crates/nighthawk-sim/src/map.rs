@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::hash::Fnv64;
-use crate::pos::Pos;
+use crate::pos::{Pos, Vertical};
 
 /// What a single tile is made of. This grows into material-backed terrain
 /// later (decision D10). For now it's just enough to walk around a room.
@@ -15,12 +15,17 @@ use crate::pos::Pos;
 pub enum Tile {
     Floor,
     Wall,
+    /// Stairs (or a ladder) to the deck above. Must stand directly under a
+    /// `StairsDown` on that deck; see [`Map::check_stairs`].
+    StairsUp,
+    /// Stairs (or a ladder) to the deck below.
+    StairsDown,
 }
 
 impl Tile {
     pub fn is_walkable(self) -> bool {
         match self {
-            Tile::Floor => true,
+            Tile::Floor | Tile::StairsUp | Tile::StairsDown => true,
             Tile::Wall => false,
         }
     }
@@ -31,6 +36,8 @@ impl Tile {
         match self {
             Tile::Floor => 0,
             Tile::Wall => 1,
+            Tile::StairsUp => 2,
+            Tile::StairsDown => 3,
         }
     }
 
@@ -39,9 +46,35 @@ impl Tile {
         match self {
             Tile::Floor => "floor",
             Tile::Wall => "bulkhead",
+            Tile::StairsUp => "ladder up",
+            Tile::StairsDown => "ladder down",
         }
     }
 }
+
+/// Stairs at `at` lead `way`, but there's no matching stairs there.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StairsError {
+    pub at: Pos,
+    pub way: Vertical,
+}
+
+impl std::fmt::Display for StairsError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let (here, there) = match self.way {
+            Vertical::Up => ("stairs up", "stairs down"),
+            Vertical::Down => ("stairs down", "stairs up"),
+        };
+        let other = self.at.climb(self.way);
+        write!(
+            f,
+            "{here} at deck {}, row {}, column {} need {there} at the same spot on deck {}",
+            self.at.z, self.at.y, self.at.x, other.z
+        )
+    }
+}
+
+impl std::error::Error for StairsError {}
 
 /// A 3D grid of tiles: `width` × `height` on each of `depth` decks.
 ///
@@ -120,6 +153,32 @@ impl Map {
         if found != expected {
             return Err(format!("map should have {expected} tiles but has {found}"));
         }
+        self.check_stairs().map_err(|e| e.to_string())
+    }
+
+    /// Every position on the map, deck by deck, row by row.
+    pub fn positions(&self) -> impl Iterator<Item = Pos> + '_ {
+        (0..self.depth).flat_map(move |z| {
+            (0..self.height).flat_map(move |y| (0..self.width).map(move |x| Pos::new(x, y, z)))
+        })
+    }
+
+    /// Checks that stairs come in pairs: every `StairsUp` has a `StairsDown`
+    /// at the same spot on the deck above, and every `StairsDown` has a
+    /// `StairsUp` below it. That's what lets climbing simply move you one
+    /// deck up or down, knowing there's a way back.
+    pub fn check_stairs(&self) -> Result<(), StairsError> {
+        for at in self.positions() {
+            let needed = match self.get(at) {
+                Some(Tile::StairsUp) => (Vertical::Up, Tile::StairsDown),
+                Some(Tile::StairsDown) => (Vertical::Down, Tile::StairsUp),
+                _ => continue,
+            };
+            let (way, partner) = needed;
+            if self.get(at.climb(way)) != Some(partner) {
+                return Err(StairsError { at, way });
+            }
+        }
         Ok(())
     }
 
@@ -172,5 +231,99 @@ mod tests {
         assert_eq!(map.get(Pos::new(-1, 0, 0)), None);
         assert_eq!(map.get(Pos::new(4, 0, 0)), None);
         assert_eq!(map.get(Pos::new(0, 0, 1)), None);
+    }
+
+    /// A 2×1 map with two decks: stairs up at (0, 0, 0), stairs down above.
+    fn stairs_map() -> Map {
+        let mut map = Map::filled(2, 1, 2, Tile::Floor);
+        map.set(Pos::new(0, 0, 0), Tile::StairsUp);
+        map.set(Pos::new(0, 0, 1), Tile::StairsDown);
+        map
+    }
+
+    #[test]
+    fn stairs_are_walkable_and_named() {
+        assert!(Tile::StairsUp.is_walkable() && Tile::StairsDown.is_walkable());
+        assert_eq!(Tile::StairsUp.name(), "ladder up");
+        assert_eq!(Tile::StairsDown.name(), "ladder down");
+    }
+
+    #[test]
+    fn every_tile_has_its_own_hash_id() {
+        let ids = [Tile::Floor, Tile::Wall, Tile::StairsUp, Tile::StairsDown].map(Tile::hash_id);
+        assert_eq!(
+            ids,
+            [0, 1, 2, 3],
+            "hash ids are part of the determinism contract"
+        );
+    }
+
+    #[test]
+    fn positions_cover_every_tile_once_in_reading_order() {
+        let map = Map::filled(3, 2, 2, Tile::Floor);
+        let all: Vec<Pos> = map.positions().collect();
+        assert_eq!(all.len(), 12);
+        assert_eq!(all[0], Pos::new(0, 0, 0));
+        assert_eq!(all[1], Pos::new(1, 0, 0), "x changes fastest");
+        assert_eq!(all[3], Pos::new(0, 1, 0));
+        assert_eq!(all[6], Pos::new(0, 0, 1), "then the next deck");
+    }
+
+    #[test]
+    fn paired_stairs_pass_the_check() {
+        assert_eq!(stairs_map().check_stairs(), Ok(()));
+        assert_eq!(Map::filled(2, 2, 1, Tile::Floor).check_stairs(), Ok(()));
+    }
+
+    #[test]
+    fn stairs_up_without_stairs_down_above_fail() {
+        let mut map = stairs_map();
+        map.set(Pos::new(0, 0, 1), Tile::Floor);
+        let err = map.check_stairs().unwrap_err();
+        assert_eq!(
+            err,
+            StairsError {
+                at: Pos::new(0, 0, 0),
+                way: Vertical::Up
+            }
+        );
+        assert_eq!(
+            err.to_string(),
+            "stairs up at deck 0, row 0, column 0 need stairs down at the same spot on deck 1"
+        );
+    }
+
+    #[test]
+    fn stairs_down_without_stairs_up_below_fail() {
+        let mut map = stairs_map();
+        map.set(Pos::new(0, 0, 0), Tile::Floor);
+        let err = map.check_stairs().unwrap_err();
+        assert_eq!(
+            err,
+            StairsError {
+                at: Pos::new(0, 0, 1),
+                way: Vertical::Down
+            }
+        );
+        assert!(err.to_string().starts_with("stairs down at deck 1"));
+    }
+
+    #[test]
+    fn stairs_off_the_top_or_bottom_of_the_ship_fail() {
+        let mut top = Map::filled(1, 1, 1, Tile::StairsUp);
+        assert!(top.check_stairs().is_err());
+        top.set(Pos::new(0, 0, 0), Tile::StairsDown);
+        assert!(top.check_stairs().is_err());
+    }
+
+    #[test]
+    fn a_map_with_broken_stairs_is_inconsistent() {
+        let mut map = stairs_map();
+        map.set(Pos::new(0, 0, 1), Tile::Wall);
+        assert!(
+            map.check_consistent()
+                .unwrap_err()
+                .contains("need stairs down")
+        );
     }
 }

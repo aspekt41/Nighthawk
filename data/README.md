@@ -17,10 +17,15 @@ exactly once.
 {
   "id": "closet",
   "name": "Supply closet",
-  "legend": { "#": "wall", ".": "floor" },
+  "legend": { "#": "wall", ".": "floor", "<": "stairs_up", ">": "stairs_down" },
   "decks": [
-    { "rows": ["#####",
-               "#.@.#",
+    { "name": "Lower closet",
+      "rows": ["#####",
+               "#.@<#",
+               "#####"] },
+    { "name": "Upper closet",
+      "rows": ["#####",
+               "#..>#",
                "#####"] }
   ]
 }
@@ -30,9 +35,22 @@ exactly once.
 |---|---|
 | `id` | Must match the file name (`closet.json` → `"closet"`) |
 | `name` | Shown as the map panel's title |
-| `legend` | One character → tile name. Tiles today: `wall`, `floor`. `@` is reserved. |
+| `legend` | One character → tile name. Tiles today: `wall`, `floor`, `stairs_up`, `stairs_down`. `@` is reserved. |
 | `decks` | Listed bottom to top: the first is deck 0. All decks must be the same size. |
+| `decks[].name` | Optional. Shown as the map panel's title on that deck. Without it the deck is "Deck 0", "Deck 1" and so on. |
+| `decks[].rows` | The deck drawn as text, one string per row. |
+
+### Stairs
+
+Stairs come in pairs. Stairs up (`<` in the example) need stairs down (`>`) at
+**exactly the same row and column on the deck above**, and stairs down need
+stairs up below them. A staircase without its partner is an error naming
+its spot, for example
+`stairs up at deck 0, row 2, column 27 need stairs down at the same spot on deck 1`.
+Climbing takes 2 turns.
 
 Mistakes are caught when the game loads, with the exact place named, for example
 `deck 0, row 1, column 2: 'x' is not in the legend`. Misspelled field names are errors too.
 `cargo test` loads every map in this folder, so a broken map also fails the tests.
+It also checks that **every walkable tile can be reached from `@`**, across
+decks by stairs, so a room sealed off by mistake fails too.

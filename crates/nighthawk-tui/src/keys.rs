@@ -5,7 +5,7 @@
 //! decides what an action does. That keeps this file a simple lookup that is
 //! easy to test and, later, to make remappable.
 
-use nighthawk_sim::{Command, Dir};
+use nighthawk_sim::{Command, Dir, Vertical};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
 use crate::title::MenuItem;
@@ -37,8 +37,8 @@ pub enum TitleAction {
     Exit,
 }
 
-/// Movement and waiting while playing. Arrows, vi keys (hjkl + yubn) and the
-/// numpad all work.
+/// Movement, waiting and climbing while playing. Arrows, vi keys (hjkl +
+/// yubn) and the numpad all move; `<` and `>` climb up and down.
 ///
 /// It's a table rather than a big `match`, so adding a key is one line, and
 /// later the table can be loaded from a settings file to make keys remappable.
@@ -65,6 +65,8 @@ const KEYMAP: &[(KeyCode, Command)] = &[
     (KeyCode::Char('3'), Command::Move(Dir::SouthEast)),
     (KeyCode::Char('.'), Command::Wait),
     (KeyCode::Char('5'), Command::Wait),
+    (KeyCode::Char('<'), Command::Climb(Vertical::Up)),
+    (KeyCode::Char('>'), Command::Climb(Vertical::Down)),
 ];
 
 /// The action for a key pressed while playing, if any.
@@ -178,6 +180,18 @@ mod tests {
             let dupes = KEYMAP[i + 1..].iter().filter(|(c, _)| c == code).count();
             assert_eq!(dupes, 0, "{code:?} is bound more than once");
         }
+    }
+
+    #[test]
+    fn angle_brackets_climb() {
+        assert_eq!(
+            command_for(KeyCode::Char('<')),
+            Some(Command::Climb(Vertical::Up))
+        );
+        assert_eq!(
+            command_for(KeyCode::Char('>')),
+            Some(Command::Climb(Vertical::Down))
+        );
     }
 
     #[test]

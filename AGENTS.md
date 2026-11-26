@@ -142,6 +142,10 @@ precise error and exits with code 1 before entering raw mode.
   Write functions that take paths or values as parameters instead of reading
   environment variables in tests (see `find_data_dir` in
   `crates/nighthawk-tui/src/content.rs`).
+- **Editing map rows with scripts:** use exact string replacement. In `sed` and
+  regex patterns `.` matches *any* character, and `.` is also the floor glyph,
+  so a pattern meant for one row can silently rewrite others (it once punched
+  holes in the outer walls). The content tests catch this, but don't rely on it.
 - **The data folder** is found via `$NIGHTHAWK_DATA`, then `./data`, then the
   build-time repo path.
 

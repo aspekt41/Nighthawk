@@ -17,41 +17,57 @@
 use std::fs;
 use std::path::PathBuf;
 
-use nighthawk_sim::{Command, Dir, Event, World, load_from_str, parse_map, save_to_string};
+use nighthawk_sim::{
+    Command, Dir, Event, Vertical, World, load_from_str, parse_map, save_to_string,
+};
 
 const SEED: u64 = 0x4e49_4748_5448_4157; // "NIGHTHAW" in ASCII
 const TURNS: usize = 500;
 
 /// The stored fingerprints. See "If this test fails" above.
-const EXPECTED_STATE_HASH: u64 = 0x6dfc_bf2b_6cf9_c682;
-const EXPECTED_AMBIENT_COUNT: usize = 34;
+const EXPECTED_STATE_HASH: u64 = 0x9fe2_8053_70df_1787;
+const EXPECTED_AMBIENT_COUNT: usize = 62;
 
 fn start_world() -> World {
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../data/maps/stasis_bay.json");
-    let text = fs::read_to_string(path).expect("stasis bay map is readable");
-    World::new(parse_map(&text).expect("stasis bay map is valid"), SEED)
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../data/maps/aft_ring.json");
+    let text = fs::read_to_string(path).expect("starting map is readable");
+    World::new(parse_map(&text).expect("starting map is valid"), SEED)
 }
 
-/// A fixed, wandering walk with waits and wall bumps mixed in. It isn't
-/// random: the same list every run.
+/// A fixed script: walk to the ladder, then loop around it forever,
+/// walking, waiting, bumping walls and climbing both ways. It isn't random:
+/// the same list every run.
 fn script() -> impl Iterator<Item = Command> {
-    use Command::{Move, Wait};
-    let pattern = [
+    use Command::{Climb, Move, Wait};
+    // From the start (4, 7) to the ladder at (27, 2), then up.
+    let to_the_ladder = std::iter::repeat_n(Move(Dir::North), 5)
+        .chain(std::iter::repeat_n(Move(Dir::East), 23))
+        .chain([Climb(Vertical::Up)]);
+    // A small loop that starts and ends on the ladder, on either deck.
+    let around = [
         Move(Dir::East),
         Move(Dir::East),
-        Move(Dir::SouthEast),
-        Wait,
-        Move(Dir::North),
-        Move(Dir::North),
-        Move(Dir::North),
-        Move(Dir::West),
-        Move(Dir::NorthWest),
-        Wait,
         Move(Dir::South),
-        Move(Dir::East),
-        Move(Dir::NorthEast),
+        Wait,
+        Move(Dir::West),
+        Move(Dir::West),
+        Move(Dir::North),
     ];
-    pattern.into_iter().cycle().take(TURNS)
+    // North into the wall twice (no time passes), then back to the ladder.
+    let bump_and_back = [
+        Move(Dir::North),
+        Move(Dir::North),
+        Move(Dir::North),
+        Move(Dir::South),
+    ];
+    let pattern = around
+        .into_iter()
+        .chain([Climb(Vertical::Down)])
+        .chain(bump_and_back)
+        .chain(around)
+        .chain([Climb(Vertical::Up), Climb(Vertical::Up)]); // the second can't
+    let pattern: Vec<Command> = pattern.collect();
+    to_the_ladder.chain(pattern.into_iter().cycle()).take(TURNS)
 }
 
 /// Plays the script and returns the final world and every event it produced.
@@ -115,4 +131,18 @@ fn saving_after_every_command_changes_nothing() {
         world = load_from_str(&save_to_string(&world)).expect("save loads");
     }
     assert_eq!(world.state_hash(), EXPECTED_STATE_HASH);
+}
+
+#[test]
+fn the_script_climbs_up_and_comes_back_down() {
+    // Guards the test itself: if a map edit moved the ladder, the script
+    // would silently stop covering stairs. Check it really uses them.
+    let (_, events) = play();
+    let climbed = |way| {
+        events
+            .iter()
+            .any(|e| matches!(e, Event::Climbed { way: w, .. } if *w == way))
+    };
+    assert!(climbed(Vertical::Up), "the script never climbed up");
+    assert!(climbed(Vertical::Down), "the script never climbed down");
 }
