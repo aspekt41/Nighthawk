@@ -1,7 +1,8 @@
-//! The tile grid.
+//! The tile grid, and the air in it.
 
 use serde::{Deserialize, Serialize};
 
+use crate::air::Mix;
 use crate::hash::Fnv64;
 use crate::pos::{Pos, Vertical};
 
@@ -29,6 +30,15 @@ pub enum Tile {
 
 impl Tile {
     pub fn is_walkable(self) -> bool {
+        match self {
+            Tile::Floor | Tile::StairsUp | Tile::StairsDown | Tile::DoorOpen => true,
+            Tile::Wall | Tile::DoorClosed => false,
+        }
+    }
+
+    /// Whether air can be in this tile and move through it. Walls and
+    /// closed doors are solid: air on either side can't get past them.
+    pub fn holds_air(self) -> bool {
         match self {
             Tile::Floor | Tile::StairsUp | Tile::StairsDown | Tile::DoorOpen => true,
             Tile::Wall | Tile::DoorClosed => false,
@@ -107,6 +117,10 @@ pub struct Map {
     height: i32,
     depth: i32,
     tiles: Vec<Tile>,
+    /// The air in each tile, in the same order as `tiles`. Tiles that can't
+    /// hold air are vacuum, except a closed door, which keeps whatever air
+    /// was in the doorway when it shut until it opens again.
+    air: Vec<Mix>,
 }
 
 impl Map {
@@ -122,7 +136,86 @@ impl Map {
             height,
             depth,
             tiles: vec![fill; len],
+            air: vec![Mix::VACUUM; len],
         }
+    }
+
+    /// The air in the tile at `p`, or `None` if `p` is off the map.
+    pub fn air(&self, p: Pos) -> Option<Mix> {
+        self.index(p).map(|i| self.air[i])
+    }
+
+    /// Sets the air in the tile at `p`. Positions off the map are ignored.
+    pub fn set_air(&mut self, p: Pos, mix: Mix) {
+        if let Some(i) = self.index(p) {
+            self.air[i] = mix;
+        }
+    }
+
+    /// Fills every air-holding tile on deck `z` with `mix`. Used when a map
+    /// is first built.
+    pub(crate) fn fill_deck_air(&mut self, z: i32, mix: Mix) {
+        let on_deck: Vec<Pos> = self.positions().filter(|p| p.z == z).collect();
+        for p in on_deck {
+            if self.get(p).is_some_and(Tile::holds_air) {
+                self.set_air(p, mix);
+            }
+        }
+    }
+
+    /// The total of each gas over the whole map, in [`crate::Gas::ALL`]
+    /// order. In a sealed ship this never changes.
+    pub fn total_air(&self) -> [u64; 3] {
+        self.air.iter().fold([0; 3], |sum, mix| {
+            let [o2, n2, co2] = sum;
+            [
+                o2 + u64::from(mix.o2),
+                n2 + u64::from(mix.n2),
+                co2 + u64::from(mix.co2),
+            ]
+        })
+    }
+
+    /// One turn of air spreading. Every pair of connected air-holding tiles
+    /// moves part of the difference between them (see [`Mix::flow_to`]).
+    ///
+    /// All flows are worked out from a snapshot taken *before* any air moves,
+    /// then applied. So the order tiles are visited in can't change the
+    /// result, and air moves the same way in every direction.
+    pub(crate) fn spread_air(&mut self) {
+        let before = self.air.clone();
+        for (a, b) in self.air_links() {
+            let flow = before[a].flow_to(before[b]);
+            self.air[a] = self.air[a].plus(flow.map(|f| -f));
+            self.air[b] = self.air[b].plus(flow);
+        }
+    }
+
+    /// Every pair of tiles air can move between, as indexes into `air`.
+    /// Each pair is listed once: a tile links to its east and south
+    /// neighbours, and to the deck above if it's a ladder up.
+    fn air_links(&self) -> Vec<(usize, usize)> {
+        self.positions().flat_map(|p| self.links_from(p)).collect()
+    }
+
+    fn links_from(&self, p: Pos) -> Vec<(usize, usize)> {
+        let Some(from) = self.air_index(p) else {
+            return Vec::new();
+        };
+        let mut targets = vec![Pos::new(p.x + 1, p.y, p.z), Pos::new(p.x, p.y + 1, p.z)];
+        if self.get(p) == Some(Tile::StairsUp) {
+            targets.push(p.climb(Vertical::Up));
+        }
+        targets
+            .into_iter()
+            .filter_map(|t| Some((from, self.air_index(t)?)))
+            .collect()
+    }
+
+    /// The index of `p` in `air`, if `p` is on the map and can hold air.
+    fn air_index(&self, p: Pos) -> Option<usize> {
+        self.get(p).filter(|tile| tile.holds_air())?;
+        self.index(p)
     }
 
     pub fn width(&self) -> i32 {
@@ -168,6 +261,12 @@ impl Map {
         if found != expected {
             return Err(format!("map should have {expected} tiles but has {found}"));
         }
+        if self.air.len() != self.tiles.len() {
+            return Err(format!(
+                "map has {found} tiles but air for {}",
+                self.air.len()
+            ));
+        }
         self.check_stairs().map_err(|e| e.to_string())
     }
 
@@ -202,6 +301,11 @@ impl Map {
         h.i32(self.width).i32(self.height).i32(self.depth);
         for tile in &self.tiles {
             h.u8(tile.hash_id());
+        }
+        for mix in &self.air {
+            h.u64(u64::from(mix.o2))
+                .u64(u64::from(mix.n2))
+                .u64(u64::from(mix.co2));
         }
     }
 
@@ -351,5 +455,230 @@ mod tests {
         assert!(Tile::Floor.is_passable());
         assert_eq!(Tile::DoorClosed.name(), "closed door");
         assert_eq!(Tile::DoorOpen.name(), "open door");
+    }
+
+    // --- Air ------------------------------------------------------------------
+
+    /// A one-deck corridor `w` tiles long, all floor, full of standard air.
+    fn corridor(w: i32) -> Map {
+        let mut map = Map::filled(w, 1, 1, Tile::Floor);
+        map.fill_deck_air(0, Mix::STANDARD);
+        map
+    }
+
+    fn total_pressure(map: &Map) -> u64 {
+        map.total_air().iter().sum()
+    }
+
+    #[test]
+    fn only_open_tiles_hold_air() {
+        for tile in [
+            Tile::Floor,
+            Tile::StairsUp,
+            Tile::StairsDown,
+            Tile::DoorOpen,
+        ] {
+            assert!(tile.holds_air(), "{tile:?}");
+        }
+        assert!(!Tile::Wall.holds_air());
+        assert!(!Tile::DoorClosed.holds_air());
+    }
+
+    #[test]
+    fn filling_a_deck_skips_walls_and_other_decks() {
+        let mut map = Map::filled(2, 1, 2, Tile::Floor);
+        map.set(Pos::new(1, 0, 0), Tile::Wall);
+        map.fill_deck_air(0, Mix::STANDARD);
+        assert_eq!(map.air(Pos::new(0, 0, 0)), Some(Mix::STANDARD));
+        assert_eq!(
+            map.air(Pos::new(1, 0, 0)),
+            Some(Mix::VACUUM),
+            "a wall holds no air"
+        );
+        assert_eq!(
+            map.air(Pos::new(0, 0, 1)),
+            Some(Mix::VACUUM),
+            "the other deck"
+        );
+        assert_eq!(map.air(Pos::new(9, 9, 9)), None);
+    }
+
+    #[test]
+    fn air_flows_from_full_to_empty() {
+        let mut map = corridor(2);
+        map.set_air(Pos::new(1, 0, 0), Mix::VACUUM);
+        map.spread_air();
+        let (full, empty) = (
+            map.air(Pos::new(0, 0, 0)).unwrap(),
+            map.air(Pos::new(1, 0, 0)).unwrap(),
+        );
+        assert!(full.total() < Mix::STANDARD.total());
+        assert!(empty.total() > 0);
+        assert_eq!(
+            full.total() + empty.total(),
+            Mix::STANDARD.total(),
+            "nothing lost"
+        );
+    }
+
+    #[test]
+    fn a_sealed_space_never_gains_or_loses_a_single_pascal() {
+        // A lopsided start: everything in one end of a long corridor.
+        let mut map = corridor(12);
+        for x in 1..12 {
+            map.set_air(Pos::new(x, 0, 0), Mix::VACUUM);
+        }
+        map.set_air(
+            Pos::new(0, 0, 0),
+            Mix {
+                o2: 500_000,
+                n2: 1_000_000,
+                co2: 7_777,
+            },
+        );
+        let start = map.total_air();
+        for _ in 0..10_000 {
+            map.spread_air();
+            assert_eq!(map.total_air(), start);
+        }
+    }
+
+    #[test]
+    fn air_evens_out_along_a_corridor() {
+        let mut map = corridor(8);
+        for x in 1..8 {
+            map.set_air(Pos::new(x, 0, 0), Mix::VACUUM);
+        }
+        for _ in 0..2_000 {
+            map.spread_air();
+        }
+        let totals: Vec<u64> = (0..8)
+            .map(|x| map.air(Pos::new(x, 0, 0)).unwrap().total())
+            .collect();
+        let (min, max) = (totals.iter().min().unwrap(), totals.iter().max().unwrap());
+        // Whole-number flows stop once neighbours differ by less than half
+        // a divisor of a gas, so a faint slope can remain: at most
+        // (divisor / 2 - 1) Pa per gas per link. 7 links, 3 gases.
+        let limit = 7 * 3 * (crate::air::SPREAD_DIVISOR as u64 / 2 - 1);
+        assert!(
+            max - min <= limit,
+            "slope {} over limit {limit}: {totals:?}",
+            max - min
+        );
+    }
+
+    #[test]
+    fn walls_and_closed_doors_stop_air() {
+        for barrier in [Tile::Wall, Tile::DoorClosed] {
+            let mut map = corridor(3);
+            map.set(Pos::new(1, 0, 0), barrier);
+            map.set_air(Pos::new(1, 0, 0), Mix::VACUUM);
+            map.set_air(Pos::new(2, 0, 0), Mix::VACUUM);
+            for _ in 0..100 {
+                map.spread_air();
+            }
+            assert_eq!(
+                map.air(Pos::new(0, 0, 0)),
+                Some(Mix::STANDARD),
+                "{barrier:?}"
+            );
+            assert_eq!(map.air(Pos::new(2, 0, 0)), Some(Mix::VACUUM), "{barrier:?}");
+        }
+    }
+
+    #[test]
+    fn a_closed_door_keeps_its_air_and_releases_it_when_opened() {
+        let mut map = corridor(3);
+        map.set(Pos::new(1, 0, 0), Tile::DoorClosed); // the doorway still has air
+        map.set_air(Pos::new(2, 0, 0), Mix::VACUUM);
+        for _ in 0..10 {
+            map.spread_air();
+        }
+        assert_eq!(
+            map.air(Pos::new(1, 0, 0)),
+            Some(Mix::STANDARD),
+            "trapped, not lost"
+        );
+        map.set(Pos::new(1, 0, 0), Tile::DoorOpen);
+        map.spread_air();
+        assert!(
+            map.air(Pos::new(2, 0, 0)).unwrap().total() > 0,
+            "flows once open"
+        );
+    }
+
+    #[test]
+    fn air_moves_between_decks_through_ladders() {
+        let mut map = stairs_map(); // ladder at (0, 0): up on deck 0, down on deck 1
+        map.fill_deck_air(0, Mix::STANDARD);
+        let before = total_pressure(&map);
+        map.spread_air();
+        assert!(
+            map.air(Pos::new(0, 0, 1)).unwrap().total() > 0,
+            "up the ladder"
+        );
+        assert_eq!(
+            map.air(Pos::new(1, 0, 1)),
+            Some(Mix::VACUUM),
+            "not yet past it"
+        );
+        assert_eq!(total_pressure(&map), before);
+    }
+
+    #[test]
+    fn no_air_moves_between_decks_without_a_ladder() {
+        let mut map = Map::filled(1, 1, 2, Tile::Floor);
+        map.fill_deck_air(0, Mix::STANDARD);
+        for _ in 0..10 {
+            map.spread_air();
+        }
+        assert_eq!(map.air(Pos::new(0, 0, 1)), Some(Mix::VACUUM));
+    }
+
+    #[test]
+    fn spreading_is_the_same_in_both_directions() {
+        // Mirror images must end as mirror images: the visiting order
+        // of tiles can't favour one side.
+        let mut left = corridor(5);
+        let mut right = corridor(5);
+        for x in 1..5 {
+            left.set_air(Pos::new(x, 0, 0), Mix::VACUUM);
+            right.set_air(Pos::new(4 - x, 0, 0), Mix::VACUUM);
+        }
+        for _ in 0..37 {
+            left.spread_air();
+            right.spread_air();
+        }
+        for x in 0..5 {
+            assert_eq!(
+                left.air(Pos::new(x, 0, 0)),
+                right.air(Pos::new(4 - x, 0, 0)),
+                "x = {x}"
+            );
+        }
+    }
+
+    #[test]
+    fn mismatched_air_data_is_inconsistent() {
+        let mut map = corridor(3);
+        assert_eq!(map.check_consistent(), Ok(()));
+        map.air.pop();
+        assert_eq!(
+            map.check_consistent(),
+            Err("map has 3 tiles but air for 2".to_string())
+        );
+    }
+
+    #[test]
+    fn air_is_part_of_the_state_hash() {
+        let a = corridor(3);
+        let mut b = corridor(3);
+        b.set_air(Pos::new(1, 0, 0), Mix::STANDARD.scaled(99));
+        let hash = |m: &Map| {
+            let mut h = Fnv64::new();
+            m.hash_into(&mut h);
+            h.finish()
+        };
+        assert_ne!(hash(&a), hash(&b));
     }
 }

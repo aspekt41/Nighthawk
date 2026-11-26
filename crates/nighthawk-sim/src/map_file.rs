@@ -25,6 +25,7 @@ use std::fmt;
 
 use serde::Deserialize;
 
+use crate::air::Mix;
 use crate::map::{Map, StairsError, Tile};
 use crate::pos::Pos;
 
@@ -83,6 +84,11 @@ pub enum MapError {
     },
     /// Stairs without a matching pair on the next deck.
     Stairs(StairsError),
+    /// A deck's starting `pressure` is above the allowed maximum.
+    BadPressure {
+        deck: usize,
+        percent: u32,
+    },
 }
 
 impl fmt::Display for MapError {
@@ -121,6 +127,10 @@ impl fmt::Display for MapError {
                 "deck {deck}, row {row}, column {col}: {glyph:?} is not in the legend"
             ),
             MapError::Stairs(e) => write!(f, "{e}"),
+            MapError::BadPressure { deck, percent } => write!(
+                f,
+                "deck {deck} has pressure {percent}%; it must be 0 to {MAX_PRESSURE_PERCENT}"
+            ),
             MapError::PlayerStartCount { found } => write!(
                 f,
                 "map must have exactly one '{PLAYER_START}' (player start); found {found}"
@@ -149,8 +159,16 @@ struct DeckFile {
     /// without it the deck is called "Deck 0", "Deck 1" and so on.
     #[serde(default)]
     name: Option<String>,
+    /// The deck's starting air pressure as a percentage of normal ship air
+    /// (101.3 kPa), from 0 (vacuum) to 200. Optional: 100 if left out. The
+    /// mix is always normal ship air, just thinner or denser.
+    #[serde(default)]
+    pressure: Option<u32>,
     rows: Vec<String>,
 }
+
+/// The highest starting pressure a deck may ask for, in percent.
+const MAX_PRESSURE_PERCENT: u32 = 200;
 
 /// Parses and validates a map file's text.
 pub fn parse_map(json: &str) -> Result<LoadedMap, MapError> {
@@ -171,6 +189,7 @@ pub fn parse_map(json: &str) -> Result<LoadedMap, MapError> {
     }
 
     map.check_stairs().map_err(MapError::Stairs)?;
+    fill_air(&mut map, &file.decks)?;
     let deck_names = deck_names(&file.decks);
 
     match starts[..] {
@@ -198,6 +217,19 @@ fn cells(decks: &[DeckFile]) -> impl Iterator<Item = (usize, usize, usize, char)
                 .map(move |(x, glyph)| (z, y, x, glyph))
         })
     })
+}
+
+/// Gives every deck its starting air: normal ship air scaled to the
+/// deck's `pressure` (100% unless the file says otherwise).
+fn fill_air(map: &mut Map, decks: &[DeckFile]) -> Result<(), MapError> {
+    for (z, deck) in decks.iter().enumerate() {
+        let percent = deck.pressure.unwrap_or(100);
+        if percent > MAX_PRESSURE_PERCENT {
+            return Err(MapError::BadPressure { deck: z, percent });
+        }
+        map.fill_deck_air(to_i32(z), Mix::STANDARD.scaled(percent));
+    }
+    Ok(())
 }
 
 /// Each deck's name, or "Deck N" for decks without one.
@@ -287,6 +319,7 @@ fn to_i32(n: usize) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::air::Mix;
 
     /// Builds a one-deck map file from rows, with the standard legend.
     fn one_deck(rows: &[&str]) -> String {
@@ -532,6 +565,62 @@ mod tests {
         assert_eq!(
             err.to_string(),
             "stairs up at deck 0, row 0, column 3 need stairs down at the same spot on deck 1"
+        );
+    }
+
+    #[test]
+    fn decks_start_with_normal_air_unless_the_file_says_otherwise() {
+        let lower = ["#<#"];
+        let upper = ["@>."];
+        let json = format!(
+            r#"{{ "id": "t", "name": "T", "legend": {{ "\u0023": "wall", ".": "floor",
+                    "<": "stairs_up", ">": "stairs_down" }},
+                 "decks": [ {{ "rows": {lower:?} }},
+                            {{ "pressure": 60, "rows": {upper:?} }} ] }}"#
+        );
+        let map = parse_map(&json).unwrap().map;
+        assert_eq!(
+            map.air(Pos::new(1, 0, 0)),
+            Some(Mix::STANDARD),
+            "default 100%"
+        );
+        assert_eq!(
+            map.air(Pos::new(0, 0, 0)),
+            Some(Mix::VACUUM),
+            "walls hold none"
+        );
+        assert_eq!(map.air(Pos::new(2, 0, 1)), Some(Mix::STANDARD.scaled(60)));
+    }
+
+    #[test]
+    fn a_vacuum_deck_is_allowed() {
+        let rows = ["@."];
+        let json = format!(
+            r#"{{ "id": "t", "name": "T", "legend": {{ ".": "floor" }},
+                 "decks": [ {{ "pressure": 0, "rows": {rows:?} }} ] }}"#
+        );
+        let map = parse_map(&json).unwrap().map;
+        assert_eq!(map.air(Pos::new(1, 0, 0)), Some(Mix::VACUUM));
+    }
+
+    #[test]
+    fn too_high_a_pressure_is_rejected() {
+        let rows = ["@."];
+        let json = format!(
+            r#"{{ "id": "t", "name": "T", "legend": {{ ".": "floor" }},
+                 "decks": [ {{ "pressure": 201, "rows": {rows:?} }} ] }}"#
+        );
+        let err = parse_map(&json).unwrap_err();
+        assert!(matches!(
+            err,
+            MapError::BadPressure {
+                deck: 0,
+                percent: 201
+            }
+        ));
+        assert_eq!(
+            err.to_string(),
+            "deck 0 has pressure 201%; it must be 0 to 200"
         );
     }
 }

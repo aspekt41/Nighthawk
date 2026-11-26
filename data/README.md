@@ -38,6 +38,7 @@ exactly once.
 | `legend` | One character → tile name. Tiles today: `wall`, `floor`, `stairs_up`, `stairs_down`, `door_closed`, `door_open`. `@` is reserved. |
 | `decks` | Listed bottom to top: the first is deck 0. All decks must be the same size. |
 | `decks[].name` | Optional. Shown as the map panel's title on that deck. Without it the deck is "Deck 0", "Deck 1" and so on. |
+| `decks[].pressure` | Optional. The deck's starting air pressure as a percentage of normal ship air (101.3 kPa: 21% O2, 79% N2, a trace of CO2), from 0 (vacuum) to 200. Default 100. Air then spreads through open tiles, doors and ladders as the game runs. |
 | `decks[].rows` | The deck drawn as text, one string per row. |
 
 ### Stairs

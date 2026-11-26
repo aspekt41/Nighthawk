@@ -235,6 +235,7 @@ impl World {
     fn pass_time(&mut self, turns: u64, events: &mut Vec<Event>) {
         for _ in 0..turns {
             self.turn += 1;
+            self.map.spread_air();
             if self.ambient_rng.one_in(AMBIENT_ONE_IN)
                 && let Some(&sound) = self.ambient_rng.pick(&Sound::ALL)
             {
@@ -748,5 +749,21 @@ mod tests {
         opened.turn = closed.turn; // so only the door differs
         opened.ambient_rng = closed.ambient_rng.clone();
         assert_ne!(closed.state_hash(), opened.state_hash());
+    }
+
+    #[test]
+    fn air_spreads_once_for_every_turn_that_passes() {
+        // Thin air on one side of an open doorway: each turn that passes
+        // moves some across; a turn that doesn't pass moves nothing.
+        let mut world = door_world();
+        world
+            .map
+            .set_air(Pos::new(3, 1, 0), crate::air::Mix::VACUUM);
+        world.apply(Command::Move(Dir::East)); // open the door: one turn
+        let after_open = world.map.air(Pos::new(3, 1, 0));
+        world.apply(Command::Move(Dir::North)); // bump a wall: no time
+        assert_eq!(world.map.air(Pos::new(3, 1, 0)), after_open);
+        world.apply(Command::Wait);
+        assert!(world.map.air(Pos::new(3, 1, 0)).unwrap().total() > after_open.unwrap().total());
     }
 }

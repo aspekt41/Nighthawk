@@ -13,7 +13,7 @@
 //! └───────────────────────────────────────────────────────┘
 //! ```
 
-use nighthawk_sim::{Pos, Tile, World};
+use nighthawk_sim::{Mix, Pos, Tile, World};
 use ratatui::Frame;
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Constraint, Layout, Rect};
@@ -35,7 +35,7 @@ const TITLE_HEIGHT: u16 = 20;
 pub fn render(app: &App, frame: &mut Frame) {
     match &app.screen {
         Screen::Title(menu) => render_title(menu, frame),
-        Screen::Playing(world) => render_game(world, &app.log, frame),
+        Screen::Playing(world) => render_game(world, &app.log, app.show_air, frame),
     }
 }
 
@@ -110,16 +110,17 @@ fn centred(area: Rect, width: u16, height: u16) -> Rect {
 }
 
 /// The game screen: map, status sidebar and message log.
-fn render_game(world: &World, log_lines: &[String], frame: &mut Frame) {
+fn render_game(world: &World, log_lines: &[String], show_air: bool, frame: &mut Frame) {
     let [top, log_area] =
         Layout::vertical([Constraint::Min(5), Constraint::Length(LOG_HEIGHT)]).areas(frame.area());
     let [map_area, side_area] =
         Layout::horizontal([Constraint::Min(10), Constraint::Length(SIDEBAR_WIDTH)]).areas(top);
 
-    let map_block = Block::bordered().title(format!(" {} ", world.area_name()));
+    let overlay_note = if show_air { " [air overlay]" } else { "" };
+    let map_block = Block::bordered().title(format!(" {}{overlay_note} ", world.area_name()));
     let map_inner = map_block.inner(map_area);
     frame.render_widget(map_block, map_area);
-    frame.render_widget(MapView { world }, map_inner);
+    frame.render_widget(MapView { world, show_air }, map_inner);
 
     frame.render_widget(sidebar(world), side_area);
     frame.render_widget(log(log_lines, log_area.height.saturating_sub(2)), log_area);
@@ -132,6 +133,8 @@ fn render_game(world: &World, log_lines: &[String], frame: &mut Frame) {
 /// will always be drawn this way, because it's a grid, not text.
 pub struct MapView<'a> {
     pub world: &'a World,
+    /// Shade floor tiles by air pressure instead of drawing them as `.`.
+    pub show_air: bool,
 }
 
 impl Widget for MapView<'_> {
@@ -148,7 +151,7 @@ impl Widget for MapView<'_> {
                     origin_y + i32::from(row),
                     player.z,
                 );
-                let (glyph, style) = glyph_at(self.world, pos);
+                let (glyph, style) = glyph_at(self.world, pos, self.show_air);
                 buf[(area.x + col, area.y + row)]
                     .set_symbol(glyph)
                     .set_style(style);
@@ -159,14 +162,33 @@ impl Widget for MapView<'_> {
 
 /// The character and colour for one map cell. The player is drawn on top of
 /// whatever tile they stand on. Off-map cells are blank.
-fn glyph_at(world: &World, pos: Pos) -> (&'static str, Style) {
+fn glyph_at(world: &World, pos: Pos, show_air: bool) -> (&'static str, Style) {
     if pos == world.player() {
         return (
             "@",
             Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD),
         );
     }
-    world.map().get(pos).map_or((" ", Style::new()), tile_glyph)
+    match (world.map().get(pos), world.map().air(pos)) {
+        (Some(Tile::Floor), Some(mix)) if show_air => air_glyph(mix),
+        (tile, _) => tile.map_or((" ", Style::new()), tile_glyph),
+    }
+}
+
+/// How full of air a floor tile looks on the air overlay: solid for normal
+/// pressure, fading through lighter shades to `.` for near vacuum. The
+/// shape alone tells the story; colour (cyan for air, red for vacuum) helps.
+fn air_glyph(mix: Mix) -> (&'static str, Style) {
+    // Pressure in eighths of normal ship air, so 8 is normal.
+    let eighths = mix.total() * 8 / Mix::STANDARD.total();
+    let air = Style::new().fg(Color::Cyan);
+    match eighths {
+        7.. => ("█", air),
+        5..=6 => ("▓", air),
+        3..=4 => ("▒", air),
+        1..=2 => ("░", air),
+        0 => (".", Style::new().fg(Color::Red)),
+    }
 }
 
 /// How each kind of tile looks. `<` and `>` are the classic roguelike
@@ -188,27 +210,60 @@ fn tile_glyph(tile: Tile) -> (&'static str, Style) {
     }
 }
 
+/// The status panel.
 fn sidebar(world: &World) -> Paragraph<'static> {
+    Paragraph::new(sidebar_lines(world)).block(Block::bordered().title(" Status "))
+}
+
+/// The status panel's lines. They must fit in 16, the space a minimum
+/// 80×24 terminal leaves the panel.
+fn sidebar_lines(world: &World) -> Vec<Line<'static>> {
     let p = world.player();
     let dim = Style::new().fg(Color::DarkGray);
-    Paragraph::new(vec![
-        Line::styled("NIGHTHAWK", Style::new().add_modifier(Modifier::BOLD)),
-        Line::raw(""),
+    let mut lines = vec![
         Line::raw(format!("Deck  {} of {}", p.z, world.map().depth())),
         Line::raw(format!("Pos   {}, {}", p.x, p.y)),
         Line::raw(format!("Turn  {}", world.turn())),
         Line::raw(format!("Seed  {}", world.seed())),
         Line::raw(""),
-        Line::styled("move  arrows hjkl", dim),
-        Line::styled("      yubn numpad", dim),
-        Line::styled("wait  . or 5", dim),
-        Line::styled("climb < or >", dim),
-        Line::styled("close c + dir", dim),
-        Line::styled("save  S", dim),
-        Line::styled("menu  q (saves)", dim),
-        Line::styled("      Q (no save)", dim),
-    ])
-    .block(Block::bordered().title(" Status "))
+    ];
+    lines.extend(air_lines(world.map().air(p).unwrap_or(Mix::VACUUM)));
+    lines.extend([
+        Line::raw(""),
+        Line::styled("move  hjkl yubn", dim),
+        Line::styled("wait .  climb < >", dim),
+        Line::styled("close c  air a", dim),
+        Line::styled("save S  menu q/Q", dim),
+    ]);
+    lines
+}
+
+/// The air where the player stands: pressure, then each gas's share.
+/// The shares always add up to exactly 100.0% (see `Mix::per_mille`).
+fn air_lines(mix: Mix) -> [Line<'static>; 3] {
+    let Some([o2, n2, co2]) = mix.per_mille() else {
+        return [
+            Line::styled("Air   vacuum", Style::new().fg(Color::Red)),
+            Line::raw("O2 --    N2 --"),
+            Line::raw("CO2 --"),
+        ];
+    };
+    [
+        Line::raw(format!("Air   {} kPa", kilopascals(mix.total()))),
+        Line::raw(format!("O2 {}  N2 {}", percent(o2), percent(n2))),
+        Line::raw(format!("CO2 {}", percent(co2))),
+    ]
+}
+
+/// Pascals as kilopascals with one decimal place, rounded: 101325 → "101.3".
+fn kilopascals(pa: u64) -> String {
+    let tenths = (pa + 50) / 100;
+    format!("{}.{}", tenths / 10, tenths % 10)
+}
+
+/// Tenths of a percent as a percentage: 210 → "21.0%".
+fn percent(per_mille: u32) -> String {
+    format!("{}.{}%", per_mille / 10, per_mille % 10)
 }
 
 /// The newest `lines` log entries, oldest at the top.
@@ -240,7 +295,11 @@ mod tests {
     fn draw(world: &World, w: u16, h: u16) -> Vec<String> {
         let area = Rect::new(0, 0, w, h);
         let mut buf = Buffer::empty(area);
-        MapView { world }.render(area, &mut buf);
+        MapView {
+            world,
+            show_air: false,
+        }
+        .render(area, &mut buf);
         (0..h)
             .map(|y| (0..w).map(|x| buf[(x, y)].symbol()).collect())
             .collect()
@@ -274,7 +333,7 @@ mod tests {
     }
 
     fn game_screen(world: &World, log: &[String]) -> String {
-        draw_screen(80, 24, |frame| render_game(world, log, frame))
+        draw_screen(80, 24, |frame| render_game(world, log, false, frame))
     }
 
     fn title_screen(menu: &TitleMenu) -> String {
@@ -291,7 +350,7 @@ mod tests {
         assert!(screen.contains("Turn  0"));
         assert!(screen.contains("Deck  0 of 1"));
         assert!(screen.contains("Seed  1"));
-        assert!(screen.contains("menu  q (saves)"));
+        assert!(screen.contains("save S  menu q/Q"));
         assert!(screen.contains("You wake in the stasis bay."));
     }
 
@@ -402,6 +461,79 @@ mod tests {
         );
         assert!(screen.contains("@<"), "the ladder is right of the player");
         assert!(screen.contains("Deck  0 of 2"));
+    }
+
+    // --- Air ------------------------------------------------------------------
+
+    #[test]
+    fn pressures_and_shares_are_formatted_with_one_decimal() {
+        assert_eq!(kilopascals(101_325), "101.3");
+        assert_eq!(kilopascals(60_795), "60.8");
+        assert_eq!(kilopascals(49), "0.0");
+        assert_eq!(kilopascals(50), "0.1");
+        assert_eq!(percent(210), "21.0%");
+        assert_eq!(percent(1000), "100.0%");
+        assert_eq!(percent(4), "0.4%");
+    }
+
+    fn texts(lines: [Line<'static>; 3]) -> Vec<String> {
+        lines.iter().map(ToString::to_string).collect()
+    }
+
+    #[test]
+    fn the_sidebar_reads_out_the_air() {
+        assert_eq!(
+            texts(air_lines(Mix::STANDARD)),
+            vec!["Air   101.3 kPa", "O2 21.0%  N2 79.0%", "CO2 0.0%"]
+        );
+        assert_eq!(texts(air_lines(Mix::VACUUM))[0], "Air   vacuum");
+    }
+
+    #[test]
+    fn the_overlay_shades_floor_by_pressure() {
+        let shade = |percent| air_glyph(Mix::STANDARD.scaled(percent)).0;
+        assert_eq!(shade(100), "█");
+        assert_eq!(shade(150), "█", "over-pressure is still full");
+        assert_eq!(shade(70), "▓");
+        assert_eq!(shade(50), "▒");
+        assert_eq!(shade(20), "░");
+        assert_eq!(shade(5), ".");
+        assert_eq!(shade(0), ".");
+    }
+
+    #[test]
+    fn the_sidebar_fits_a_minimum_terminal() {
+        // 80×24 leaves 24 - 6 (log) - 2 (borders) = 16 lines.
+        let lines = sidebar_lines(&test_world());
+        assert!(lines.len() <= 16, "{} lines", lines.len());
+        for line in &lines {
+            assert!(
+                line.width() <= usize::from(SIDEBAR_WIDTH - 2),
+                "too wide: {line}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_air_overlay_shows_thin_air_upstairs_and_is_labelled() {
+        let map = crate::content::load_start_map().unwrap();
+        let mut world = World::new(map, 1);
+        let full = draw_screen(80, 24, |f| render_game(&world, &[], true, f));
+        assert!(full.contains("[air overlay]"));
+        assert!(full.contains("███"), "the stasis bay is at full pressure");
+
+        // Climb to the crew deck, which starts at 60% pressure.
+        use nighthawk_sim::Command::{Climb, Move};
+        let route = std::iter::repeat_n(Move(Dir::North), 5)
+            .chain(std::iter::repeat_n(Move(Dir::East), 23))
+            .chain([Climb(nighthawk_sim::Vertical::Up)]);
+        for command in route {
+            world.apply(command);
+        }
+        let upstairs = draw_screen(80, 24, |f| render_game(&world, &[], true, f));
+        assert!(upstairs.contains("▒▒▒"), "thin air upstairs:\n{upstairs}");
+        let plain = draw_screen(80, 24, |f| render_game(&world, &[], false, f));
+        assert!(!plain.contains("▒") && !plain.contains("[air overlay]"));
     }
 
     #[test]

@@ -25,7 +25,7 @@ const SEED: u64 = 0x4e49_4748_5448_4157; // "NIGHTHAW" in ASCII
 const TURNS: usize = 500;
 
 /// The stored fingerprints. See "If this test fails" above.
-const EXPECTED_STATE_HASH: u64 = 0x1722_8eca_5450_e2fe;
+const EXPECTED_STATE_HASH: u64 = 0x18f4_3442_a77e_0fea;
 const EXPECTED_AMBIENT_COUNT: usize = 64;
 
 fn start_world() -> World {
@@ -172,4 +172,35 @@ fn the_script_opens_and_closes_a_door() {
         events.iter().any(|e| matches!(e, Event::DoorClosed { .. })),
         "never closed a door"
     );
+}
+
+#[test]
+fn the_ship_never_gains_or_loses_air() {
+    // The ship is sealed: no breaches, no machines. However much air moves
+    // around during the scripted game (doors opening and closing, air
+    // rising up the ladder), the total of every gas must stay exactly the
+    // same, down to the last pascal.
+    let start = start_world().map().total_air();
+    let mut world = start_world();
+    for command in script() {
+        world.apply(command);
+        assert_eq!(
+            world.map().total_air(),
+            start,
+            "after turn {}",
+            world.turn()
+        );
+    }
+}
+
+#[test]
+fn air_rises_from_the_stasis_bay_to_the_thin_crew_deck() {
+    // The crew deck starts at 60% pressure; the ladder shaft is open.
+    let mut world = start_world();
+    let top_of_ladder = nighthawk_sim::Pos::new(27, 2, 1);
+    let before = world.map().air(top_of_ladder).unwrap().total();
+    for _ in 0..20 {
+        world.apply(Command::Wait);
+    }
+    assert!(world.map().air(top_of_ladder).unwrap().total() > before);
 }

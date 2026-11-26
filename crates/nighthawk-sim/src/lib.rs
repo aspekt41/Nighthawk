@@ -15,6 +15,7 @@
 //!   seeded from the world's seed, so the same seed and commands always
 //!   produce the same game.
 
+mod air;
 mod hash;
 mod map;
 mod map_file;
@@ -23,6 +24,7 @@ mod rng;
 mod save;
 mod world;
 
+pub use air::{Gas, Mix, SPREAD_DIVISOR};
 pub use map::{Map, StairsError, Tile};
 pub use map_file::{LoadedMap, MapError, parse_map};
 pub use pos::{Dir, Pos, Vertical};

@@ -39,6 +39,9 @@ pub struct App {
     new_seed: fn() -> u64,
     /// True after `c`, while the game waits for the direction to close.
     asking_close_direction: bool,
+    /// Whether the map shows the air overlay. A view setting, not part of
+    /// the game, so it isn't saved.
+    pub show_air: bool,
 }
 
 impl App {
@@ -58,6 +61,7 @@ impl App {
             start_map,
             new_seed,
             asking_close_direction: false,
+            show_air: false,
         };
         match seed {
             Some(seed) => app.start_new_game(seed),
@@ -121,6 +125,7 @@ impl App {
             }
             GameAction::ToTitleWithoutSaving => self.show_title(None),
             GameAction::Exit => self.quit = self.save_game(),
+            GameAction::ToggleAirOverlay => self.show_air = !self.show_air,
             GameAction::BeginClose => {
                 self.asking_close_direction = true;
                 self.push_log("Close which way? (a direction key; anything else cancels)".into());
@@ -631,5 +636,16 @@ mod tests {
             world(&app).map().get(DOOR),
             Some(nighthawk_sim::Tile::DoorClosed)
         );
+    }
+
+    #[test]
+    fn a_toggles_the_air_overlay_without_spending_a_turn() {
+        let (mut app, _dir) = new_app(Some(7));
+        assert!(!app.show_air);
+        app.handle_key(key(KeyCode::Char('a')));
+        assert!(app.show_air);
+        app.handle_key(key(KeyCode::Char('a')));
+        assert!(!app.show_air);
+        assert_eq!(world(&app).turn(), 0);
     }
 }

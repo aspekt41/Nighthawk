@@ -24,6 +24,8 @@ pub enum GameAction {
     Exit,
     /// Ask which way to close a door; the next key answers.
     BeginClose,
+    /// Show or hide the air overlay. Only changes the view; no time passes.
+    ToggleAirOverlay,
 }
 
 /// Something the player wants on the title menu.
@@ -88,6 +90,7 @@ pub fn game_action(key: KeyEvent) -> Option<GameAction> {
         KeyCode::Char('Q') => Some(GameAction::ToTitleWithoutSaving),
         KeyCode::Char('S') => Some(GameAction::Save),
         KeyCode::Char('c') => Some(GameAction::BeginClose),
+        KeyCode::Char('a') => Some(GameAction::ToggleAirOverlay),
         code => KEYMAP
             .iter()
             .find(|(bound, _)| *bound == code)
@@ -240,6 +243,14 @@ mod tests {
         assert_eq!(
             game_action(press(KeyCode::Char('c'))),
             Some(GameAction::BeginClose)
+        );
+    }
+
+    #[test]
+    fn a_toggles_the_air_overlay() {
+        assert_eq!(
+            game_action(press(KeyCode::Char('a'))),
+            Some(GameAction::ToggleAirOverlay)
         );
     }
 
