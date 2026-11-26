@@ -15,6 +15,8 @@ pub enum Command {
     Wait,
     /// Use the stairs you're standing on.
     Climb(Vertical),
+    /// Close the open door next to you in this direction.
+    Close(Dir),
 }
 
 /// Something that happened, for the front-end to show or log.
@@ -39,6 +41,18 @@ pub enum Event {
     /// time passes.
     NoStairs {
         way: Vertical,
+    },
+    /// The player opened the door at `at` by walking into it.
+    DoorOpened {
+        at: Pos,
+    },
+    /// The player closed the door at `at`.
+    DoorClosed {
+        at: Pos,
+    },
+    /// There's no open door in that direction. No time passes.
+    NothingToClose {
+        at: Pos,
     },
     Waited,
     /// A background noise from the ship, heard while time passes.
@@ -70,6 +84,8 @@ const MOVE_COST: u64 = 1;
 const WAIT_COST: u64 = 1;
 /// Climbing between decks is slower than a step.
 const CLIMB_COST: u64 = 2;
+/// Opening or closing a door takes a turn.
+const DOOR_COST: u64 = 1;
 
 /// Each turn that passes has a 1 in this many chance of an ambient sound.
 const AMBIENT_ONE_IN: u32 = 8;
@@ -146,6 +162,7 @@ impl World {
         match command {
             Command::Move(dir) => self.walk(dir),
             Command::Climb(way) => self.climb(way),
+            Command::Close(dir) => self.close(dir),
             Command::Wait => {
                 let mut events = vec![Event::Waited];
                 self.pass_time(WAIT_COST, &mut events);
@@ -158,6 +175,7 @@ impl World {
         let target = self.player.step(dir);
         match self.map.get(target) {
             None => vec![Event::BlockedByEdge],
+            Some(Tile::DoorClosed) => self.open(target),
             Some(tile) if !tile.is_walkable() => vec![Event::Bumped { at: target, tile }],
             Some(_) => {
                 self.player = target;
@@ -166,6 +184,28 @@ impl World {
                 events
             }
         }
+    }
+
+    /// Opens the closed door at `at`. The player stays put: opening takes
+    /// the turn, and the next step walks through.
+    fn open(&mut self, at: Pos) -> Vec<Event> {
+        self.map.set(at, Tile::DoorOpen);
+        let mut events = vec![Event::DoorOpened { at }];
+        self.pass_time(DOOR_COST, &mut events);
+        events
+    }
+
+    /// Closes the open door next to the player in direction `dir`. You
+    /// can't close a door you're standing in: only one beside you.
+    fn close(&mut self, dir: Dir) -> Vec<Event> {
+        let at = self.player.step(dir);
+        if self.map.get(at) != Some(Tile::DoorOpen) {
+            return vec![Event::NothingToClose { at }];
+        }
+        self.map.set(at, Tile::DoorClosed);
+        let mut events = vec![Event::DoorClosed { at }];
+        self.pass_time(DOOR_COST, &mut events);
+        events
     }
 
     /// Uses the stairs under the player. Stairs up only go up and stairs
@@ -611,5 +651,102 @@ mod tests {
             world.check_consistent(),
             Err("1 deck names for 2 decks".to_string())
         );
+    }
+
+    /// A corridor with a closed door: `#@+.#`, door at (2, 1).
+    fn door_world() -> World {
+        let rows = ["#####", "#@+.#", "#####"];
+        let json = format!(
+            r##"{{ "id": "t", "name": "T", "legend": {{ "#": "wall", ".": "floor",
+                     "+": "door_closed", "'": "door_open" }},
+                  "decks": [ {{ "rows": {rows:?} }} ] }}"##
+        );
+        World::new(parse_map(&json).expect("test map is valid"), TEST_SEED)
+    }
+
+    const DOOR: Pos = Pos::new(2, 1, 0);
+
+    #[test]
+    fn walking_into_a_closed_door_opens_it_and_takes_a_turn() {
+        let mut world = door_world();
+
+        let events = world.apply(Command::Move(Dir::East));
+
+        assert_eq!(
+            without_ambient(events),
+            vec![Event::DoorOpened { at: DOOR }]
+        );
+        assert_eq!(world.map().get(DOOR), Some(Tile::DoorOpen));
+        assert_eq!(
+            world.player(),
+            Pos::new(1, 1, 0),
+            "opening doesn't move you"
+        );
+        assert_eq!(world.turn(), DOOR_COST);
+    }
+
+    #[test]
+    fn an_open_door_can_be_walked_through() {
+        let mut world = door_world();
+        world.apply(Command::Move(Dir::East)); // open
+        world.apply(Command::Move(Dir::East)); // into the doorway
+        world.apply(Command::Move(Dir::East)); // out the other side
+        assert_eq!(world.player(), Pos::new(3, 1, 0));
+    }
+
+    #[test]
+    fn closing_an_open_door_beside_you_takes_a_turn() {
+        let mut world = door_world();
+        world.apply(Command::Move(Dir::East)); // open
+        let turn = world.turn();
+
+        let events = world.apply(Command::Close(Dir::East));
+
+        assert_eq!(
+            without_ambient(events),
+            vec![Event::DoorClosed { at: DOOR }]
+        );
+        assert_eq!(world.map().get(DOOR), Some(Tile::DoorClosed));
+        assert_eq!(world.turn(), turn + DOOR_COST);
+    }
+
+    #[test]
+    fn closing_where_there_is_no_open_door_does_nothing_and_costs_no_time() {
+        let mut world = door_world();
+        let cases = [Dir::East, Dir::North, Dir::West]; // closed door, wall, wall
+        for dir in cases {
+            let at = world.player().step(dir);
+            assert_eq!(
+                world.apply(Command::Close(dir)),
+                vec![Event::NothingToClose { at }]
+            );
+        }
+        assert_eq!(world.turn(), 0);
+        assert_eq!(world.map().get(DOOR), Some(Tile::DoorClosed));
+    }
+
+    #[test]
+    fn you_cannot_close_a_door_you_are_standing_in() {
+        let mut world = door_world();
+        world.apply(Command::Move(Dir::East)); // open
+        world.apply(Command::Move(Dir::East)); // stand in the doorway
+        for dir in Dir::ALL {
+            let events = world.apply(Command::Close(dir));
+            assert!(
+                matches!(events[..], [Event::NothingToClose { .. }]),
+                "{dir:?}"
+            );
+        }
+        assert_eq!(world.map().get(DOOR), Some(Tile::DoorOpen));
+    }
+
+    #[test]
+    fn door_state_is_part_of_the_state_hash() {
+        let closed = door_world();
+        let mut opened = door_world();
+        opened.apply(Command::Move(Dir::East));
+        opened.turn = closed.turn; // so only the door differs
+        opened.ambient_rng = closed.ambient_rng.clone();
+        assert_ne!(closed.state_hash(), opened.state_hash());
     }
 }

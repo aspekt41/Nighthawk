@@ -37,6 +37,8 @@ pub struct App {
     /// Picks the seed for a new game. In the real game it reads the clock;
     /// tests pass a function that returns a fixed number.
     new_seed: fn() -> u64,
+    /// True after `c`, while the game waits for the direction to close.
+    asking_close_direction: bool,
 }
 
 impl App {
@@ -55,6 +57,7 @@ impl App {
             slot,
             start_map,
             new_seed,
+            asking_close_direction: false,
         };
         match seed {
             Some(seed) => app.start_new_game(seed),
@@ -65,6 +68,14 @@ impl App {
 
     /// Reacts to a key press on whichever screen is showing.
     pub fn handle_key(&mut self, key: KeyEvent) {
+        // Releases and repeats never count, so they can't answer a question.
+        if !keys::is_press(key) {
+            return;
+        }
+        if self.asking_close_direction {
+            self.answer_close_direction(key);
+            return;
+        }
         match self.screen {
             Screen::Title(_) => {
                 if let Some(action) = keys::title_action(key) {
@@ -110,6 +121,20 @@ impl App {
             }
             GameAction::ToTitleWithoutSaving => self.show_title(None),
             GameAction::Exit => self.quit = self.save_game(),
+            GameAction::BeginClose => {
+                self.asking_close_direction = true;
+                self.push_log("Close which way? (a direction key; anything else cancels)".into());
+            }
+        }
+    }
+
+    /// The key after `c`: a direction closes the door that way; any other
+    /// key cancels, costing nothing.
+    fn answer_close_direction(&mut self, key: KeyEvent) {
+        self.asking_close_direction = false;
+        match keys::direction(key) {
+            Some(dir) => self.apply(Command::Close(dir)),
+            None => self.push_log("Never mind.".into()),
         }
     }
 
@@ -527,5 +552,84 @@ mod tests {
         let (mut app, _dir) = new_app(Some(7));
         app.on_title(TitleAction::Exit); // in a game: not a menu
         assert!(!app.quit);
+    }
+
+    // --- Closing doors (the "which way?" prompt) ------------------------------
+
+    use ratatui::crossterm::event::{KeyCode, KeyEventKind, KeyEventState, KeyModifiers};
+
+    fn key(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    /// A game on the real map, standing just north of the crew deck's
+    /// south-east door at (27, 7), with that door open.
+    fn beside_an_open_door() -> (App, tempfile::TempDir) {
+        let (mut app, dir) = new_app(Some(7));
+        let route = std::iter::repeat_n('k', 5)
+            .chain(std::iter::repeat_n('l', 23))
+            .chain(['<', 'j', 'j', 'j', 'j', 'j']); // the last j opens the door
+        for c in route {
+            app.handle_key(key(KeyCode::Char(c)));
+        }
+        let world = world(&app);
+        assert_eq!(world.player(), nighthawk_sim::Pos::new(27, 6, 1));
+        assert_eq!(world.map().get(DOOR), Some(nighthawk_sim::Tile::DoorOpen));
+        (app, dir)
+    }
+
+    const DOOR: nighthawk_sim::Pos = nighthawk_sim::Pos::new(27, 7, 1);
+
+    #[test]
+    fn c_then_a_direction_closes_the_door() {
+        let (mut app, _dir) = beside_an_open_door();
+        let turn = world(&app).turn();
+
+        app.handle_key(key(KeyCode::Char('c')));
+        assert!(last_log(&app).starts_with("Close which way?"));
+        app.handle_key(key(KeyCode::Char('j')));
+
+        assert_eq!(
+            world(&app).map().get(DOOR),
+            Some(nighthawk_sim::Tile::DoorClosed)
+        );
+        assert_eq!(world(&app).turn(), turn + 1);
+        assert!(app.log.iter().any(|l| l == "You close the door."));
+    }
+
+    #[test]
+    fn any_other_key_cancels_closing() {
+        let (mut app, _dir) = beside_an_open_door();
+        let turn = world(&app).turn();
+        app.handle_key(key(KeyCode::Char('c')));
+        app.handle_key(key(KeyCode::Char('x')));
+        assert_eq!(last_log(&app), "Never mind.");
+        assert_eq!(world(&app).turn(), turn);
+        assert_eq!(
+            world(&app).map().get(DOOR),
+            Some(nighthawk_sim::Tile::DoorOpen)
+        );
+
+        // And the prompt is over: the next key is an ordinary key again.
+        app.handle_key(key(KeyCode::Char('.')));
+        assert_eq!(world(&app).turn(), turn + 1);
+    }
+
+    #[test]
+    fn a_key_release_does_not_answer_the_prompt() {
+        let (mut app, _dir) = beside_an_open_door();
+        app.handle_key(key(KeyCode::Char('c')));
+        let release = KeyEvent {
+            code: KeyCode::Char('c'),
+            modifiers: KeyModifiers::NONE,
+            kind: KeyEventKind::Release,
+            state: KeyEventState::NONE,
+        };
+        app.handle_key(release);
+        app.handle_key(key(KeyCode::Char('j')));
+        assert_eq!(
+            world(&app).map().get(DOOR),
+            Some(nighthawk_sim::Tile::DoorClosed)
+        );
     }
 }

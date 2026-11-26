@@ -183,6 +183,8 @@ fn tile_glyph(tile: Tile) -> (&'static str, Style) {
             ">",
             Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD),
         ),
+        Tile::DoorClosed => ("+", Style::new().fg(Color::LightRed)),
+        Tile::DoorOpen => ("'", Style::new().fg(Color::LightRed)),
     }
 }
 
@@ -201,6 +203,7 @@ fn sidebar(world: &World) -> Paragraph<'static> {
         Line::styled("      yubn numpad", dim),
         Line::styled("wait  . or 5", dim),
         Line::styled("climb < or >", dim),
+        Line::styled("close c + dir", dim),
         Line::styled("save  S", dim),
         Line::styled("menu  q (saves)", dim),
         Line::styled("      Q (no save)", dim),
@@ -369,9 +372,16 @@ mod tests {
 
     #[test]
     fn every_tile_kind_has_a_distinct_glyph() {
-        let tiles = [Tile::Floor, Tile::Wall, Tile::StairsUp, Tile::StairsDown];
+        let tiles = [
+            Tile::Floor,
+            Tile::Wall,
+            Tile::StairsUp,
+            Tile::StairsDown,
+            Tile::DoorClosed,
+            Tile::DoorOpen,
+        ];
         let glyphs: Vec<&str> = tiles.iter().map(|&t| tile_glyph(t).0).collect();
-        assert_eq!(glyphs, vec![".", "#", "<", ">"]);
+        assert_eq!(glyphs, vec![".", "#", "<", ">", "+", "'"]);
     }
 
     #[test]

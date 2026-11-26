@@ -3,24 +3,46 @@
 use nighthawk_sim::{Event, Sound, Vertical};
 
 /// Turns a sim event into a log line. Ordinary steps aren't worth logging.
+///
+/// Events are grouped (moving, climbing, doors) with a small function per
+/// group, so no single function grows past the complexity limit as the game
+/// gains more kinds of event.
 pub fn describe(event: Event) -> Option<String> {
+    let line = match event {
+        Event::Moved { .. } => return None,
+        Event::Bumped { tile, .. } => format!("You bump into the {}.", tile.name()),
+        Event::BlockedByEdge => "There is nowhere to go that way.".into(),
+        Event::Waited => "You wait.".into(),
+        Event::Climbed { way, .. } => climbed_text(way).into(),
+        Event::NoStairs { way } => no_stairs_text(way).into(),
+        Event::DoorOpened { .. } | Event::DoorClosed { .. } | Event::NothingToClose { .. } => {
+            door_text(event).into()
+        }
+        Event::Ambient(sound) => sound_text(sound).into(),
+    };
+    Some(line)
+}
+
+fn climbed_text(way: Vertical) -> &'static str {
+    match way {
+        Vertical::Up => "You climb the ladder up.",
+        Vertical::Down => "You climb the ladder down.",
+    }
+}
+
+fn no_stairs_text(way: Vertical) -> &'static str {
+    match way {
+        Vertical::Up => "There's no way up here.",
+        Vertical::Down => "There's no way down here.",
+    }
+}
+
+/// Log lines for door events. Other events never reach here.
+fn door_text(event: Event) -> &'static str {
     match event {
-        Event::Moved { .. } => None,
-        Event::Bumped { tile, .. } => Some(format!("You bump into the {}.", tile.name())),
-        Event::BlockedByEdge => Some("There is nowhere to go that way.".into()),
-        Event::Waited => Some("You wait.".into()),
-        Event::Climbed {
-            way: Vertical::Up, ..
-        } => Some("You climb the ladder up.".into()),
-        Event::Climbed {
-            way: Vertical::Down,
-            ..
-        } => Some("You climb the ladder down.".into()),
-        Event::NoStairs { way: Vertical::Up } => Some("There's no way up here.".into()),
-        Event::NoStairs {
-            way: Vertical::Down,
-        } => Some("There's no way down here.".into()),
-        Event::Ambient(sound) => Some(sound_text(sound).into()),
+        Event::DoorOpened { .. } => "You open the door.",
+        Event::DoorClosed { .. } => "You close the door.",
+        _ => "There's no open door there.",
     }
 }
 
@@ -95,6 +117,23 @@ mod tests {
             })
             .as_deref(),
             Some("There's no way down here.")
+        );
+    }
+
+    #[test]
+    fn doors_have_lines() {
+        let at = Pos::new(1, 1, 0);
+        assert_eq!(
+            describe(Event::DoorOpened { at }).as_deref(),
+            Some("You open the door.")
+        );
+        assert_eq!(
+            describe(Event::DoorClosed { at }).as_deref(),
+            Some("You close the door.")
+        );
+        assert_eq!(
+            describe(Event::NothingToClose { at }).as_deref(),
+            Some("There's no open door there.")
         );
     }
 

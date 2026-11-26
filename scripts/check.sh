@@ -43,7 +43,10 @@ fi
 
 step "Cyclomatic complexity (lizard; no function over 10)"
 if command -v lizard >/dev/null; then
-    lizard --languages rust --CCN 10 --warnings_only crates/ && echo "ok: no function over CCN 10"
+    # Two separate lines, not `lizard ... && echo ok`: with `set -e`, bash
+    # ignores a failure on the left of `&&`, which would let violations pass.
+    lizard --languages rust --CCN 10 --warnings_only crates/
+    echo "ok: no function over CCN 10"
 else
     missing "install with 'pipx install lizard' (or 'pip install lizard')"
 fi

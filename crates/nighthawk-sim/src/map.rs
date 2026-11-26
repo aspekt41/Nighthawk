@@ -20,14 +20,25 @@ pub enum Tile {
     StairsUp,
     /// Stairs (or a ladder) to the deck below.
     StairsDown,
+    /// A shut door. Blocks movement (and, from M1.2, air). Walking into it
+    /// opens it.
+    DoorClosed,
+    /// An open door: walkable, and air passes through.
+    DoorOpen,
 }
 
 impl Tile {
     pub fn is_walkable(self) -> bool {
         match self {
-            Tile::Floor | Tile::StairsUp | Tile::StairsDown => true,
-            Tile::Wall => false,
+            Tile::Floor | Tile::StairsUp | Tile::StairsDown | Tile::DoorOpen => true,
+            Tile::Wall | Tile::DoorClosed => false,
         }
+    }
+
+    /// Whether the player can get through this tile, possibly by opening it
+    /// first. Used to check every room can be reached.
+    pub fn is_passable(self) -> bool {
+        self.is_walkable() || self == Tile::DoorClosed
     }
 
     /// A fixed number per tile type, for [`Map::hash_into`]. These numbers
@@ -38,6 +49,8 @@ impl Tile {
             Tile::Wall => 1,
             Tile::StairsUp => 2,
             Tile::StairsDown => 3,
+            Tile::DoorClosed => 4,
+            Tile::DoorOpen => 5,
         }
     }
 
@@ -48,6 +61,8 @@ impl Tile {
             Tile::Wall => "bulkhead",
             Tile::StairsUp => "ladder up",
             Tile::StairsDown => "ladder down",
+            Tile::DoorClosed => "closed door",
+            Tile::DoorOpen => "open door",
         }
     }
 }
@@ -325,5 +340,16 @@ mod tests {
                 .unwrap_err()
                 .contains("need stairs down")
         );
+    }
+
+    #[test]
+    fn doors_block_when_closed_and_let_you_through_when_open() {
+        assert!(!Tile::DoorClosed.is_walkable());
+        assert!(Tile::DoorOpen.is_walkable());
+        assert!(Tile::DoorClosed.is_passable(), "you can open it");
+        assert!(!Tile::Wall.is_passable());
+        assert!(Tile::Floor.is_passable());
+        assert_eq!(Tile::DoorClosed.name(), "closed door");
+        assert_eq!(Tile::DoorOpen.name(), "open door");
     }
 }

@@ -22,6 +22,8 @@ pub enum GameAction {
     ToTitleWithoutSaving,
     /// Save, then close the program (Ctrl-C).
     Exit,
+    /// Ask which way to close a door; the next key answers.
+    BeginClose,
 }
 
 /// Something the player wants on the title menu.
@@ -85,6 +87,7 @@ pub fn game_action(key: KeyEvent) -> Option<GameAction> {
         KeyCode::Char('q') => Some(GameAction::ToTitle),
         KeyCode::Char('Q') => Some(GameAction::ToTitleWithoutSaving),
         KeyCode::Char('S') => Some(GameAction::Save),
+        KeyCode::Char('c') => Some(GameAction::BeginClose),
         code => KEYMAP
             .iter()
             .find(|(bound, _)| *bound == code)
@@ -111,8 +114,17 @@ pub fn title_action(key: KeyEvent) -> Option<TitleAction> {
     }
 }
 
+/// The direction a key means when the game asks "which way?": any of the
+/// movement keys (arrows, vi keys, numpad).
+pub fn direction(key: KeyEvent) -> Option<Dir> {
+    KEYMAP.iter().find_map(|&(code, command)| match command {
+        Command::Move(dir) if code == key.code => Some(dir),
+        _ => None,
+    })
+}
+
 /// Some terminals also report key releases and repeats. Only presses count.
-fn is_press(key: KeyEvent) -> bool {
+pub fn is_press(key: KeyEvent) -> bool {
     key.kind == KeyEventKind::Press
 }
 
@@ -221,11 +233,35 @@ mod tests {
     fn unbound_game_keys_do_nothing() {
         assert_eq!(game_action(press(KeyCode::Char('z'))), None);
         assert_eq!(game_action(press(KeyCode::Tab)), None);
+    }
+
+    #[test]
+    fn plain_c_starts_closing_a_door_and_is_not_ctrl_c() {
         assert_eq!(
             game_action(press(KeyCode::Char('c'))),
-            None,
-            "plain c isn't Ctrl-C"
+            Some(GameAction::BeginClose)
         );
+    }
+
+    #[test]
+    fn every_movement_key_is_also_a_direction() {
+        for &(code, command) in KEYMAP {
+            if let Command::Move(dir) = command {
+                assert_eq!(direction(press(code)), Some(dir), "{code:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn non_movement_keys_are_not_directions() {
+        for code in [
+            KeyCode::Char('.'),
+            KeyCode::Char('<'),
+            KeyCode::Char('z'),
+            KeyCode::Esc,
+        ] {
+            assert_eq!(direction(press(code)), None, "{code:?}");
+        }
     }
 
     #[test]

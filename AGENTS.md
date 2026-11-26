@@ -146,6 +146,10 @@ precise error and exits with code 1 before entering raw mode.
   regex patterns `.` matches *any* character, and `.` is also the floor glyph,
   so a pattern meant for one row can silently rewrite others (it once punched
   holes in the outer walls). The content tests catch this, but don't rely on it.
+- **`set -e` and `&&` in shell scripts.** Bash's stop-on-error mode ignores a
+  failure on the left of `&&`, so `tool && echo ok` never fails a script. In
+  `scripts/check.sh`, put each gate command on its own line. (This once let a
+  complexity violation pass silently.)
 - **The data folder** is found via `$NIGHTHAWK_DATA`, then `./data`, then the
   build-time repo path.
 

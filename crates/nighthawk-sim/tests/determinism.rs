@@ -25,8 +25,8 @@ const SEED: u64 = 0x4e49_4748_5448_4157; // "NIGHTHAW" in ASCII
 const TURNS: usize = 500;
 
 /// The stored fingerprints. See "If this test fails" above.
-const EXPECTED_STATE_HASH: u64 = 0x9fe2_8053_70df_1787;
-const EXPECTED_AMBIENT_COUNT: usize = 62;
+const EXPECTED_STATE_HASH: u64 = 0x1722_8eca_5450_e2fe;
+const EXPECTED_AMBIENT_COUNT: usize = 64;
 
 fn start_world() -> World {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../data/maps/aft_ring.json");
@@ -35,10 +35,11 @@ fn start_world() -> World {
 }
 
 /// A fixed script: walk to the ladder, then loop around it forever,
-/// walking, waiting, bumping walls and climbing both ways. It isn't random:
+/// walking, waiting, bumping walls, climbing both ways, and opening and
+/// closing a door. It isn't random:
 /// the same list every run.
 fn script() -> impl Iterator<Item = Command> {
-    use Command::{Climb, Move, Wait};
+    use Command::{Climb, Close, Move, Wait};
     // From the start (4, 7) to the ladder at (27, 2), then up.
     let to_the_ladder = std::iter::repeat_n(Move(Dir::North), 5)
         .chain(std::iter::repeat_n(Move(Dir::East), 23))
@@ -60,8 +61,20 @@ fn script() -> impl Iterator<Item = Command> {
         Move(Dir::North),
         Move(Dir::South),
     ];
-    let pattern = around
-        .into_iter()
+    // On the crew deck: down the corridor to the door at (27, 7), open it,
+    // walk through and back, close it behind you, and return to the ladder.
+    let door_trip = std::iter::repeat_n(Move(Dir::South), 4)
+        .chain([
+            Move(Dir::South), // opens the door
+            Move(Dir::South), // into the doorway
+            Move(Dir::South), // into the room beyond
+            Move(Dir::North),
+            Move(Dir::North),
+            Close(Dir::South),
+        ])
+        .chain(std::iter::repeat_n(Move(Dir::North), 4));
+    let pattern = door_trip
+        .chain(around)
         .chain([Climb(Vertical::Down)])
         .chain(bump_and_back)
         .chain(around)
@@ -145,4 +158,18 @@ fn the_script_climbs_up_and_comes_back_down() {
     };
     assert!(climbed(Vertical::Up), "the script never climbed up");
     assert!(climbed(Vertical::Down), "the script never climbed down");
+}
+
+#[test]
+fn the_script_opens_and_closes_a_door() {
+    // Guards the test itself, like the stairs check above.
+    let (_, events) = play();
+    assert!(
+        events.iter().any(|e| matches!(e, Event::DoorOpened { .. })),
+        "never opened a door"
+    );
+    assert!(
+        events.iter().any(|e| matches!(e, Event::DoorClosed { .. })),
+        "never closed a door"
+    );
 }

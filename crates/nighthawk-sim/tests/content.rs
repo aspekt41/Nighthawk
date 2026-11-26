@@ -85,8 +85,9 @@ fn shipped_maps() -> Vec<(PathBuf, LoadedMap)> {
     maps
 }
 
-/// Where the player can step to from `at`: the eight neighbours on the same
-/// deck, plus the deck above or below when standing on stairs.
+/// Where the player can get to from `at`: the eight neighbours on the same
+/// deck, plus the deck above or below when standing on stairs. Closed doors
+/// count, because the player can open them.
 fn neighbours(map: &nighthawk_sim::Map, at: Pos) -> Vec<Pos> {
     let mut next: Vec<Pos> = Dir::ALL.iter().map(|&d| at.step(d)).collect();
     match map.get(at) {
@@ -94,7 +95,7 @@ fn neighbours(map: &nighthawk_sim::Map, at: Pos) -> Vec<Pos> {
         Some(Tile::StairsDown) => next.push(at.climb(Vertical::Down)),
         _ => {}
     }
-    next.retain(|&p| map.get(p).is_some_and(Tile::is_walkable));
+    next.retain(|&p| map.get(p).is_some_and(Tile::is_passable));
     next
 }
 
@@ -114,7 +115,7 @@ fn reachable_from(map: &nighthawk_sim::Map, start: Pos) -> HashSet<Pos> {
 }
 
 #[test]
-fn every_walkable_tile_can_be_reached_from_the_start() {
+fn every_open_tile_can_be_reached_from_the_start() {
     // A flood fill from the player's start, following stairs between decks.
     // Anything it doesn't reach is a room the player could never enter.
     for (path, loaded) in shipped_maps() {
@@ -122,11 +123,11 @@ fn every_walkable_tile_can_be_reached_from_the_start() {
         let seen = reachable_from(map, loaded.player_start);
         let unreachable: Vec<Pos> = map
             .positions()
-            .filter(|&p| map.get(p).is_some_and(Tile::is_walkable) && !seen.contains(&p))
+            .filter(|&p| map.get(p).is_some_and(Tile::is_passable) && !seen.contains(&p))
             .collect();
         assert!(
             unreachable.is_empty(),
-            "{}: {} walkable tiles can't be reached, e.g. {:?}",
+            "{}: {} tiles can't be reached, e.g. {:?}",
             path.display(),
             unreachable.len(),
             unreachable.first()

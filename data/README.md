@@ -35,7 +35,7 @@ exactly once.
 |---|---|
 | `id` | Must match the file name (`closet.json` → `"closet"`) |
 | `name` | Shown as the map panel's title |
-| `legend` | One character → tile name. Tiles today: `wall`, `floor`, `stairs_up`, `stairs_down`. `@` is reserved. |
+| `legend` | One character → tile name. Tiles today: `wall`, `floor`, `stairs_up`, `stairs_down`, `door_closed`, `door_open`. `@` is reserved. |
 | `decks` | Listed bottom to top: the first is deck 0. All decks must be the same size. |
 | `decks[].name` | Optional. Shown as the map panel's title on that deck. Without it the deck is "Deck 0", "Deck 1" and so on. |
 | `decks[].rows` | The deck drawn as text, one string per row. |
@@ -52,5 +52,6 @@ Climbing takes 2 turns.
 Mistakes are caught when the game loads, with the exact place named, for example
 `deck 0, row 1, column 2: 'x' is not in the legend`. Misspelled field names are errors too.
 `cargo test` loads every map in this folder, so a broken map also fails the tests.
-It also checks that **every walkable tile can be reached from `@`**, across
-decks by stairs, so a room sealed off by mistake fails too.
+It also checks that **every open tile can be reached from `@`**, across
+decks by stairs and through doors (closed doors count, since the player can
+open them), so a room sealed off by mistake fails too.

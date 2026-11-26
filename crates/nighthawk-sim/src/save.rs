@@ -364,4 +364,18 @@ mod tests {
             "{err}"
         );
     }
+
+    #[test]
+    fn doors_are_saved_open_or_closed() {
+        let rows = ["@+'"];
+        let json = format!(
+            r#"{{ "id": "t", "name": "T", "legend": {{ "+": "door_closed", "'": "door_open" }},
+                 "decks": [ {{ "rows": {rows:?} }} ] }}"#
+        );
+        let mut world = World::new(parse_map(&json).unwrap(), 3);
+        world.apply(Command::Move(Dir::East)); // opens the closed door
+        let text = save_to_string(&world);
+        assert!(text.contains("\"door_open\""));
+        assert_eq!(load_from_str(&text).unwrap(), world);
+    }
 }
