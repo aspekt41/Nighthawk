@@ -19,11 +19,12 @@ fn maps_dir() -> PathBuf {
 
 /// Parses a map's text against the shipped materials and structures.
 fn load(text: &str) -> Result<LoadedMap, MapError> {
-    let (materials, structures, items) = common::catalogue();
+    let content = common::catalogue();
     let catalogue = Catalogue {
-        materials: &materials,
-        structures: &structures,
-        items: &items,
+        materials: &content.materials,
+        structures: &content.structures,
+        items: &content.items,
+        recipes: &content.recipes,
     };
     parse_map(text, catalogue)
 }
@@ -186,14 +187,17 @@ fn the_hull_is_nanocarbon_hull_structures_and_the_inside_is_neither() {
 }
 
 #[test]
-fn every_shipped_structure_is_used_by_the_starting_map() {
-    // A structure nothing uses is probably a typo in a map's legend.
+fn every_shipped_structure_is_on_the_starting_map_or_made_by_a_recipe() {
+    // A structure nothing uses is probably a typo in a map's legend or a
+    // recipe.
     let world = common::start_world(1);
-    let used: HashSet<&str> = world
+    let content = common::catalogue();
+    let mut used: HashSet<&str> = world
         .map()
         .positions()
         .map(|p| world.structure_at(p).unwrap().id.as_str())
         .collect();
+    used.extend(content.recipes.list().iter().map(|r| r.to.as_str()));
     for structure in world.structures() {
         assert!(
             used.contains(structure.id.as_str()),
@@ -207,7 +211,7 @@ fn every_shipped_structure_is_used_by_the_starting_map() {
 fn the_shipped_materials_have_the_agreed_laser_levels() {
     // Levels are set by hand (decision D35). This test is the list to
     // update on purpose when they're retuned.
-    let (materials, _, _) = common::catalogue();
+    let materials = common::catalogue().materials;
     let level = |id: &str| {
         let i = usize::from(materials.index_of(id).unwrap());
         materials.list()[i].cut_by.get(&Quality::Laser).copied()
@@ -266,4 +270,34 @@ fn a_laser_cutter_and_four_steel_scraps_lie_near_the_start() {
     );
     let laser = &world.item_types()[usize::from(world.floor_items()[0].item.kind)];
     assert_eq!(laser.qualities.get(&Quality::Laser), Some(&1));
+}
+
+#[test]
+fn the_basic_laser_cuts_the_side_room_door_into_a_damaged_door() {
+    // Pick up the laser cutter two steps east, walk back to two tiles from
+    // the side room's door at (6, 7), and cut it.
+    use nighthawk_sim::{Action, Command, Event};
+    let mut world = common::start_world(1);
+    let laser = Pos::new(12, 7, 0);
+    world.apply(Command::Move(Dir::East));
+    world.apply(Command::Interact {
+        at: laser,
+        action: Action::PickUp,
+    });
+    for _ in 0..3 {
+        world.apply(Command::Move(Dir::West));
+    }
+    assert_eq!(world.player(), Pos::new(8, 7, 0));
+    let door = Pos::new(6, 7, 0);
+    let before = world.seconds();
+    let events = world.apply(Command::Interact {
+        at: door,
+        action: Action::Cut,
+    });
+    let last = events.last().copied();
+    assert!(matches!(last, Some(Event::CutThrough { at, .. }) if at == door));
+    assert_eq!(world.seconds() - before, 120, "two minutes");
+    assert_eq!(world.structure_at(door).unwrap().id, "damaged_door");
+    assert_eq!(world.material_at(door).unwrap().id, "aluminium_alloy");
+    assert_eq!(world.map().get(door), Some(Tile::Floor), "walkable, airy");
 }

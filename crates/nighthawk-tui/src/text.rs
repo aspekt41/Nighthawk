@@ -14,6 +14,13 @@ pub fn describe_in(world: &World, event: Event) -> Option<String> {
         Event::PickedUp(id) | Event::NoRoom(id) | Event::Dropped(id) => {
             Some(item_text(event, &item_name(world, id)))
         }
+        Event::CutThrough { was, .. } => {
+            let name = world
+                .structures()
+                .get(usize::from(was))
+                .map_or("thing", |s| s.name.as_str());
+            Some(format!("You cut through the {name}."))
+        }
         _ => describe(event),
     }
 }
@@ -53,6 +60,7 @@ pub fn describe(event: Event) -> Option<String> {
         Event::PickedUp(_) | Event::NoRoom(_) | Event::Dropped(_) | Event::NothingToDrop => {
             item_text(event, "item")
         }
+        Event::CutThrough { .. } => "You cut through it.".into(),
         Event::AirEscaping | Event::Breath(_) | Event::Warmth(_) | Event::BlackedOut(_) => {
             survival_text(event).into()
         }
@@ -456,5 +464,33 @@ mod tests {
             material: 0,
         };
         assert_eq!(item_name(&world, odder), "something");
+    }
+
+    #[test]
+    fn cutting_through_names_what_was_cut() {
+        let world = nighthawk_sim::World::new(crate::content::load_start_map().unwrap(), 1);
+        let door = world
+            .structures()
+            .iter()
+            .position(|s| s.id == "door")
+            .unwrap();
+        let cut = Event::CutThrough {
+            at: Pos::new(6, 7, 0),
+            was: u16::try_from(door).unwrap(),
+        };
+        assert_eq!(
+            describe_in(&world, cut).as_deref(),
+            Some("You cut through the door.")
+        );
+        let unknown = Event::CutThrough {
+            at: Pos::new(6, 7, 0),
+            was: 999,
+        };
+        assert_eq!(
+            describe_in(&world, unknown).as_deref(),
+            Some("You cut through the thing."),
+            "never panics, even for a structure that isn't there"
+        );
+        assert_eq!(describe(cut).as_deref(), Some("You cut through it."));
     }
 }

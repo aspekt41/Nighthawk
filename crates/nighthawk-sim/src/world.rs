@@ -9,8 +9,9 @@ use crate::interact::{self, Action, Blocked};
 use crate::item::{self, FloorItem, Item, ItemContext, ItemPath, ItemRef, ItemType};
 use crate::map::{Map, Tile};
 use crate::map_file::LoadedMap;
-use crate::material::Material;
+use crate::material::{Material, Quality};
 use crate::pos::{Dir, Pos, Vertical};
+use crate::recipe::{self, Recipe, RecipeAction};
 use crate::rng::{GameRng, Stream};
 use crate::structure::Structure;
 
@@ -95,6 +96,12 @@ pub enum Event {
     Dropped(ItemRef),
     /// There's no item where a drop asked for one. No time passes.
     NothingToDrop,
+    /// The player cut through the tile at `at`, which was structure
+    /// number `was` and is now what its cut recipe makes.
+    CutThrough {
+        at: Pos,
+        was: u16,
+    },
 }
 
 /// Noises the dead ship makes. Pure atmosphere for now. Later, sounds will
@@ -177,6 +184,8 @@ pub struct World {
     floor_items: Vec<FloorItem>,
     /// What the player is wearing; carried items are in its pockets.
     worn: Vec<Item>,
+    /// Every recipe (decision D40): how one structure becomes another.
+    recipes: Vec<Recipe>,
 }
 
 impl World {
@@ -197,6 +206,7 @@ impl World {
             item_types: loaded.item_types,
             floor_items: loaded.floor_items,
             worn: loaded.worn,
+            recipes: loaded.recipes,
         }
     }
 
@@ -388,10 +398,65 @@ impl World {
         match action {
             Action::Open => self.open(at),
             Action::PickUp => self.pick_up(at),
-            // `Close`; cutting is always blocked until carried tools count
-            // (M1.7c), so it never gets this far.
-            Action::Close | Action::Cut => self.shut(at),
+            Action::Close => self.shut(at),
+            Action::Cut => self.cut(at),
         }
+    }
+
+    /// Cuts through the tile at `at` by its cut recipe, which the caller
+    /// has checked exists. The cutting takes the recipe's time first; if
+    /// the player blacks out before it's done, the tile stays as it was.
+    /// What's left keeps the tile's material (an aluminium door leaves an
+    /// aluminium frame).
+    fn cut(&mut self, at: Pos) -> Vec<Event> {
+        let was = self.map.structure_index(at).unwrap_or(0);
+        let recipe = self
+            .recipe_for(RecipeAction::Cut, at)
+            .cloned()
+            .expect("interact checked there's a cut recipe");
+        let mut events = Vec::new();
+        self.pass_time(u64::from(recipe.seconds), &mut events);
+        if !self.is_conscious() {
+            return events;
+        }
+        let to = self.structure_index_of(&recipe.to);
+        let tile = self.structures[usize::from(to)].behaviour.tile(false);
+        self.map.set(at, tile);
+        self.map.set_structure(at, to);
+        // Last, after everything heard while cutting, so it's the line the
+        // log ends on.
+        events.push(Event::CutThrough { at, was });
+        events
+    }
+
+    /// The index of the structure with this id. Recipes are checked on load
+    /// to name only real structures, so it's always there.
+    fn structure_index_of(&self, id: &str) -> u16 {
+        let i = self.structures.iter().position(|s| s.id == id);
+        u16::try_from(i.expect("recipes name real structures")).expect("checked on load")
+    }
+
+    /// The recipe for `action` on whatever structure is at `at`, if there
+    /// is one.
+    pub fn recipe_for(&self, action: RecipeAction, at: Pos) -> Option<&Recipe> {
+        let structure = self.structure_at(at)?;
+        self.recipes
+            .iter()
+            .find(|r| r.action == action && r.from == structure.id)
+    }
+
+    /// The best level of `quality` among everything the player wears or
+    /// carries, or 0 with nothing that has it. A tool works from any
+    /// pocket (decision D38).
+    pub fn tool_level(&self, quality: Quality) -> u8 {
+        let carried = self.carried().into_iter().map(|(_, item)| item);
+        self.worn
+            .iter()
+            .chain(carried)
+            .filter_map(|item| self.item_types.get(usize::from(item.kind)))
+            .filter_map(|kind| kind.qualities.get(&quality).copied())
+            .max()
+            .unwrap_or(0)
     }
 
     /// Picks up everything at `at` that fits in a pocket, one item at a
@@ -679,6 +744,7 @@ impl World {
         for worn in &self.worn {
             worn.hash_into(&mut h);
         }
+        recipe::hash_recipes(&self.recipes, &mut h);
         h.finish()
     }
 }
@@ -1748,5 +1814,102 @@ mod tests {
         for other in [moved, carrying, retyped] {
             assert_ne!(base, other.state_hash());
         }
+    }
+
+    // --- Cutting --------------------------------------------------------------
+
+    /// The door room (`#@+.#`), wearing the test suit with the test cutter
+    /// in a pocket, its LASER level set to `level`. The test door is steel,
+    /// which needs LASER 2.
+    fn cutting_world(level: u8) -> World {
+        let rows = ["#####", "#@+.#", "#####"];
+        let json = format!(
+            r##"{{ "id": "t", "name": "T", "legend": {{ "#": "wall", ".": "floor", "+": "door" }},
+                  "player_wears": [ {{ "item": "suit" }} ],
+                  "decks": [ {{ "rows": {rows:?} }} ] }}"##
+        );
+        let mut world = World::new(parse_map(&json).unwrap(), TEST_SEED);
+        world.item_types[1].qualities.insert(Quality::Laser, level);
+        let cutter = Item::new(1, 0, &world.item_types);
+        world.worn[0].pockets[0].push(cutter);
+        world
+    }
+
+    fn cut(world: &mut World, at: Pos) -> Vec<Event> {
+        world.apply(Command::Interact {
+            at,
+            action: Action::Cut,
+        })
+    }
+
+    #[test]
+    fn the_best_tool_you_carry_sets_your_level() {
+        let mut world = cutting_world(3);
+        assert_eq!(world.tool_level(Quality::Laser), 3);
+        world.worn[0].pockets[0].clear();
+        assert_eq!(world.tool_level(Quality::Laser), 0, "nothing carried");
+        world.worn.clear();
+        assert_eq!(world.tool_level(Quality::Laser), 0, "nothing at all");
+    }
+
+    #[test]
+    fn a_good_enough_tool_cuts_the_door_into_what_the_recipe_makes() {
+        let mut world = cutting_world(2);
+        let door = Pos::new(2, 1, 0);
+        let events = without_ambient(cut(&mut world, door));
+        assert_eq!(events.last(), Some(&Event::CutThrough { at: door, was: 4 }));
+        assert_eq!(world.seconds(), 60, "the recipe's time");
+        assert_eq!(world.map().get(door), Some(Tile::Floor));
+        assert_eq!(world.structure_at(door).unwrap().id, "floor");
+        assert_eq!(
+            world.material_at(door).unwrap().id,
+            "steel",
+            "it keeps its material"
+        );
+    }
+
+    #[test]
+    fn a_tool_too_weak_for_the_material_cuts_nothing() {
+        let mut world = cutting_world(1);
+        let events = cut(&mut world, Pos::new(2, 1, 0));
+        assert_eq!(
+            events,
+            vec![Event::Unable {
+                action: Action::Cut,
+                blocked: Blocked::Needs {
+                    quality: Quality::Laser,
+                    level: 2
+                }
+            }]
+        );
+        assert_eq!(world.seconds(), 0);
+    }
+
+    #[test]
+    fn blacking_out_partway_leaves_the_door_uncut() {
+        let mut world = cutting_world(2);
+        world.map.set_air(world.player(), crate::air::Mix::VACUUM);
+        world.breath = 30;
+        let door = Pos::new(2, 1, 0);
+        let events = cut(&mut world, door);
+        assert!(events.contains(&Event::BlackedOut(Cause::Air)));
+        assert_eq!(world.map().get(door), Some(Tile::DoorClosed));
+    }
+
+    #[test]
+    fn a_cut_door_lets_air_through_from_then_on() {
+        let mut world = cutting_world(2);
+        let beyond = Pos::new(3, 1, 0);
+        world.map.set_air(beyond, crate::air::Mix::VACUUM);
+        cut(&mut world, Pos::new(2, 1, 0));
+        world.apply(Command::Wait);
+        assert!(world.map().air(beyond).unwrap().total() > 0);
+    }
+
+    #[test]
+    fn recipes_are_part_of_the_state_hash() {
+        let mut changed = cutting_world(2);
+        changed.recipes[0].seconds += 1;
+        assert_ne!(cutting_world(2).state_hash(), changed.state_hash());
     }
 }

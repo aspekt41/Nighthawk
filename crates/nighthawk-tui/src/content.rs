@@ -10,7 +10,8 @@ use std::path::{Path, PathBuf};
 
 use nighthawk_sim::{
     Catalogue, ContentFile, ItemError, ItemTypes, LoadedMap, MapError, MaterialError, Materials,
-    StructureError, Structures, parse_items, parse_map, parse_materials, parse_structures,
+    RecipeError, Recipes, StructureError, Structures, parse_items, parse_map, parse_materials,
+    parse_recipes, parse_structures,
 };
 
 /// The map a new game starts on, as a file name in `data/maps/` (no `.json`).
@@ -48,6 +49,11 @@ pub enum LoadError {
         path: PathBuf,
         source: ItemError,
     },
+    /// A mistake in `data/recipes/` (the error names the file).
+    Recipes {
+        path: PathBuf,
+        source: RecipeError,
+    },
 }
 
 impl fmt::Display for LoadError {
@@ -66,6 +72,7 @@ impl fmt::Display for LoadError {
             LoadError::Map { path, source } => write!(f, "{}: {source}", path.display()),
             LoadError::Structures { path, source } => write!(f, "{}: {source}", path.display()),
             LoadError::Items { path, source } => write!(f, "{}: {source}", path.display()),
+            LoadError::Recipes { path, source } => write!(f, "{}: {source}", path.display()),
             LoadError::Materials { path, source } => write!(f, "{}: {source}", path.display()),
         }
     }
@@ -130,6 +137,7 @@ pub struct Content {
     pub materials: Materials,
     pub structures: Structures,
     pub items: ItemTypes,
+    pub recipes: Recipes,
 }
 
 impl Content {
@@ -139,12 +147,13 @@ impl Content {
             materials: &self.materials,
             structures: &self.structures,
             items: &self.items,
+            recipes: &self.recipes,
         }
     }
 }
 
-/// Loads and checks `data/materials/`, `data/structures/` and
-/// `data/items/`.
+/// Loads and checks `data/materials/`, `data/structures/`, `data/items/`
+/// and `data/recipes/`.
 pub fn load_content(data_dir: &Path) -> Result<Content, LoadError> {
     let path = data_dir.join("materials");
     let materials = parse_materials(&read_folder(&path)?)
@@ -155,10 +164,14 @@ pub fn load_content(data_dir: &Path) -> Result<Content, LoadError> {
     let path = data_dir.join("items");
     let items = parse_items(&read_folder(&path)?, &materials)
         .map_err(|source| LoadError::Items { path, source })?;
+    let path = data_dir.join("recipes");
+    let recipes = parse_recipes(&read_folder(&path)?, &structures)
+        .map_err(|source| LoadError::Recipes { path, source })?;
     Ok(Content {
         materials,
         structures,
         items,
+        recipes,
     })
 }
 
@@ -245,7 +258,7 @@ mod tests {
     /// structures in it.
     fn data_dir_with_content() -> tempfile::TempDir {
         let dir = tempfile::tempdir().unwrap();
-        for folder in ["materials", "structures", "items"] {
+        for folder in ["materials", "structures", "items", "recipes"] {
             fs::create_dir(dir.path().join(folder)).unwrap();
             for entry in fs::read_dir(repo_data_dir().join(folder)).unwrap() {
                 let from = entry.unwrap().path();
@@ -308,6 +321,16 @@ mod tests {
         assert!(
             err.to_string()
                 .contains("invalid items file zz_broken.json"),
+            "{err}"
+        );
+
+        let dir = data_dir_with_content();
+        fs::write(dir.path().join("recipes/zz_broken.json"), "{}").unwrap();
+        let err = load_map(dir.path(), "aft_ring").unwrap_err();
+        assert!(matches!(err, LoadError::Recipes { .. }));
+        assert!(
+            err.to_string()
+                .contains("invalid recipes file zz_broken.json"),
             "{err}"
         );
     }

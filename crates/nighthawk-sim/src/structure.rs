@@ -18,7 +18,7 @@ use serde::{Deserialize, Serialize};
 use crate::content::{ContentFile, FileError, first_duplicate, read_all};
 use crate::hash::Fnv64;
 use crate::map::Tile;
-use crate::material::Materials;
+use crate::material::{Colour, Materials};
 
 /// How a structure behaves in the simulation. Each behaviour matches one
 /// or two [`Tile`]s: a door is `DoorClosed` or `DoorOpen`, depending on
@@ -89,6 +89,10 @@ pub struct Structure {
     pub behaviour: Behaviour,
     /// The id of the material it's made of, unless a map says otherwise.
     pub material: String,
+    /// Optional: the colour to draw it in, instead of the usual colour for
+    /// its behaviour (a damaged door is red, though it behaves like floor).
+    #[serde(default)]
+    pub colour: Option<Colour>,
 }
 
 impl Structure {
@@ -106,7 +110,8 @@ impl Structure {
         h.u64(u64::from(self.glyph))
             .u64(self.open_glyph.map_or(0, u64::from))
             .u8(self.behaviour.hash_id())
-            .str(&self.material);
+            .str(&self.material)
+            .u64(self.colour.map_or(u64::MAX, |c| u64::from(c.hash_id())));
     }
 }
 
@@ -393,12 +398,13 @@ pub(crate) mod tests {
             h.finish()
         };
         let base = test_structures().list()[4].clone();
-        let changes: [fn(&mut Structure); 5] = [
+        let changes: [fn(&mut Structure); 6] = [
             |s| s.glyph = '=',
             |s| s.open_glyph = None,
             |s| s.behaviour = Behaviour::Wall,
             |s| s.material.push('!'),
             |s| s.name.push('!'),
+            |s| s.colour = Some(Colour::Red),
         ];
         for change in changes {
             let mut changed = base.clone();

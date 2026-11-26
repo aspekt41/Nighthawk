@@ -1,0 +1,11 @@
+{
+  "recipes": [
+    {
+      "id": "cut_door",
+      "action": "cut",
+      "from": "door",
+      "to": "damaged_door",
+      "seconds": 120
+    }
+  ]
+}

@@ -10,8 +10,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use nighthawk_sim::{
-    Catalogue, ContentFile, ItemTypes, LoadedMap, Materials, Structures, World, parse_items,
-    parse_map, parse_materials, parse_structures,
+    Catalogue, ContentFile, ItemTypes, LoadedMap, Materials, Recipes, Structures, World,
+    parse_items, parse_map, parse_materials, parse_recipes, parse_structures,
 };
 
 /// The repository's `data/` folder.
@@ -38,24 +38,40 @@ fn file_name(path: &Path) -> String {
     path.file_name().unwrap().to_string_lossy().into_owned()
 }
 
-/// The shipped materials, structures and items.
-pub fn catalogue() -> (Materials, Structures, ItemTypes) {
+/// All the shipped content.
+pub struct Content {
+    pub materials: Materials,
+    pub structures: Structures,
+    pub items: ItemTypes,
+    pub recipes: Recipes,
+}
+
+/// The shipped materials, structures, items and recipes.
+pub fn catalogue() -> Content {
     let materials = parse_materials(&read_folder("materials"))
         .unwrap_or_else(|e| panic!("data/materials: {e}"));
     let structures = parse_structures(&read_folder("structures"), &materials)
         .unwrap_or_else(|e| panic!("data/structures: {e}"));
     let items = parse_items(&read_folder("items"), &materials)
         .unwrap_or_else(|e| panic!("data/items: {e}"));
-    (materials, structures, items)
+    let recipes = parse_recipes(&read_folder("recipes"), &structures)
+        .unwrap_or_else(|e| panic!("data/recipes: {e}"));
+    Content {
+        materials,
+        structures,
+        items,
+        recipes,
+    }
 }
 
 /// Parses a map's text against the shipped content.
 pub fn parse(text: &str) -> LoadedMap {
-    let (materials, structures, items) = catalogue();
+    let content = catalogue();
     let catalogue = Catalogue {
-        materials: &materials,
-        structures: &structures,
-        items: &items,
+        materials: &content.materials,
+        structures: &content.structures,
+        items: &content.items,
+        recipes: &content.recipes,
     };
     parse_map(text, catalogue).unwrap_or_else(|e| panic!("map: {e}"))
 }

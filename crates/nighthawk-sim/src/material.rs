@@ -78,7 +78,7 @@ impl Colour {
     /// A fixed number per colour, for the state hash: its place in the
     /// list above (`as u8` gives that for an enum like this one). So never
     /// reorder the list; add new colours at the end.
-    fn hash_id(self) -> u8 {
+    pub(crate) fn hash_id(self) -> u8 {
         self as u8
     }
 }

@@ -29,6 +29,7 @@ mod map;
 mod map_file;
 mod material;
 mod pos;
+mod recipe;
 mod rng;
 mod save;
 mod structure;
@@ -56,6 +57,7 @@ pub use material::{
     Colour, MAX_QUALITY_LEVEL, Material, MaterialError, Materials, Quality, parse_materials,
 };
 pub use pos::{Dir, Pos, Vertical};
+pub use recipe::{Recipe, RecipeAction, RecipeError, Recipes, parse_recipes};
 pub use rng::{GameRng, Stream};
 pub use save::{SAVE_FORMAT, SAVE_VERSION, SaveError, load_from_str, save_to_string};
 pub use structure::{Behaviour, Structure, StructureError, Structures, parse_structures};

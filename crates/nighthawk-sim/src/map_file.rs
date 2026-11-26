@@ -31,6 +31,7 @@ use crate::item::{FloorItem, Item, ItemType, ItemTypes};
 use crate::map::{Map, StairsError, Tile};
 use crate::material::{Material, Materials};
 use crate::pos::Pos;
+use crate::recipe::{Recipe, Recipes};
 use crate::structure::{Behaviour, Structure, Structures};
 
 /// The glyph that marks the player's starting position.
@@ -56,6 +57,8 @@ pub struct LoadedMap {
     pub floor_items: Vec<FloorItem>,
     /// What the player starts out wearing.
     pub worn: Vec<Item>,
+    /// Every recipe: how one structure becomes another.
+    pub recipes: Vec<Recipe>,
 }
 
 /// A mistake in a list of items in a map (on the floor, or worn).
@@ -348,6 +351,7 @@ pub struct Catalogue<'a> {
     pub materials: &'a Materials,
     pub structures: &'a Structures,
     pub items: &'a ItemTypes,
+    pub recipes: &'a Recipes,
 }
 
 /// Parses and validates a map file's text. Its legend names structures from
@@ -380,6 +384,7 @@ pub fn parse_map(json: &str, catalogue: Catalogue) -> Result<LoadedMap, MapError
             item_types: catalogue.items.list().to_vec(),
             floor_items,
             worn,
+            recipes: catalogue.recipes.list().to_vec(),
         }),
         _ => Err(MapError::PlayerStartCount {
             found: starts.len(),
@@ -670,10 +675,12 @@ pub(crate) fn parse_map_for_tests(json: &str) -> Result<LoadedMap, MapError> {
     let materials = crate::material::tests::test_materials();
     let structures = crate::structure::tests::test_structures();
     let items = crate::item::tests::test_items();
+    let recipes = crate::recipe::tests::test_recipes();
     let catalogue = Catalogue {
         materials: &materials,
         structures: &structures,
         items: &items,
+        recipes: &recipes,
     };
     // Add `"@": "floor"` to the legend, if the JSON is valid enough to
     // have one and it doesn't say. Otherwise parse it as it is, so tests of

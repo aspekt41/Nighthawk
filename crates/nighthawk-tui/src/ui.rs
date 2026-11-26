@@ -315,8 +315,10 @@ fn item_glyph(world: &World, item: &Item) -> (String, Style) {
 /// material's colour, so the hull stands out from the bulkheads inside.
 fn structure_glyph(world: &World, pos: Pos, tile: Tile) -> (String, Style) {
     let glyph = world.structure_at(pos).map_or('?', |s| s.glyph_for(tile));
-    let style = match (tile, world.material_at(pos)) {
-        (Tile::Wall, Some(material)) => Style::new().fg(colour(material.colour)),
+    let own = world.structure_at(pos).and_then(|s| s.colour);
+    let style = match (own, tile, world.material_at(pos)) {
+        (Some(c), _, _) => tile_style(tile).fg(colour(c)),
+        (None, Tile::Wall, Some(material)) => Style::new().fg(colour(material.colour)),
         _ => tile_style(tile),
     };
     (glyph.to_string(), style)
@@ -1356,13 +1358,24 @@ mod tests {
     #[test]
     fn the_interact_panel_lists_options_with_keys_and_reasons() {
         let world = real_world();
-        // From the start (10, 7), the hull at (0, 7) is ten tiles west.
+        // From the start (10, 7), the side room's door at (6, 7) is four
+        // tiles west: too far to open or to cut.
+        let lines = interact_texts(&world, Pos::new(6, 7, 0));
+        assert_eq!(lines[0], "At    6, 7  deck 0");
+        assert_eq!(lines[1], "Door (shut)");
+        assert_eq!(lines[2], "Aluminium Alloy");
+        assert_eq!(lines[4], "o  Open");
+        assert_eq!(lines[5], "   too far: reach 1");
+        assert_eq!(lines[6], "x  Cut");
+        assert_eq!(lines[7], "   too far: reach 2");
+    }
+
+    #[test]
+    fn the_hull_offers_nothing_to_do_until_there_is_a_recipe_for_it() {
+        let world = real_world();
         let lines = interact_texts(&world, Pos::new(0, 7, 0));
-        assert_eq!(lines[0], "At    0, 7  deck 0");
         assert_eq!(lines[1], "Hull plating");
-        assert_eq!(lines[2], "Nanocarbon Alloy");
-        assert_eq!(lines[4], "x  Cut");
-        assert_eq!(lines[5], "   too far: reach 2");
+        assert_eq!(lines[4], "Nothing to do here.");
     }
 
     #[test]
@@ -1518,5 +1531,34 @@ mod tests {
         assert_eq!(watts(45_000), "45");
         assert_eq!(watts(40), "0.04");
         assert_eq!(watts(167_500), "167.5");
+    }
+
+    #[test]
+    fn a_cut_door_draws_as_a_red_frame() {
+        let mut world = real_world();
+        world.apply(Command::Move(Dir::East));
+        world.apply(Command::Interact {
+            at: Pos::new(12, 7, 0),
+            action: nighthawk_sim::Action::PickUp,
+        });
+        for _ in 0..3 {
+            world.apply(Command::Move(Dir::West));
+        }
+        world.apply(Command::Interact {
+            at: Pos::new(6, 7, 0),
+            action: nighthawk_sim::Action::Cut,
+        });
+        let (glyph, style) = glyph_at(&world, Pos::new(6, 7, 0), None);
+        assert_eq!(glyph, "/");
+        assert_eq!(
+            style.fg,
+            Some(Color::Red),
+            "its own colour, not the floor's"
+        );
+        assert_eq!(
+            look_texts(&world, Pos::new(6, 7, 0))[2],
+            "Damaged door",
+            "named for what it is now"
+        );
     }
 }

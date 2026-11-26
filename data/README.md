@@ -69,6 +69,28 @@ Mistakes are reported precisely: a duplicate id, or a level out of range.
 | `open_glyph` | Doors only, and every door needs one: the character for the door when open. |
 | `behaviour` | What it does in the simulation, one of: `floor` (walk on it; air passes), `wall` (solid, airtight), `stairs_up` / `stairs_down` (a ladder to the next deck; see [Stairs](#stairs)), `door` (opens and shuts; shut, it's airtight), `hull_crack` (solid, a 4 cm² leak to space), `hull_breach` (solid, a 400 cm² hole to space). |
 | `material` | The material it's made of, unless a map legend says otherwise. |
+| `colour` | Optional. Draw it in this colour (same names as materials) instead of the usual colour for its behaviour; a damaged door is red though it behaves like floor. |
+
+## Recipes (`recipes/*.json`)
+
+How one structure becomes another. The interact menu offers an action on a
+tile only when a recipe for it exists.
+
+```json
+{
+  "recipes": [
+    { "id": "cut_door", "action": "cut", "from": "door", "to": "damaged_door", "seconds": 120 }
+  ]
+}
+```
+
+| Field | Meaning |
+|---|---|
+| `id` | Unique across all recipe files. |
+| `action` | What the player does. Today: `cut`, which needs a tool with whatever quality and level the target's **material** lists in `cut_by` (an aluminium door: `LASER 1`), from within 2 tiles along a clear line. |
+| `from` | The structure it acts on. Only one recipe per action per structure. |
+| `to` | The structure it becomes. The tile keeps its material. |
+| `seconds` | How long it takes (at least 1). If the player blacks out partway, nothing changes. |
 
 ## Items (`items/*.json`)
 

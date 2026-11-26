@@ -8,6 +8,15 @@
       "open_glyph": "'",
       "behaviour": "door",
       "material": "aluminium_alloy"
+    },
+    {
+      "id": "damaged_door",
+      "name": "damaged door",
+      "description": "A door frame with the door cut out of it, the edges still bright from the laser. Air passes freely, and it won't shut again until it's repaired.",
+      "glyph": "/",
+      "behaviour": "floor",
+      "material": "aluminium_alloy",
+      "colour": "red"
     }
   ]
 }

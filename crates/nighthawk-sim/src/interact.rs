@@ -14,6 +14,7 @@
 use crate::map::Tile;
 use crate::material::Quality;
 use crate::pos::Pos;
+use crate::recipe::RecipeAction;
 use crate::world::World;
 
 /// How far you can reach to open or close a door: the tiles right around
@@ -48,8 +49,8 @@ impl Action {
     }
 
     /// Whether the action makes sense at `at` at all: doors open and
-    /// close; anything solid can, in principle, be cut; items lying there
-    /// can be picked up.
+    /// close; things with a cut recipe can be cut (decision D40); items
+    /// lying there can be picked up.
     fn applies_at(self, world: &World, at: Pos) -> bool {
         let Some(tile) = world.map().get(at) else {
             return false;
@@ -57,7 +58,8 @@ impl Action {
         match self {
             Action::Open => tile == Tile::DoorClosed,
             Action::Close => tile == Tile::DoorOpen,
-            Action::Cut => !tile.holds_air(),
+            // Something solid, with a recipe saying what it becomes.
+            Action::Cut => !tile.holds_air() && world.recipe_for(RecipeAction::Cut, at).is_some(),
             Action::PickUp => world.items_at(at).next().is_some(),
         }
     }
@@ -130,11 +132,10 @@ fn cut_blocked(world: &World, at: Pos) -> Option<Blocked> {
     let Some((&quality, &level)) = material.cut_by.iter().next() else {
         return Some(Blocked::Uncuttable);
     };
+    let have = world.tool_level(quality);
     too_far(world, at, LASER_REACH)
         .or_else(|| in_the_way(world, at))
-        // Nothing can be carried yet (items come next), so a cuttable tile
-        // in reach always needs a tool you don't have.
-        .or(Some(Blocked::Needs { quality, level }))
+        .or_else(|| (have < level).then_some(Blocked::Needs { quality, level }))
 }
 
 /// `TooFar` if `at` is more than `reach` steps from the player, or on
@@ -335,5 +336,35 @@ mod tests {
         );
         assert_eq!(only(&w, Pos::new(1, 2, 0)), vec![], "no items there");
         assert_eq!(Action::PickUp.reach(), 1);
+    }
+
+    #[test]
+    fn only_solid_things_with_a_cut_recipe_offer_cutting() {
+        let w = world();
+        // The test recipes cut doors and walls; the open door at (2, 1)
+        // isn't solid, and floor has no recipe.
+        let cut_offered = |at| options_at(&w, at).iter().any(|o| o.action == Action::Cut);
+        assert!(cut_offered(Pos::new(1, 3, 0)), "a shut door");
+        assert!(cut_offered(Pos::new(0, 1, 0)), "a wall");
+        assert!(!cut_offered(Pos::new(2, 1, 0)), "an open door");
+        assert!(!cut_offered(Pos::new(2, 2, 0)), "floor");
+    }
+
+    #[test]
+    fn with_the_right_tool_in_reach_nothing_blocks_the_cut() {
+        // The steel door two tiles south needs LASER 2.
+        let w = with_laser(world(), 2);
+        assert_eq!(blocked(&w, Pos::new(1, 3, 0), Action::Cut), None);
+    }
+
+    /// The world, wearing a tool with `LASER level`. The tool is set up by
+    /// editing the world's saved form, since its fields are private to the
+    /// `world` module.
+    fn with_laser(world: World, level: u8) -> World {
+        let mut json: serde_json::Value = serde_json::to_value(&world).unwrap();
+        json["item_types"][1]["qualities"]["LASER"] = level.into();
+        json["item_types"][1]["wear"] = serde_json::json!({ "pockets": [] });
+        json["worn"] = serde_json::json!([ { "kind": 1, "material": 0, "pockets": [] } ]);
+        serde_json::from_value(json).unwrap()
     }
 }
