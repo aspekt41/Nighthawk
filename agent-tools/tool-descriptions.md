@@ -68,7 +68,33 @@ anything, and `.` is also the floor glyph in maps.) To insert, put the
 anchor line in OLD and the anchor plus the new lines in NEW; to delete,
 leave NEW empty. New files are still best written whole.
 
-## Ideas for later
+## `play.py`: play the game and see the screen, in one command
 
-- `play.sh`: start the game in the private tmux socket with a scratch save
-  folder, send keys, print the screen and quit, in one command.
+Builds the game, starts it in its own session on the private `nhtest` tmux
+socket (never anyone else's tmux, never `kill-server`), sends keys, waits
+for the screen to stop changing, prints it, and kills only its own
+session. Saves always go to a fresh scratch folder, so the real save slot
+is never touched.
+
+```sh
+agent-tools/play.py 'llk.'                         # type keys, show the final screen
+agent-tools/play.py '{k*5}{l*23}>' '{show}' jjj    # repeat keys; snapshot midway
+agent-tools/play.py 'V{h*4}' '{Esc}' l             # named keys: {Esc} {Enter} {Up} ...
+agent-tools/play.py 'lelg{h*3}ehhx' --grep 'cut through|Pos'   # only the lines you need
+agent-tools/play.py lll --lines 19:23              # only screen rows 19 to 23
+agent-tools/play.py lll --twice                    # same keys twice: identical screens?
+agent-tools/play.py --seed 7 --size 100x30 ...     # another ship or terminal size
+agent-tools/play.py --data /tmp/bad                # point at a bad data folder
+agent-tools/play.py --no-seed n                    # start on the title menu, press n
+```
+
+- Named keys are sent on their own, with the screen settling either side,
+  so `{Esc}` can't merge with the next key into Alt-key.
+- Waiting is by watching the screen, not fixed sleeps.
+- If the game exits (a load error, say), the screen shows its message and
+  `[game exited: N]`, and the tool exits 1.
+- `--save-dir DIR` keeps saves somewhere you choose, to test Continue
+  across runs.
+
+Use it whenever you need to see the game, instead of hand-written tmux
+commands.

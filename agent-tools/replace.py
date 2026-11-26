@@ -161,8 +161,22 @@ def apply(file_text, edits, rust):
         return errors
     # Apply from the end back, so earlier positions stay valid.
     for start, end, new, _ in reversed(spans):
+        start = from_line_start(file_text, start, new)
         file_text = file_text[:start] + new + file_text[end:]
     return file_text
+
+
+def from_line_start(file_text, start, new):
+    """Where to start replacing. A match starts at its first non-space
+    character, but if NEW brings its own indentation and only indentation
+    comes before the match on its line, replace from the start of the line,
+    so the indentation isn't doubled (which matters in Python and Markdown,
+    where rustfmt won't tidy it)."""
+    line_start = file_text.rfind("\n", 0, start) + 1
+    indented = new[:1] in (" ", "\t")
+    if indented and not file_text[line_start:start].strip():
+        return line_start
+    return start
 
 
 def main(argv=None, stdin=None):

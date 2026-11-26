@@ -295,6 +295,11 @@ Results show on the repository's **Actions** tab and next to each commit.
 
 ## 13. Testing the game in tmux without touching your session
 
+The quick way is `agent-tools/play.py`: it plays a key script and prints
+the screen in one command, with saves going to a scratch folder, for
+example `agent-tools/play.py '{k*5}{l*23}>' --grep Pos`. See
+`agent-tools/tool-descriptions.md`. The manual way:
+
 Handy for checking a change in a real terminal, or for scripted checks. A
 private tmux socket (`-L nhtest`) keeps it separate from your own sessions:
 

@@ -76,6 +76,8 @@ Use them by default:
 
 - **Read before editing with `agent-tools/show.py FILE PATTERN`.** It runs
   `cargo fmt` first, so what you read is what an edit must match.
+- **Run the game with `agent-tools/play.py KEYS`** (see "Running the TUI
+  headlessly" below), not hand-written tmux commands.
 - **Edit existing files with `agent-tools/replace.py FILE`** and OLD/NEW
   blocks on standard input, not ad-hoc Python or `sed`. It formats, matches
   ignoring whitespace and rustfmt's trailing commas, refuses an OLD that
@@ -120,8 +122,18 @@ check script fails on missing tools instead of skipping them.
 
 ## Running the TUI headlessly (tmux)
 
-The game needs a terminal. Use a private tmux socket so you never touch the
-owner's sessions, and never run `tmux kill-server`:
+**Use `agent-tools/play.py`.** One command builds the game, plays a key
+script in a private tmux session with a scratch save folder, prints the
+screen (or just the lines you ask for) and cleans up:
+
+```sh
+agent-tools/play.py 'lelg{h*3}ehhx' --grep 'cut through|Pos'
+agent-tools/play.py '{k*5}{l*23}>' '{show}' jjj --twice
+```
+
+The manual recipe below is what it does, for when you need something it
+can't. The game needs a terminal. Use a private tmux socket so you never
+touch the owner's sessions, and never run `tmux kill-server`:
 
 ```sh
 cargo build -p nighthawk-tui

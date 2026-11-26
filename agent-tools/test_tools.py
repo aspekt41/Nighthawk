@@ -7,11 +7,15 @@ file they edit is in a temporary folder, and formatting is switched off.
 """
 
 import io
+import os
+import shutil
+import subprocess
 import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 
+import play
 import replace
 import show
 
@@ -173,6 +177,22 @@ class ReplaceTests(TempFile):
         self.replace(path, edit_block("a", "a\nafter a"))
         self.assertEqual(path.read_text(), "a\nafter a\n\nc\n")
 
+    def test_indentation_in_new_is_kept_exactly_not_doubled(self):
+        # Python cares about indentation and rustfmt won't fix it there.
+        text = "def f():\n    if x:\n        a()\n    return 1\n"
+        path = self.file("a.py", text)
+        status, _, _ = self.replace(path, edit_block("        a()", "        b()\n        c()"))
+        self.assertEqual(status, 0)
+        self.assertEqual(
+            path.read_text(),
+            "def f():\n    if x:\n        b()\n        c()\n    return 1\n",
+        )
+
+    def test_an_unindented_new_replaces_just_the_match_mid_line(self):
+        path = self.file("a.txt", "let x = shut(at);\n")
+        self.replace(path, edit_block("shut(at)", "close(at)"))
+        self.assertEqual(path.read_text(), "let x = close(at);\n")
+
     def test_commas_before_closers_only_count_as_noise_in_rust(self):
         self.assertEqual(replace.normalise("f(a, b,\n)", True)[0], "f(a,b)")
         self.assertEqual(replace.normalise("f(a, b,\n)", False)[0], "f(a,b,)")
@@ -190,6 +210,114 @@ class ReplaceTests(TempFile):
             status, _, err = self.replace(path, edits)
             self.assertEqual(status, 1, message)
             self.assertIn(message, err)
+
+
+class PlayScriptTests(unittest.TestCase):
+    def test_plain_keys_repeats_and_named_keys(self):
+        steps = play.parse_script("ll{k*3}{Esc}{show}{wait:250}{Enter}x")
+        self.assertEqual(
+            steps,
+            [
+                ("type", "llkkk"),
+                ("key", "Escape"),
+                ("show", None),
+                ("wait", 0.25),
+                ("key", "Enter"),
+                ("type", "x"),
+            ],
+        )
+
+    def test_a_repeat_can_be_several_keys(self):
+        self.assertEqual(play.parse_script("{lk*2}"), [("type", "lklk")])
+
+    def test_bad_braces_are_errors(self):
+        for script in ["{k*3", "{Escape}", "{wait:x}"]:
+            with self.assertRaises(ValueError, msg=script):
+                play.parse_script(script)
+
+    def test_typed_text_split_by_nothing_is_merged(self):
+        self.assertEqual(
+            play.merged([("type", "a"), ("type", "b"), ("show", None), ("type", "c")]),
+            [("type", "ab"), ("show", None), ("type", "c")],
+        )
+
+    def test_an_empty_script_has_no_steps(self):
+        self.assertEqual(play.parse_script(""), [])
+
+
+class FakeClock:
+    """A clock that moves only when slept, so settle() runs instantly."""
+
+    def __init__(self):
+        self.now = 0.0
+
+    def __call__(self):
+        return self.now
+
+    def sleep(self, seconds):
+        self.now += seconds
+
+
+class PlaySettleTests(unittest.TestCase):
+    def test_waits_until_the_screen_stops_changing(self):
+        frames = iter(["", "", "loading", "game", "game", "game", "game", "game"])
+        clock = FakeClock()
+        screen = play.settle(lambda: next(frames), 10, clock=clock, sleep=clock.sleep)
+        self.assertEqual(screen, "game")
+        # Steady from 0.15 s, so done 0.15 s later, give or take one poll
+        # (floating-point sums of 0.05 aren't exact).
+        self.assertTrue(0.25 <= clock.now <= 0.36, clock.now)
+
+    def test_gives_up_after_the_timeout_with_the_last_screen(self):
+        counter = iter(range(1000))
+        clock = FakeClock()
+        screen = play.settle(lambda: str(next(counter)), 1, clock=clock, sleep=clock.sleep)
+        self.assertEqual(screen, "20")
+        self.assertGreaterEqual(clock.now, 1)
+
+
+class PlayOutputTests(unittest.TestCase):
+    def args(self, *argv):
+        return play.make_parser().parse_args(list(argv))
+
+    def test_lines_and_grep_cut_the_screen_down(self):
+        screen = "one\ntwo\nthree\nfour\n"
+        self.assertEqual(play.filtered(screen, self.args("--lines", "2:3")), "two\nthree")
+        self.assertEqual(play.filtered(screen, self.args("--grep", "^t")), "two\nthree")
+        self.assertEqual(play.filtered(screen, self.args()), "one\ntwo\nthree\nfour")
+
+    def test_the_game_always_saves_to_the_scratch_folder(self):
+        command = play.game_command(Path("/repo"), self.args(), "/tmp/x y")
+        self.assertTrue(command.startswith("NIGHTHAWK_SAVE_DIR='/tmp/x y' "))
+        self.assertIn("'/repo/target/debug/nighthawk-tui' --seed 42;", command)
+        self.assertIn(play.EXITED, command)
+        no_seed = play.game_command(Path("/repo"), self.args("--no-seed", "--data", "/d"), "/s")
+        self.assertIn("NIGHTHAWK_DATA='/d'", no_seed)
+        self.assertNotIn("--seed", no_seed)
+
+    def test_quoting_survives_single_quotes(self):
+        self.assertEqual(play.sh_quote("it's"), "'it'\\''s'")
+
+
+GAME = show.repo_root(Path(__file__).resolve().parent) / "target" / "debug" / "nighthawk-tui"
+
+
+@unittest.skipUnless(shutil.which("tmux") and GAME.exists(), "needs tmux and a built game")
+class PlayInTmuxTests(unittest.TestCase):
+    def test_a_real_game_shows_its_screen_and_leaves_no_session_behind(self):
+        status, out, _ = run(play, ["--no-build", "lll", "--grep", "Pos"])
+        self.assertEqual(status, 0, out)
+        self.assertIn("Pos 13, 7", out)
+        sessions = subprocess.run(
+            ["tmux", "-L", play.SOCKET, "list-sessions"], capture_output=True, text=True
+        ).stdout
+        self.assertNotIn(f"nh-play-{os.getpid()}", sessions)
+
+    def test_a_game_that_exits_says_so(self):
+        with tempfile.TemporaryDirectory() as empty:
+            status, out, _ = run(play, ["--no-build", "--data", empty])
+        self.assertEqual(status, 1)
+        self.assertIn(play.EXITED, out)
 
 
 if __name__ == "__main__":
