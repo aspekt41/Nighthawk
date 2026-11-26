@@ -22,7 +22,7 @@ const SEED: u64 = 0x4e49_4748_5448_4157; // "NIGHTHAW" in ASCII
 const TURNS: usize = 500;
 
 /// The stored fingerprints. See "If this test fails" above.
-const EXPECTED_STATE_HASH: u64 = 0x2af5_ce2d_1ad7_cb5b;
+const EXPECTED_STATE_HASH: u64 = 0x6dff_b753_0db3_4485;
 const EXPECTED_AMBIENT_COUNT: usize = 74;
 
 fn start_world() -> World {
@@ -209,8 +209,8 @@ fn the_cold_crew_deck_warms_from_the_stasis_bay_below() {
     // The crew deck starts at -20 °C. Warm air from the stasis bay rushes up
     // the ladder in the first second, and then keeps mixing up the shaft.
     let mut world = start_world();
-    let top_of_ladder = nighthawk_sim::Pos::new(27, 2, 1);
-    let bay = nighthawk_sim::Pos::new(10, 10, 0);
+    let top_of_ladder = nighthawk_sim::Pos::new(33, 2, 1);
+    let bay = nighthawk_sim::Pos::new(16, 10, 0);
     let start = world.map().temperature(top_of_ladder).unwrap();
     assert_eq!(start, nighthawk_sim::celsius_to_mk(-20));
     world.apply(Command::Wait);
@@ -231,7 +231,7 @@ fn the_cold_crew_deck_warms_from_the_stasis_bay_below() {
 fn air_rises_from_the_stasis_bay_to_the_thin_crew_deck() {
     // The crew deck starts at 60% pressure; the ladder shaft is open.
     let mut world = start_world();
-    let top_of_ladder = nighthawk_sim::Pos::new(27, 2, 1);
+    let top_of_ladder = nighthawk_sim::Pos::new(33, 2, 1);
     let before = world.map().air(top_of_ladder).unwrap().total();
     for _ in 0..20 {
         world.apply(Command::Wait);

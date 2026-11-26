@@ -10,9 +10,9 @@ mod common;
 
 use nighthawk_sim::{Cause, Command, Dir, Event, Pos, Tile, Vertical, World};
 
-const DOOR: Pos = Pos::new(5, 7, 1); // the breached room's door
-const IN_THE_ROOM: Pos = Pos::new(5, 10, 1);
-const OUTSIDE_THE_DOOR: Pos = Pos::new(5, 6, 1);
+const DOOR: Pos = Pos::new(11, 7, 1); // the breached room's door
+const IN_THE_ROOM: Pos = Pos::new(11, 10, 1);
+const OUTSIDE_THE_DOOR: Pos = Pos::new(11, 6, 1);
 
 fn start_world() -> World {
     common::start_world(1)

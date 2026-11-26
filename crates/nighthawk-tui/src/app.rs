@@ -762,12 +762,12 @@ mod tests {
             app.handle_key(key(KeyCode::Char(c)));
         }
         let world = world(&app);
-        assert_eq!(world.player(), nighthawk_sim::Pos::new(27, 6, 1));
+        assert_eq!(world.player(), nighthawk_sim::Pos::new(33, 6, 1));
         assert_eq!(world.map().get(DOOR), Some(nighthawk_sim::Tile::DoorOpen));
         (app, dir)
     }
 
-    const DOOR: nighthawk_sim::Pos = nighthawk_sim::Pos::new(27, 7, 1);
+    const DOOR: nighthawk_sim::Pos = nighthawk_sim::Pos::new(33, 7, 1);
 
     #[test]
     fn c_then_a_direction_closes_the_door() {
@@ -966,7 +966,7 @@ mod tests {
         for c in route {
             app.handle_key(key(KeyCode::Char(c)));
         }
-        assert_eq!(world(&app).player(), Pos::new(16, 6, 1));
+        assert_eq!(world(&app).player(), Pos::new(22, 6, 1));
         (app, dir)
     }
 
@@ -981,7 +981,7 @@ mod tests {
         let (mut app, _dir) = by_a_door();
         press_all(&mut app, "e");
         let cursor = app.cursor.unwrap();
-        assert_eq!(cursor.at, Pos::new(16, 6, 1));
+        assert_eq!(cursor.at, Pos::new(22, 6, 1));
         assert_eq!(cursor.mode, CursorMode::Interact);
     }
 
@@ -990,7 +990,7 @@ mod tests {
         let (mut app, _dir) = by_a_door();
         let before = world(&app).seconds();
         press_all(&mut app, "ejo");
-        let door = Pos::new(16, 7, 1);
+        let door = Pos::new(22, 7, 1);
         assert_eq!(
             world(&app).map().get(door),
             Some(nighthawk_sim::Tile::DoorOpen)
@@ -1025,7 +1025,7 @@ mod tests {
         press_all(&mut app, "ej");
         app.handle_key(key(KeyCode::Enter));
         assert_eq!(
-            world(&app).map().get(Pos::new(16, 7, 1)),
+            world(&app).map().get(Pos::new(22, 7, 1)),
             Some(nighthawk_sim::Tile::DoorOpen),
             "Open, not the blocked Cut"
         );
@@ -1059,7 +1059,7 @@ mod tests {
         press_all(&mut app, "Vjo");
         app.handle_key(key(KeyCode::Enter));
         assert_eq!(
-            world(&app).map().get(Pos::new(16, 7, 1)),
+            world(&app).map().get(Pos::new(22, 7, 1)),
             Some(nighthawk_sim::Tile::DoorClosed)
         );
         assert_eq!(app.cursor.map(|c| c.mode), Some(CursorMode::Look));

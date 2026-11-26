@@ -960,11 +960,12 @@ mod tests {
         let glyph = |x, y, z| glyph_at(&world, Pos::new(x, y, z), None).0;
         assert_eq!(glyph(5, 7, 0), ".", "deck plating");
         assert_eq!(glyph(0, 7, 0), "#", "hull plating");
-        assert_eq!(glyph(27, 2, 0), ">", "ladder up");
-        assert_eq!(glyph(27, 2, 1), "<", "ladder down");
-        assert_eq!(glyph(5, 4, 1), "+", "a shut door");
-        assert_eq!(glyph(17, 0, 1), "x", "the crack");
-        assert_eq!(glyph(5, 13, 1), "X", "the breach");
+        assert_eq!(glyph(33, 2, 0), ">", "ladder up");
+        assert_eq!(glyph(33, 2, 1), "<", "ladder down");
+        assert_eq!(glyph(11, 4, 1), "+", "a shut door");
+        assert_eq!(glyph(6, 7, 0), "+", "the side room's door");
+        assert_eq!(glyph(23, 0, 1), "x", "the crack");
+        assert_eq!(glyph(11, 13, 1), "X", "the breach");
         assert_eq!(glyph(-5, 0, 0), " ", "off the map");
     }
 
@@ -982,8 +983,8 @@ mod tests {
         for command in route {
             world.apply(command);
         }
-        assert_eq!(world.player(), Pos::new(5, 5, 1));
-        assert_eq!(glyph_at(&world, Pos::new(5, 4, 1), None).0, "'");
+        assert_eq!(world.player(), Pos::new(11, 5, 1));
+        assert_eq!(glyph_at(&world, Pos::new(11, 4, 1), None).0, "'");
     }
 
     #[test]
@@ -1024,7 +1025,7 @@ mod tests {
             screen.contains("@>"),
             "the ladder up is right of the player"
         );
-        assert!(screen.contains("Deck 0/2  Pos 26, 2"));
+        assert!(screen.contains("Deck 0/2  Pos 32, 2"));
     }
 
     // --- Air ------------------------------------------------------------------
@@ -1294,7 +1295,7 @@ mod tests {
     #[test]
     fn the_cursor_is_highlighted_and_the_view_centres_on_it() {
         let world = real_world();
-        let at = Pos::new(1, 1, 0);
+        let at = Pos::new(7, 1, 0);
         let area = Rect::new(0, 0, 21, 11);
         let mut buf = Buffer::empty(area);
         let view = MapView {
@@ -1313,7 +1314,7 @@ mod tests {
     fn walls_are_drawn_in_their_materials_colour() {
         let world = real_world();
         let hull = glyph_at(&world, Pos::new(0, 7, 0), None);
-        let pillar = glyph_at(&world, Pos::new(9, 5, 0), None);
+        let pillar = glyph_at(&world, Pos::new(15, 5, 0), None);
         assert_eq!(hull, ("#".to_string(), Style::new().fg(Color::DarkGray)));
         assert_eq!(pillar, ("#".to_string(), Style::new().fg(Color::Gray)));
     }
@@ -1355,7 +1356,7 @@ mod tests {
     #[test]
     fn the_interact_panel_lists_options_with_keys_and_reasons() {
         let world = real_world();
-        // From the start (4, 7), the hull at (0, 7) is four tiles west.
+        // From the start (10, 7), the hull at (0, 7) is ten tiles west.
         let lines = interact_texts(&world, Pos::new(0, 7, 0));
         assert_eq!(lines[0], "At    0, 7  deck 0");
         assert_eq!(lines[1], "Hull plating");
@@ -1417,13 +1418,13 @@ mod tests {
     #[test]
     fn items_on_the_floor_draw_over_it_in_their_materials_colour() {
         let world = real_world();
-        let (laser, style) = glyph_at(&world, Pos::new(6, 7, 0), None);
+        let (laser, style) = glyph_at(&world, Pos::new(12, 7, 0), None);
         assert_eq!(laser, "(");
         assert_eq!(style.fg, Some(Color::White), "aluminium is white");
         assert!(style.add_modifier.contains(Modifier::BOLD));
-        assert_eq!(glyph_at(&world, Pos::new(3, 9, 0), None).0, "*");
+        assert_eq!(glyph_at(&world, Pos::new(9, 9, 0), None).0, "*");
         assert_eq!(
-            glyph_at(&world, Pos::new(6, 7, 0), Some(Overlay::Air)).0,
+            glyph_at(&world, Pos::new(12, 7, 0), Some(Overlay::Air)).0,
             "█",
             "an overlay shades the floor instead"
         );
@@ -1433,11 +1434,11 @@ mod tests {
     fn look_mode_says_what_lies_on_the_floor_counting_alike_items() {
         let world = real_world();
         assert_eq!(
-            items_here(&world, Pos::new(3, 9, 0)),
+            items_here(&world, Pos::new(9, 9, 0)),
             "On the floor: 4 × scrap (Steel). "
         );
         assert_eq!(
-            items_here(&world, Pos::new(6, 7, 0)),
+            items_here(&world, Pos::new(12, 7, 0)),
             "On the floor: basic laser cutter (Aluminium Alloy). "
         );
         assert_eq!(items_here(&world, Pos::new(5, 5, 0)), "");
@@ -1469,7 +1470,7 @@ mod tests {
         // Step beside the laser cutter and pick it up.
         world.apply(Command::Move(Dir::East));
         world.apply(Command::Interact {
-            at: Pos::new(6, 7, 0),
+            at: Pos::new(12, 7, 0),
             action: nighthawk_sim::Action::PickUp,
         });
         let lines = inventory_lines(&world, 0);
