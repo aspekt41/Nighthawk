@@ -6,3 +6,9 @@ edition = "2024"
 [dependencies]
 nighthawk-sim = { version = "0.1.0", path = "../nighthawk-sim" }
 ratatui = "0.30.2"
+
+[dev-dependencies]
+tempfile = "3.27.0"
+
+[lints]
+workspace = true

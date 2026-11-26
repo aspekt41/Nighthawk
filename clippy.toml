@@ -1,0 +1,4 @@
+# Clippy thresholds. Keep functions small enough to read and test in one go.
+too-many-lines-threshold = 60
+excessive-nesting-threshold = 4
+cognitive-complexity-threshold = 15

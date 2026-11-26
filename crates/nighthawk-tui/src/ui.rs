@@ -30,7 +30,7 @@ pub fn render(app: &App, frame: &mut Frame) {
     let [map_area, side_area] =
         Layout::horizontal([Constraint::Min(10), Constraint::Length(SIDEBAR_WIDTH)]).areas(top);
 
-    let map_block = Block::bordered().title(" Stasis bay ");
+    let map_block = Block::bordered().title(format!(" {} ", app.world.area_name()));
     let map_inner = map_block.inner(map_area);
     frame.render_widget(map_block, map_area);
     frame.render_widget(MapView { world: &app.world }, map_inner);
@@ -62,23 +62,28 @@ impl Widget for MapView<'_> {
                     origin_y + i32::from(row),
                     player.z,
                 );
-                let (glyph, style) = if pos == player {
-                    (
-                        "@",
-                        Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD),
-                    )
-                } else {
-                    match self.world.map().get(pos) {
-                        Some(Tile::Wall) => ("#", Style::new().fg(Color::Gray)),
-                        Some(Tile::Floor) => (".", Style::new().fg(Color::DarkGray)),
-                        None => (" ", Style::new()),
-                    }
-                };
+                let (glyph, style) = glyph_at(self.world, pos);
                 buf[(area.x + col, area.y + row)]
                     .set_symbol(glyph)
                     .set_style(style);
             }
         }
+    }
+}
+
+/// The character and colour for one map cell. The player is drawn on top of
+/// whatever tile they stand on. Off-map cells are blank.
+fn glyph_at(world: &World, pos: Pos) -> (&'static str, Style) {
+    if pos == world.player() {
+        return (
+            "@",
+            Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+        );
+    }
+    match world.map().get(pos) {
+        Some(Tile::Wall) => ("#", Style::new().fg(Color::Gray)),
+        Some(Tile::Floor) => (".", Style::new().fg(Color::DarkGray)),
+        None => (" ", Style::new()),
     }
 }
 
@@ -113,7 +118,17 @@ fn log(entries: &[String], lines: u16) -> Paragraph<'static> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nighthawk_sim::{Command, Dir};
+    use nighthawk_sim::{Command, Dir, parse_map};
+
+    /// A 7×5 room with the player in the middle.
+    fn test_world() -> World {
+        let rows = ["#######", "#.....#", "#..@..#", "#.....#", "#######"];
+        let json = format!(
+            r##"{{ "id": "t", "name": "T", "legend": {{ "#": "wall", ".": "floor" }},
+                 "decks": [ {{ "rows": {rows:?} }} ] }}"##
+        );
+        World::new(parse_map(&json).unwrap())
+    }
 
     /// Renders the map into an off-screen buffer and returns its rows as text.
     fn draw(world: &World, w: u16, h: u16) -> Vec<String> {
@@ -127,14 +142,58 @@ mod tests {
 
     #[test]
     fn player_is_drawn_in_the_centre() {
-        let world = World::stasis_bay();
+        let world = test_world();
         let rows = draw(&world, 21, 11);
         assert_eq!(rows[5].chars().nth(10), Some('@'));
     }
 
     #[test]
+    fn walls_floor_and_empty_space_use_their_glyphs() {
+        let world = test_world();
+        let rows = draw(&world, 21, 11);
+        // Row 5 is the player's row: wall, floor, @, floor, wall, then off-map.
+        assert_eq!(&rows[5][7..14], "#..@..#");
+        assert_eq!(rows[5].chars().next(), Some(' '));
+    }
+
+    /// Renders the whole screen, as the game would, into a fake 80×24 terminal.
+    fn draw_screen(app: &App) -> String {
+        use ratatui::{Terminal, backend::TestBackend};
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        terminal.draw(|frame| render(app, frame)).unwrap();
+        let buf = terminal.backend().buffer();
+        (0..24)
+            .map(|y| (0..80).map(|x| buf[(x, y)].symbol()).collect::<String>() + "\n")
+            .collect()
+    }
+
+    #[test]
+    fn whole_screen_shows_map_status_and_log() {
+        let app = App::new(test_world());
+        let screen = draw_screen(&app);
+        assert!(
+            screen.contains(" T "),
+            "map panel is titled with the area name"
+        );
+        assert!(screen.contains("Turn  0"));
+        assert!(screen.contains("Deck  0"));
+        assert!(screen.contains("You wake in the stasis bay."));
+    }
+
+    #[test]
+    fn log_panel_shows_the_newest_lines() {
+        let mut app = App::new(test_world());
+        for i in 0..20 {
+            app.push_log(format!("entry {i}"));
+        }
+        let screen = draw_screen(&app);
+        assert!(screen.contains("entry 19"));
+        assert!(!screen.contains("entry 0 "), "old lines scroll off");
+    }
+
+    #[test]
     fn view_follows_the_player() {
-        let mut world = World::stasis_bay();
+        let mut world = test_world();
         let before = draw(&world, 21, 11);
         world.apply(Command::Move(Dir::East));
         let after = draw(&world, 21, 11);

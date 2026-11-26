@@ -1,6 +1,7 @@
 //! The world state and the one function that changes it.
 
 use crate::map::{Map, Tile};
+use crate::map_file::LoadedMap;
 use crate::pos::{Dir, Pos};
 
 /// Something the player wants to do. Front-ends turn key presses into these.
@@ -34,42 +35,27 @@ const WAIT_COST: u64 = 1;
 /// Everything about the game at one moment.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct World {
+    area_name: String,
     map: Map,
     player: Pos,
     turn: u64,
 }
 
 impl World {
-    /// The M0.1 starting area: one room, the stasis bay on deck 0, with a
-    /// couple of structural pillars so walls show up in the middle too.
-    pub fn stasis_bay() -> Self {
-        let (w, h) = (32, 14);
-        let mut map = Map::filled(w, h, 1, Tile::Floor);
-
-        // Outer bulkheads.
-        for x in 0..w {
-            map.set(Pos::new(x, 0, 0), Tile::Wall);
-            map.set(Pos::new(x, h - 1, 0), Tile::Wall);
-        }
-        for y in 0..h {
-            map.set(Pos::new(0, y, 0), Tile::Wall);
-            map.set(Pos::new(w - 1, y, 0), Tile::Wall);
-        }
-
-        // Two 2×2 support pillars.
-        for (px, py) in [(9, 5), (21, 7)] {
-            for dx in 0..2 {
-                for dy in 0..2 {
-                    map.set(Pos::new(px + dx, py + dy, 0), Tile::Wall);
-                }
-            }
-        }
-
+    /// A new game on a loaded map, with the player at the map's `@` and the
+    /// clock at turn 0.
+    pub fn new(loaded: LoadedMap) -> Self {
         Self {
-            map,
-            player: Pos::new(4, 7, 0),
+            area_name: loaded.name,
+            map: loaded.map,
+            player: loaded.player_start,
             turn: 0,
         }
+    }
+
+    /// The human-readable name of where the player is, like "Stasis bay".
+    pub fn area_name(&self) -> &str {
+        &self.area_name
     }
 
     pub fn map(&self) -> &Map {
@@ -115,37 +101,74 @@ impl World {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::map_file::parse_map;
+
+    /// A small room: walls around the edge, one pillar, the player inside.
+    ///
+    /// ```text
+    /// ######
+    /// #.@..#
+    /// #..#.#
+    /// ######
+    /// ```
+    fn test_world() -> World {
+        world_from_rows(&["######", "#.@..#", "#..#.#", "######"])
+    }
+
+    fn world_from_rows(rows: &[&str]) -> World {
+        let rows: Vec<String> = rows.iter().map(|r| format!("{r:?}")).collect();
+        let json = format!(
+            r##"{{ "id": "t", "name": "Test room", "legend": {{ "#": "wall", ".": "floor" }},
+                  "decks": [ {{ "rows": [{}] }} ] }}"##,
+            rows.join(", ")
+        );
+        World::new(parse_map(&json).expect("test map is valid"))
+    }
+
+    #[test]
+    fn a_new_world_starts_at_turn_zero_on_the_start_tile() {
+        let world = test_world();
+        assert_eq!(world.turn(), 0);
+        assert_eq!(world.player(), Pos::new(2, 1, 0));
+        assert_eq!(world.area_name(), "Test room");
+        assert_eq!(world.map().width(), 6);
+    }
 
     #[test]
     fn walking_onto_floor_moves_and_takes_a_turn() {
-        let mut world = World::stasis_bay();
+        let mut world = test_world();
         let start = world.player();
 
         let events = world.apply(Command::Move(Dir::East));
 
-        assert_eq!(world.player(), start.step(Dir::East));
+        let to = start.step(Dir::East);
+        assert_eq!(world.player(), to);
         assert_eq!(world.turn(), 1);
+        assert_eq!(events, vec![Event::Moved { to }]);
+    }
+
+    #[test]
+    fn bumping_a_wall_costs_no_time() {
+        let mut world = test_world();
+
+        let events = world.apply(Command::Move(Dir::North));
+
+        assert_eq!(world.player(), Pos::new(2, 1, 0));
+        assert_eq!(world.turn(), 0);
         assert_eq!(
             events,
-            vec![Event::Moved {
-                to: start.step(Dir::East)
+            vec![Event::Bumped {
+                at: Pos::new(2, 0, 0),
+                tile: Tile::Wall
             }]
         );
     }
 
     #[test]
-    fn bumping_a_wall_costs_no_time() {
-        let mut world = World::stasis_bay();
-        // Walk west until the next step is the outer bulkhead.
-        while world.map().get(world.player().step(Dir::West)) == Some(Tile::Floor) {
-            world.apply(Command::Move(Dir::West));
-        }
-        let (pos, turn) = (world.player(), world.turn());
-
-        let events = world.apply(Command::Move(Dir::West));
-
-        assert_eq!(world.player(), pos);
-        assert_eq!(world.turn(), turn);
+    fn diagonal_moves_are_blocked_by_walls_too() {
+        let mut world = test_world();
+        // South-east of the start is the pillar at (3, 2).
+        let events = world.apply(Command::Move(Dir::SouthEast));
         assert!(matches!(
             events[..],
             [Event::Bumped {
@@ -153,11 +176,24 @@ mod tests {
                 ..
             }]
         ));
+        assert_eq!(world.turn(), 0);
+    }
+
+    #[test]
+    fn walking_off_the_map_edge_is_blocked_and_costs_no_time() {
+        // No walls: the start tile is on the map's top edge.
+        let mut world = world_from_rows(&[".@.", "..."]);
+
+        let events = world.apply(Command::Move(Dir::North));
+
+        assert_eq!(events, vec![Event::BlockedByEdge]);
+        assert_eq!(world.player(), Pos::new(1, 0, 0));
+        assert_eq!(world.turn(), 0);
     }
 
     #[test]
     fn waiting_passes_time_without_moving() {
-        let mut world = World::stasis_bay();
+        let mut world = test_world();
         let start = world.player();
         world.apply(Command::Wait);
         world.apply(Command::Wait);
@@ -170,13 +206,13 @@ mod tests {
         // The first determinism check. It becomes a seeded, hashed test in M0.3.
         let script = [
             Command::Move(Dir::East),
-            Command::Move(Dir::NorthEast),
+            Command::Move(Dir::SouthEast),
             Command::Wait,
             Command::Move(Dir::North),
-            Command::Move(Dir::North),
+            Command::Move(Dir::West),
         ];
-        let mut a = World::stasis_bay();
-        let mut b = World::stasis_bay();
+        let mut a = test_world();
+        let mut b = test_world();
         for c in script {
             a.apply(c);
             b.apply(c);

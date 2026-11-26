@@ -4,7 +4,7 @@ A terminal-native survival and base-building game where the systems run deep. It
 the Dwarf Fortress / Cataclysm: DDA tradition and is built around the explore → find →
 craft → build loop of Subnautica, Abiotic Factor and Minecraft.
 
-**Status:** M0.1. You can walk an `@` around one room. See [Running it](#running-it).
+**Status:** M0.2. You can walk an `@` around one room, loaded from [`data/maps/stasis_bay.json`](data/maps/stasis_bay.json). See [Running it](#running-it).
 
 ## Documents
 
@@ -48,11 +48,39 @@ set -as terminal-features ',xterm-256color:RGB'     # truecolor passthrough
 set -as terminal-features ',xterm*:sync'            # synchronized output (tmux 3.4+)
 ```
 
+## Quality checks
+
+One command runs every check, in order, and stops at the first failure:
+
+```sh
+scripts/check.sh
+```
+
+| Check | Tool | Gate |
+|---|---|---|
+| Formatting | `cargo fmt` (rustfmt) | Code must already be formatted |
+| Lints | `cargo clippy` | No warnings at all, including complexity lints (`too_many_lines` over 60, `excessive_nesting` over 4) |
+| Tests | `cargo test` | Every test passes, including loading every file in `data/` |
+| Coverage | [`cargo-llvm-cov`](https://github.com/taiki-e/cargo-llvm-cov) | At least 90% of lines |
+| Cyclomatic complexity | [`lizard`](https://github.com/terryyin/lizard) | No function over 10 |
+
+The last two need a one-time install:
+
+```sh
+rustup component add llvm-tools-preview
+cargo install cargo-llvm-cov
+pipx install lizard          # or: pip install lizard
+```
+
+For a line-by-line coverage report in your browser, run `cargo llvm-cov --open`.
+
 ## Layout
 
 ```
 crates/
   nighthawk-sim/   the game: world state, rules, no I/O (deterministic, testable)
-  nighthawk-tui/   the terminal front-end: input, drawing, message log
+  nighthawk-tui/   the terminal front-end: input, drawing, message log, file loading
+data/              game content as JSON (see data/README.md)
 docs/              research, scoping and the decision log
+scripts/check.sh   every quality check in one command
 ```

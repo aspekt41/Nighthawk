@@ -96,7 +96,7 @@ calendar estimates yet. Re-estimate after M0.
 
 | Milestone | Deliverable | Exit criteria |
 |---|---|---|
-| **M0: Tech spike** | M0.1 an `@` walking around one room (sim and tui crates, 3D positions, turn counter that only moves when you act) ✅ done. M0.2 the room loaded from JSON. M0.3 seeded RNG and a determinism test in CI. M0.4 a second deck and stairs. M0.5 a minimal browser build. | Runs in tmux over SSH on Debian and natively on macOS; tests pass in CI |
+| **M0: Tech spike** | M0.1 an `@` walking around one room (sim and tui crates, 3D positions, turn counter that only moves when you act) ✅ done. M0.2 the room loaded from JSON ✅ done. M0.3 seeded RNG and a determinism test in CI. M0.4 a second deck and stairs. M0.5 a minimal browser build. | Runs in tmux over SSH on Debian and natively on macOS; tests pass in CI |
 | **M1: World and simulation grid** | Chunked multi-deck map; FOV and lighting; atmosphere and temperature diffusion on dense arrays; doors and breaches; debug overlays | A breach visibly vents a room; profiled sim stays inside budget; soak test passes 100k turns |
 | **M2: Items and crafting** | Materials → items → recipes from data; container-based inventory; quality-based crafting from containers within reach | All ~25 MVP recipes are craftable; a content-validation test passes |
 | **M3: Building and power** | Construction system; power network solver; buildables with power draw; brown-outs | You can build a pressurised, powered, heated room from scratch |

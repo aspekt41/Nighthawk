@@ -1,10 +1,16 @@
 //! The tile grid.
 
+use serde::Deserialize;
+
 use crate::pos::Pos;
 
 /// What a single tile is made of. This grows into material-backed terrain
 /// later (decision D10). For now it's just enough to walk around a room.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+///
+/// `Deserialize` lets map files name tiles in JSON. `rename_all` means the
+/// JSON spelling is lowercase: `"wall"`, `"floor"`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Tile {
     Floor,
     Wall,
@@ -100,6 +106,18 @@ impl Map {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_floor_is_walkable() {
+        assert!(Tile::Floor.is_walkable());
+        assert!(!Tile::Wall.is_walkable());
+    }
+
+    #[test]
+    fn tiles_have_names_for_messages() {
+        assert_eq!(Tile::Floor.name(), "floor");
+        assert_eq!(Tile::Wall.name(), "bulkhead");
+    }
 
     #[test]
     fn get_and_set_respect_all_three_axes() {

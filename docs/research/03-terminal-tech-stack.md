@@ -107,6 +107,8 @@ attraction, Go + Bubble Tea + Wish gets there with far less effort. Decide this 
 | Browser build | **ratzilla** | 0.3.1 (Jun 2026) | Ratatui on WASM with DOM, Canvas and WebGL2 backends. Ships a Pong example. Prove it out early with a spike. |
 | SSH server | russh | 0.65.4 (Nov 2026) | Not needed: single-player over SSH is just tmux (D3). |
 | Snapshot testing | ratatui `TestBackend` + insta | — | Render into a buffer and snapshot it. Gives UI regression tests without a real terminal. |
+| Test coverage | **cargo-llvm-cov** | 0.9.2 (Nov 2026) | LLVM source-based coverage; `--fail-under-lines` makes it a gate (D20). cargo-tarpaulin 0.37.6 is the Linux-only alternative |
+| Cyclomatic complexity | **lizard** (Python) | 1.26.1 | Per-function CCN for Rust; `-C 10 -w` fails on anything over 10. Clippy's own `cognitive_complexity` lint is kept only as a coarse guard: Clippy itself says not to treat it as a measurement |
 
 **Avoid (stale):** `bracket-lib`/`rltk` (last release Oct 2022), `legion` (last release 2021),
 `specs` (2023), `tcod` bindings (2019), `doryen-rs` (2022). They were great tutorials in

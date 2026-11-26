@@ -38,3 +38,9 @@ table. If a decision changes, strike it through and add the new one; don't delet
 | D17 | **Content is JSON**, validated in three ways: strict typed loading (`serde` with `deny_unknown_fields`, so a typo is a load error), a content-validation test (every reference resolves), and a **JSON Schema generated from the Rust types** (`schemars`) for editor autocompletion and checking. | Everyone knows JSON. RON has no schema advantage, and JSON's schema tooling is better. | Content pipeline |
 | D18 | **The simulation stays separate from every UI.** Commands and events are plain serialisable data, so a future web front-end could stream state over WebSockets or HTTP, or run the sim in WASM. | Keeps the web option open | Architecture |
 | D19 | **ECS choice deferred.** Plain structs until entity counts force a decision (bevy_ecs or hecs). | Simpler code while learning Rust; no lock-in | Architecture |
+
+## Engineering practice
+
+| # | Decision | Why | Affects |
+|---|---|---|---|
+| D20 | **Quality gates on every change** (`scripts/check.sh`): rustfmt; clippy with warnings as errors and complexity lints on; all tests; line coverage of at least 90% with cargo-llvm-cov; no function over cyclomatic complexity 10, measured by lizard. Unit tests are written alongside each piece of critical logic. | Catch bugs early, keep functions small enough to understand, and make sure the thing actually compiles | All code |

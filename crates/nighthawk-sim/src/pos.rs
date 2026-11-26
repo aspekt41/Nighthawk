@@ -43,6 +43,18 @@ pub enum Dir {
 }
 
 impl Dir {
+    /// All eight directions, clockwise from North.
+    pub const ALL: [Dir; 8] = [
+        Dir::North,
+        Dir::NorthEast,
+        Dir::East,
+        Dir::SouthEast,
+        Dir::South,
+        Dir::SouthWest,
+        Dir::West,
+        Dir::NorthWest,
+    ];
+
     /// The `(dx, dy)` this direction moves by.
     pub fn delta(self) -> (i32, i32) {
         match self {
@@ -61,6 +73,34 @@ impl Dir {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_direction_is_one_distinct_step() {
+        let deltas: Vec<_> = Dir::ALL.iter().map(|d| d.delta()).collect();
+        for &(dx, dy) in &deltas {
+            assert!((-1..=1).contains(&dx) && (-1..=1).contains(&dy));
+            assert_ne!((dx, dy), (0, 0), "no direction stands still");
+        }
+        let mut unique = deltas.clone();
+        unique.sort_unstable();
+        unique.dedup();
+        assert_eq!(unique.len(), 8, "all eight directions differ");
+    }
+
+    #[test]
+    fn opposite_directions_cancel_out() {
+        // ALL is clockwise, so the opposite of ALL[i] is ALL[i + 4].
+        for i in 0..4 {
+            let (a, b) = (Dir::ALL[i].delta(), Dir::ALL[i + 4].delta());
+            assert_eq!((a.0 + b.0, a.1 + b.1), (0, 0), "{:?}", Dir::ALL[i]);
+        }
+    }
+
+    #[test]
+    fn north_is_up_the_screen() {
+        assert_eq!(Dir::North.delta(), (0, -1));
+        assert_eq!(Dir::East.delta(), (1, 0));
+    }
 
     #[test]
     fn step_moves_one_tile_and_keeps_the_deck() {
