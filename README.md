@@ -4,7 +4,7 @@ A terminal-native survival and base-building game where the systems run deep. It
 the Dwarf Fortress / Cataclysm: DDA tradition and is built around the explore → find →
 craft → build loop of Subnautica, Abiotic Factor and Minecraft.
 
-**Status:** M0.3. You can walk an `@` around one room, loaded from [`data/maps/stasis_bay.json`](data/maps/stasis_bay.json), while the ship creaks around you. Every game comes from a seed, so the same seed and moves replay exactly. See [Running it](#running-it).
+**Status:** M0.4. A title menu, save and load, and one room to walk around (loaded from [`data/maps/stasis_bay.json`](data/maps/stasis_bay.json)) while the ship creaks around you. Every game comes from a seed, so the same seed and moves replay exactly. See [Running it](#running-it).
 
 ## Documents
 
@@ -33,17 +33,21 @@ The same documents are also published as a commentable Claude doc, *Nighthawk: R
 You need [rustup](https://rustup.rs). The Rust version is pinned in `rust-toolchain.toml` and installs itself on first use. Full setup, including Debian packages and tmux settings, is in [TOOLING.md](TOOLING.md).
 
 ```sh
-cargo run -p nighthawk-tui                  # play (a new seed each time)
-cargo run -p nighthawk-tui -- --seed 42     # replay a specific ship
+cargo run -p nighthawk-tui                  # opens the title menu
+cargo run -p nighthawk-tui -- --seed 42     # skip the menu and play a specific ship
 cargo test                                  # run all tests
 ```
 
-Controls: arrows, `hjkl` + `yubn` (vi keys) or the numpad to move; `.` or `5` to wait;
-`S` to save; `q` to save and quit; `Q` to quit without saving.
+**Title menu:** `j`/`k` or arrows to move, Enter to choose, or `n` (New game),
+`c` (Continue), `q` (Quit). Continue is greyed out until you've saved.
+
+**In a game:** arrows, `hjkl` + `yubn` (vi keys) or the numpad to move; `.` or `5`
+to wait; `S` to save; `q` to save and return to the menu; `Q` to return without
+saving; Ctrl-C to save and exit.
 
 The game saves to one slot: `~/.local/share/nighthawk/save.json` on Linux,
 `~/Library/Application Support/nighthawk/save.json` on macOS, or the folder in
-`$NIGHTHAWK_SAVE_DIR`. Starting the game resumes the save; `--seed` starts a new game.
+`$NIGHTHAWK_SAVE_DIR`.
 Time only passes when you act, so it's safe to leave running in tmux. The seed is shown in the sidebar and in the first log line.
 
 Recommended `~/.tmux.conf` lines for the primary setup (macOS terminal → SSH → Debian → tmux):

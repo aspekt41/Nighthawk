@@ -1,5 +1,7 @@
 //! Screen layout and drawing.
 //!
+//! Two screens. The title menu is a small centred box. While playing:
+//!
 //! ```text
 //! ┌ Stasis bay ─────────────────────────┐┌ Status ─────────┐
 //! │                                     ││ Deck 0          │
@@ -17,26 +19,110 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::Line;
-use ratatui::widgets::{Block, Paragraph, Widget};
+use ratatui::widgets::{Block, Paragraph, Widget, Wrap};
 
-use crate::App;
+use crate::app::{App, Screen};
+use crate::title::{MenuItem, TitleMenu};
 
 const SIDEBAR_WIDTH: u16 = 24;
 const LOG_HEIGHT: u16 = 6;
+const TITLE_WIDTH: u16 = 60;
+/// Tall enough for the menu plus a few lines of wrapped message, and still
+/// inside the 80×24 minimum terminal.
+const TITLE_HEIGHT: u16 = 20;
 
+/// Draws whichever screen the app is on.
 pub fn render(app: &App, frame: &mut Frame) {
+    match &app.screen {
+        Screen::Title(menu) => render_title(menu, frame),
+        Screen::Playing(world) => render_game(world, &app.log, frame),
+    }
+}
+
+/// The title menu, centred on the screen.
+fn render_title(menu: &TitleMenu, frame: &mut Frame) {
+    let area = centred(frame.area(), TITLE_WIDTH, TITLE_HEIGHT);
+    let dim = Style::new().fg(Color::DarkGray);
+    let mut lines = vec![
+        Line::styled(
+            "N I G H T H A W K",
+            Style::new().add_modifier(Modifier::BOLD),
+        ),
+        Line::styled("A dead ship. One survivor. Take it back.", dim),
+        Line::raw(""),
+    ];
+    lines.extend(MenuItem::ALL.into_iter().map(|item| menu_line(menu, item)));
+    lines.push(Line::raw(""));
+    lines.push(Line::styled(
+        "j/k or arrows: move   Enter: choose   n/c/q: pick",
+        dim,
+    ));
+    if menu.can_continue() && menu.selected() == MenuItem::NewGame {
+        lines.push(Line::styled(
+            "A new game replaces your save the next time you save.",
+            dim,
+        ));
+    }
+    if let Some(message) = menu.message() {
+        lines.push(Line::raw(""));
+        lines.push(Line::styled(
+            message.to_string(),
+            Style::new().fg(Color::Yellow),
+        ));
+    }
+    // Wrap long lines (a load error names a file path) instead of cutting them off.
+    let menu_box = Paragraph::new(lines)
+        .centered()
+        .wrap(Wrap { trim: true })
+        .block(Block::bordered());
+    frame.render_widget(menu_box, area);
+}
+
+/// One menu line: highlighted with `>` when selected, greyed out when off.
+fn menu_line(menu: &TitleMenu, item: MenuItem) -> Line<'static> {
+    if !menu.is_enabled(item) {
+        let label = format!("  {} (no save)  ", item.label());
+        return Line::styled(label, Style::new().fg(Color::DarkGray));
+    }
+    if menu.selected() == item {
+        let style = Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD);
+        return Line::styled(format!("> {} <", item.label()), style);
+    }
+    Line::raw(format!("  {}  ", item.label()))
+}
+
+/// A `width` × `height` box in the middle of `area`, shrunk to fit if the
+/// terminal is smaller than that.
+fn centred(area: Rect, width: u16, height: u16) -> Rect {
+    let [_, row, _] = Layout::vertical([
+        Constraint::Fill(1),
+        Constraint::Length(height),
+        Constraint::Fill(1),
+    ])
+    .areas(area);
+    let [_, cell, _] = Layout::horizontal([
+        Constraint::Fill(1),
+        Constraint::Length(width),
+        Constraint::Fill(1),
+    ])
+    .areas(row);
+    cell
+}
+
+/// The game screen: map, status sidebar and message log.
+fn render_game(world: &World, log_lines: &[String], frame: &mut Frame) {
     let [top, log_area] =
         Layout::vertical([Constraint::Min(5), Constraint::Length(LOG_HEIGHT)]).areas(frame.area());
     let [map_area, side_area] =
         Layout::horizontal([Constraint::Min(10), Constraint::Length(SIDEBAR_WIDTH)]).areas(top);
 
-    let map_block = Block::bordered().title(format!(" {} ", app.world.area_name()));
+    let map_block = Block::bordered().title(format!(" {} ", world.area_name()));
     let map_inner = map_block.inner(map_area);
     frame.render_widget(map_block, map_area);
-    frame.render_widget(MapView { world: &app.world }, map_inner);
+    frame.render_widget(MapView { world }, map_inner);
 
-    frame.render_widget(sidebar(&app.world), side_area);
-    frame.render_widget(log(&app.log, log_area.height.saturating_sub(2)), log_area);
+    frame.render_widget(sidebar(world), side_area);
+    frame.render_widget(log(log_lines, log_area.height.saturating_sub(2)), log_area);
 }
 
 /// Draws the map with the player in the middle of the view.
@@ -102,7 +188,7 @@ fn sidebar(world: &World) -> Paragraph<'static> {
         Line::styled("      yubn numpad", dim),
         Line::styled("wait  . or 5", dim),
         Line::styled("save  S", dim),
-        Line::styled("quit  q (saves)", dim),
+        Line::styled("menu  q (saves)", dim),
         Line::styled("      Q (no save)", dim),
     ])
     .block(Block::bordered().title(" Status "))
@@ -159,21 +245,28 @@ mod tests {
         assert_eq!(rows[5].chars().next(), Some(' '));
     }
 
-    /// Renders the whole screen, as the game would, into a fake 80×24 terminal.
-    fn draw_screen(app: &App) -> String {
+    /// Renders the whole screen, as the game would, into a fake terminal.
+    fn draw_screen(width: u16, height: u16, render: impl FnOnce(&mut Frame)) -> String {
         use ratatui::{Terminal, backend::TestBackend};
-        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
-        terminal.draw(|frame| render(app, frame)).unwrap();
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        terminal.draw(render).unwrap();
         let buf = terminal.backend().buffer();
-        (0..24)
-            .map(|y| (0..80).map(|x| buf[(x, y)].symbol()).collect::<String>() + "\n")
+        (0..height)
+            .map(|y| (0..width).map(|x| buf[(x, y)].symbol()).collect::<String>() + "\n")
             .collect()
+    }
+
+    fn game_screen(world: &World, log: &[String]) -> String {
+        draw_screen(80, 24, |frame| render_game(world, log, frame))
+    }
+
+    fn title_screen(menu: &TitleMenu) -> String {
+        draw_screen(80, 24, |frame| render_title(menu, frame))
     }
 
     #[test]
     fn whole_screen_shows_map_status_and_log() {
-        let app = App::new_game(test_world(), None);
-        let screen = draw_screen(&app);
+        let screen = game_screen(&test_world(), &["You wake in the stasis bay.".to_string()]);
         assert!(
             screen.contains(" T "),
             "map panel is titled with the area name"
@@ -181,18 +274,83 @@ mod tests {
         assert!(screen.contains("Turn  0"));
         assert!(screen.contains("Deck  0"));
         assert!(screen.contains("Seed  1"));
+        assert!(screen.contains("menu  q (saves)"));
         assert!(screen.contains("You wake in the stasis bay."));
     }
 
     #[test]
     fn log_panel_shows_the_newest_lines() {
-        let mut app = App::new_game(test_world(), None);
-        for i in 0..20 {
-            app.push_log(format!("entry {i}"));
-        }
-        let screen = draw_screen(&app);
+        let log: Vec<String> = (0..20).map(|i| format!("entry {i}")).collect();
+        let screen = game_screen(&test_world(), &log);
         assert!(screen.contains("entry 19"));
         assert!(!screen.contains("entry 0 "), "old lines scroll off");
+    }
+
+    #[test]
+    fn title_shows_the_name_and_every_item() {
+        let screen = title_screen(&TitleMenu::new(true));
+        assert!(screen.contains("N I G H T H A W K"));
+        assert!(screen.contains("New game"));
+        assert!(
+            screen.contains("> Continue <"),
+            "Continue is highlighted when there's a save"
+        );
+        assert!(screen.contains("Quit"));
+    }
+
+    #[test]
+    fn without_a_save_continue_is_greyed_out() {
+        let screen = title_screen(&TitleMenu::new(false));
+        assert!(screen.contains("Continue (no save)"));
+        assert!(screen.contains("> New game <"));
+    }
+
+    #[test]
+    fn choosing_new_game_over_a_save_warns_about_replacing_it() {
+        let mut menu = TitleMenu::new(true);
+        menu.up(); // Continue → New game
+        assert!(title_screen(&menu).contains("replaces your save"));
+        assert!(!title_screen(&TitleMenu::new(false)).contains("replaces your save"));
+    }
+
+    #[test]
+    fn title_messages_are_shown() {
+        let menu = TitleMenu::new(false).with_message(Some("Could not load: damaged".into()));
+        assert!(title_screen(&menu).contains("Could not load: damaged"));
+    }
+
+    #[test]
+    fn long_title_messages_wrap_instead_of_being_cut_off() {
+        let message = "Could not load: /home/someone/.local/share/nighthawk/save.json: \
+                       save file is damaged: key must be a string at line 1 column 3";
+        let menu = TitleMenu::new(true).with_message(Some(message.into()));
+        // Join the screen's rows back up and squash the spaces, then the
+        // whole message must be there, end to end.
+        let squashed: String = title_screen(&menu).split_whitespace().collect();
+        let expected: String = message.split_whitespace().collect();
+        let inside: String = squashed.replace('│', "");
+        assert!(
+            inside.contains(&expected),
+            "message was cut off:\n{}",
+            title_screen(&menu)
+        );
+    }
+
+    #[test]
+    fn the_title_fits_an_80_by_24_terminal_and_shrinks_below_it() {
+        // 80×24 is the minimum supported size; smaller must not panic.
+        assert!(title_screen(&TitleMenu::new(true)).contains("Continue"));
+        let tiny = draw_screen(20, 6, |frame| render_title(&TitleMenu::new(true), frame));
+        assert_eq!(tiny.lines().count(), 6);
+    }
+
+    #[test]
+    fn render_draws_whichever_screen_the_app_is_on() {
+        let map = crate::content::load_start_map().unwrap();
+        let on_title = crate::app::App::new(map.clone(), None, None, || 1);
+        assert!(draw_screen(80, 24, |f| render(&on_title, f)).contains("N I G H T H A W K"));
+        let playing = crate::app::App::new(map, None, Some(5), || 1);
+        assert!(draw_screen(80, 24, |f| render(&playing, f)).contains("Seed  5"));
     }
 
     #[test]

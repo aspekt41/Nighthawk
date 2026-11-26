@@ -91,6 +91,11 @@ impl SaveSlot {
         &self.path
     }
 
+    /// Whether anything has been saved here (the title menu's "Continue").
+    pub fn exists(&self) -> bool {
+        self.path.is_file()
+    }
+
     /// The saved game, or `Ok(None)` if nothing has been saved yet.
     pub fn load(&self) -> Result<Option<World>, SaveFileError> {
         let text = match fs::read_to_string(&self.path) {
@@ -131,7 +136,7 @@ impl SaveSlot {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::content::{START_MAP, load_world};
+    use crate::content::load_start_map;
     use nighthawk_sim::Command;
 
     /// A fake environment: looks names up in a fixed list.
@@ -148,8 +153,7 @@ mod tests {
     }
 
     fn a_world() -> World {
-        let data = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../data");
-        load_world(&data, START_MAP, 5).unwrap()
+        World::new(load_start_map().unwrap(), 5)
     }
 
     #[test]
@@ -213,7 +217,7 @@ mod tests {
     fn an_empty_slot_loads_as_nothing() {
         let dir = tempfile::tempdir().unwrap();
         let slot = SaveSlot::in_dir(dir.path());
-        assert!(!slot.path().is_file());
+        assert!(!slot.exists());
         assert_eq!(slot.load().unwrap(), None);
     }
 
@@ -226,7 +230,7 @@ mod tests {
 
         slot.save(&world).unwrap();
 
-        assert!(slot.path().is_file());
+        assert!(slot.exists());
         assert_eq!(slot.load().unwrap(), Some(world));
     }
 

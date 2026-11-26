@@ -85,8 +85,8 @@ it uses the same Rust as everyone else.
 ## 3. Building and running
 
 ```sh
-cargo run -p nighthawk-tui        # build and play (debug build)
-cargo run -p nighthawk-tui -- --seed 42   # replay a specific seed (args go after --)
+cargo run -p nighthawk-tui        # build and run (debug build); opens the title menu
+cargo run -p nighthawk-tui -- --seed 42   # skip the menu, play a specific seed (args go after --)
 cargo run -p nighthawk-tui --release   # optimised build, slower to compile
 cargo build --workspace           # build everything without running
 cargo check --workspace           # type-check only: the fastest way to see errors
@@ -299,7 +299,7 @@ cargo build -p nighthawk-tui
 tmux -L nhtest new-session -d -s nh -x 100 -y 30 "NIGHTHAWK_SAVE_DIR=/tmp/nh-saves ./target/debug/nighthawk-tui --seed 42"
 tmux -L nhtest send-keys -t nh l l k .      # press keys: right, right, up, wait
 tmux -L nhtest capture-pane -t nh -p        # print what's on screen
-tmux -L nhtest send-keys -t nh q            # quit
+tmux -L nhtest send-keys -t nh Q q          # leave without saving, then quit from the menu
 ```
 
 ---
