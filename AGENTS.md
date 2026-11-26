@@ -45,8 +45,9 @@ rather than accepting a skipped step.
 
 1. **The sim is pure.** No terminal, file I/O or clock in `nighthawk-sim`.
    Front-ends read files and pass text in: each content folder as a list
-   of `ContentFile { name, text }` (`parse_materials`, `parse_structures`),
-   then a map with `parse_map(&str, Catalogue { materials, structures })`. They pass the
+   of `ContentFile { name, text }` (`parse_materials`, `parse_structures`,
+   `parse_items`), then a map with `parse_map(&str, Catalogue { materials,
+   structures, items })`. They pass the
    seed in (`World::new(map, seed)`).
 2. **The sim is deterministic (D22).** Randomness only via `GameRng`
    (`crates/nighthawk-sim/src/rng.rs`): add a new `Stream` variant with a
@@ -141,8 +142,9 @@ precise error and exits with code 1 before entering raw mode.
   `crates/nighthawk-sim/src/world.rs` and `crates/nighthawk-tui/src/ui.rs`).
 - **Test maps and content.** In the sim's unit tests, import
   `crate::map_file::parse_map_for_tests as parse_map`: it parses with a
-  small test set of materials and structures (one structure per behaviour,
-  named after it: `"wall"`, `"floor"`, `"door"`…), and puts the player on
+  small test set of materials, structures (one per behaviour, named after
+  it: `"wall"`, `"floor"`, `"door"`…) and items (`"suit"` with two 1 L
+  pockets, `"cutter"` with LASER 1, `"scrap"`), and puts the player on
   `"floor"` if the legend doesn't say what `@` is. Integration tests share
   `crates/nighthawk-sim/tests/common/mod.rs`, which loads the real `data/`;
   every test file must call `common::start_world` so no helper is unused

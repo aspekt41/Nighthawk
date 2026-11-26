@@ -1,0 +1,16 @@
+{
+  "items": [
+    {
+      "id": "basic_laser_cutter",
+      "name": "basic laser cutter",
+      "description": "A handheld fibre-laser cutter, about a kilowatt. Enough to slice through thin aluminium; steel will laugh at it.",
+      "glyph": "(",
+      "material": "aluminium_alloy",
+      "volume_ml": 800,
+      "solid_percent": 50,
+      "qualities": {
+        "LASER": 1
+      }
+    }
+  ]
+}

@@ -97,11 +97,15 @@ pub struct Material {
     pub colour: Colour,
     /// Density in kg/m³.
     pub density: u32,
-    /// Melting point in °C.
-    pub melting_point: i32,
+    /// Melting point in °C, or `None` for something that doesn't melt
+    /// (cotton chars and burns instead).
+    #[serde(default)]
+    pub melting_point: Option<i32>,
     /// Specific heat in J/(kg·K): how much heat it takes to warm.
     pub specific_heat: u32,
-    /// Thermal conductivity in W/(m·K): how well heat passes through.
+    /// Thermal conductivity in mW/(m·K) (thousandths, so insulators like
+    /// cotton at 0.04 W/(m·K) aren't rounded to nothing): how well heat
+    /// passes through.
     pub thermal_conductivity: u32,
     /// Vickers hardness (HV): how hard it is to scratch, drill or grind.
     pub hardness: u32,
@@ -118,7 +122,7 @@ impl Material {
         h.str(&self.id).str(&self.name).str(&self.description);
         h.u8(self.colour.hash_id())
             .u64(u64::from(self.density))
-            .i32(self.melting_point)
+            .i32(self.melting_point.unwrap_or(i32::MIN))
             .u64(u64::from(self.specific_heat))
             .u64(u64::from(self.thermal_conductivity))
             .u64(u64::from(self.hardness))
@@ -248,7 +252,7 @@ pub(crate) mod tests {
         format!(
             r#"{{ "id": "{id}", "name": "{id}", "description": "A test material.",
                  "colour": "grey", "density": 1000, "melting_point": 1000,
-                 "specific_heat": 500, "thermal_conductivity": 10, "hardness": 100,
+                 "specific_heat": 500, "thermal_conductivity": 10000, "hardness": 100,
                  "cut_by": {cut_by} }}"#
         )
     }
@@ -376,7 +380,7 @@ pub(crate) mod tests {
         let base = test_materials().list()[1].clone();
         let changes: [fn(&mut Material); 6] = [
             |m| m.density += 1,
-            |m| m.melting_point += 1,
+            |m| m.melting_point = None,
             |m| m.colour = Colour::Red,
             |m| m.hardness += 1,
             |m| m.cut_by.clear(),

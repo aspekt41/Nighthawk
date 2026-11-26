@@ -8,7 +8,7 @@
       "density": 7850,
       "melting_point": 1450,
       "specific_heat": 490,
-      "thermal_conductivity": 45,
+      "thermal_conductivity": 45000,
       "hardness": 150,
       "cut_by": {
         "LASER": 2
@@ -22,7 +22,7 @@
       "density": 2700,
       "melting_point": 600,
       "specific_heat": 896,
-      "thermal_conductivity": 167,
+      "thermal_conductivity": 167000,
       "hardness": 107,
       "cut_by": {
         "LASER": 1
@@ -36,7 +36,7 @@
       "density": 3200,
       "melting_point": 3900,
       "specific_heat": 710,
-      "thermal_conductivity": 8,
+      "thermal_conductivity": 8000,
       "hardness": 2500,
       "cut_by": {
         "LASER": 5

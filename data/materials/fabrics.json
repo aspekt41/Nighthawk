@@ -1,0 +1,14 @@
+{
+  "materials": [
+    {
+      "id": "cotton_fabric",
+      "name": "Cotton Fabric",
+      "description": "Woven cotton: soft, warm, and quick to burn. It chars rather than melts.",
+      "colour": "yellow",
+      "density": 1540,
+      "specific_heat": 1300,
+      "thermal_conductivity": 40,
+      "hardness": 0
+    }
+  ]
+}

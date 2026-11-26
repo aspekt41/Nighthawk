@@ -24,6 +24,7 @@ mod content;
 mod hash;
 mod heat;
 mod interact;
+mod item;
 mod map;
 mod map_file;
 mod material;
@@ -45,8 +46,12 @@ pub use heat::{
     SPACE_TEMPERATURE_MK, ZERO_CELSIUS_MK, celsius_to_mk, mk_to_tenths_celsius,
 };
 pub use interact::{Action, ActionOption, Blocked, HAND_REACH, LASER_REACH, blocked, options_at};
+pub use item::{
+    FloorItem, Item, ItemContext, ItemError, ItemPath, ItemRef, ItemType, ItemTypes, PocketType,
+    Wear, parse_items,
+};
 pub use map::{Map, StairsError, Tile};
-pub use map_file::{Catalogue, LegendError, LoadedMap, MapError, parse_map};
+pub use map_file::{Catalogue, ItemSpecError, LegendError, LoadedMap, MapError, parse_map};
 pub use material::{
     Colour, MAX_QUALITY_LEVEL, Material, MaterialError, Materials, Quality, parse_materials,
 };
@@ -55,6 +60,6 @@ pub use rng::{GameRng, Stream};
 pub use save::{SAVE_FORMAT, SAVE_VERSION, SaveError, load_from_str, save_to_string};
 pub use structure::{Behaviour, Structure, StructureError, Structures, parse_structures};
 pub use world::{
-    CLIMB_SECONDS, Command, DIAGONAL_STEP_SECONDS, DOOR_SECONDS, Event, STEP_SECONDS, Sound,
-    WAIT_SECONDS, World,
+    CLIMB_SECONDS, Command, DIAGONAL_STEP_SECONDS, DOOR_SECONDS, DROP_SECONDS, Event,
+    PICK_UP_SECONDS, STEP_SECONDS, Sound, WAIT_SECONDS, World,
 };

@@ -6,6 +6,7 @@ use crate::body::{self, BREATH_FULL, BreathLevel, Cause, WARMTH_FULL, WarmthLeve
 use crate::calendar::{DateTime, SHIP_START};
 use crate::hash::Fnv64;
 use crate::interact::{self, Action, Blocked};
+use crate::item::{self, FloorItem, Item, ItemContext, ItemPath, ItemRef, ItemType};
 use crate::map::{Map, Tile};
 use crate::map_file::LoadedMap;
 use crate::material::Material;
@@ -28,6 +29,8 @@ pub enum Command {
         at: Pos,
         action: Action,
     },
+    /// Drop a carried item onto the floor where you stand.
+    Drop(ItemPath),
 }
 
 /// Something that happened, for the front-end to show or log.
@@ -84,6 +87,14 @@ pub enum Event {
         action: Action,
         blocked: Blocked,
     },
+    /// The player picked this item up and put it in a pocket.
+    PickedUp(ItemRef),
+    /// This item fits in none of the player's pockets, so it stays put.
+    NoRoom(ItemRef),
+    /// The player dropped this item where they stand.
+    Dropped(ItemRef),
+    /// There's no item where a drop asked for one. No time passes.
+    NothingToDrop,
 }
 
 /// Noises the dead ship makes. Pure atmosphere for now. Later, sounds will
@@ -119,6 +130,10 @@ pub const CLIMB_SECONDS: u64 = 20;
 pub const DOOR_SECONDS: u64 = 2;
 /// Waiting (`.`): a short pause.
 pub const WAIT_SECONDS: u64 = 5;
+/// Picking up one item and putting it in a pocket.
+pub const PICK_UP_SECONDS: u64 = 2;
+/// Dropping an item.
+pub const DROP_SECONDS: u64 = 1;
 
 /// Each second has a 1 in this many chance of an ambient sound, so about
 /// one sound every 25 seconds.
@@ -155,6 +170,13 @@ pub struct World {
     /// from `data/structures/` when the game began, like the materials.
     /// Each tile's structure is an index into this list.
     structures: Vec<Structure>,
+    /// Every kind of item (decision D39), copied from `data/items/` when
+    /// the game began. Each item's `kind` is an index into this list.
+    item_types: Vec<ItemType>,
+    /// The items lying on the floor around the ship.
+    floor_items: Vec<FloorItem>,
+    /// What the player is wearing; carried items are in its pockets.
+    worn: Vec<Item>,
 }
 
 impl World {
@@ -172,6 +194,9 @@ impl World {
             warmth: WARMTH_FULL,
             materials: loaded.materials,
             structures: loaded.structures,
+            item_types: loaded.item_types,
+            floor_items: loaded.floor_items,
+            worn: loaded.worn,
         }
     }
 
@@ -196,6 +221,48 @@ impl World {
     pub fn material_at(&self, p: Pos) -> Option<&Material> {
         let index = self.map.material_index(p)?;
         self.materials.get(usize::from(index))
+    }
+
+    /// The items lying at `p`, in the order they were put there.
+    pub fn items_at(&self, p: Pos) -> impl Iterator<Item = &Item> {
+        self.floor_items
+            .iter()
+            .filter(move |f| f.at == p)
+            .map(|f| &f.item)
+    }
+
+    /// Every item lying on the floor.
+    pub fn floor_items(&self) -> &[FloorItem] {
+        &self.floor_items
+    }
+
+    /// What the player is wearing (carried items are in its pockets).
+    pub fn worn(&self) -> &[Item] {
+        &self.worn
+    }
+
+    /// Every carried item and where it is: worn item by worn item, pocket
+    /// by pocket, in order. What the inventory screen lists.
+    pub fn carried(&self) -> Vec<(ItemPath, &Item)> {
+        self.worn
+            .iter()
+            .enumerate()
+            .flat_map(|(worn, wearing)| item::pocketed(worn, wearing))
+            .collect()
+    }
+
+    /// Every kind of item in this game.
+    pub fn item_types(&self) -> &[ItemType] {
+        &self.item_types
+    }
+
+    /// The item types and materials together, for working out an item's
+    /// weight and whether it fits a pocket.
+    pub fn item_context(&self) -> ItemContext<'_> {
+        ItemContext {
+            types: &self.item_types,
+            materials: &self.materials,
+        }
     }
 
     /// What the tile at `p` is, or `None` off the map.
@@ -254,6 +321,7 @@ impl World {
             Command::Climb(way) => self.climb(way),
             Command::Close(dir) => self.close(dir),
             Command::Interact { at, action } => self.interact(at, action),
+            Command::Drop(path) => self.drop_item(path),
             Command::Wait => {
                 let mut events = vec![Event::Waited];
                 self.pass_time(WAIT_SECONDS, &mut events);
@@ -317,11 +385,60 @@ impl World {
         }
         // Only door actions can get this far: cutting always needs a tool,
         // and nothing can be carried yet (items come in the next step).
-        if action == Action::Open {
-            self.open(at)
-        } else {
-            self.shut(at)
+        match action {
+            Action::Open => self.open(at),
+            Action::PickUp => self.pick_up(at),
+            // `Close`; cutting is always blocked until carried tools count
+            // (M1.7c), so it never gets this far.
+            Action::Close | Action::Cut => self.shut(at),
         }
+    }
+
+    /// Picks up everything at `at` that fits in a pocket, one item at a
+    /// time; anything that doesn't fit stays where it was.
+    fn pick_up(&mut self, at: Pos) -> Vec<Event> {
+        let (here, elsewhere): (Vec<FloorItem>, Vec<FloorItem>) =
+            std::mem::take(&mut self.floor_items)
+                .into_iter()
+                .partition(|f| f.at == at);
+        self.floor_items = elsewhere;
+        // Borrowing two fields to read while changing two others is fine:
+        // Rust tracks borrows of separate fields of `self` separately.
+        let ctx = ItemContext {
+            types: &self.item_types,
+            materials: &self.materials,
+        };
+        let mut events = Vec::new();
+        let mut picked = 0;
+        for FloorItem { item, .. } in here {
+            let id = item.id();
+            match item::stow(&mut self.worn, item, ctx) {
+                Ok(()) => {
+                    picked += 1;
+                    events.push(Event::PickedUp(id));
+                }
+                Err(item) => {
+                    self.floor_items.push(FloorItem { at, item });
+                    events.push(Event::NoRoom(id));
+                }
+            }
+        }
+        self.pass_time(PICK_UP_SECONDS * picked, &mut events);
+        events
+    }
+
+    /// Drops the carried item at `path` where the player stands.
+    fn drop_item(&mut self, path: ItemPath) -> Vec<Event> {
+        let Some(item) = item::take(&mut self.worn, path) else {
+            return vec![Event::NothingToDrop];
+        };
+        let mut events = vec![Event::Dropped(item.id())];
+        self.floor_items.push(FloorItem {
+            at: self.player,
+            item,
+        });
+        self.pass_time(DROP_SECONDS, &mut events);
+        events
     }
 
     /// Uses the stairs under the player. Stairs up only go up and stairs
@@ -443,24 +560,14 @@ impl World {
         if i64::try_from(names).ok() != Some(i64::from(depth)) {
             return Err(format!("{names} deck names for {depth} decks"));
         }
-        if self.breath > BREATH_FULL {
-            return Err(format!(
-                "breath {} is over the full {BREATH_FULL}",
-                self.breath
-            ));
-        }
+        self.check_meters()?;
         self.check_structures()?;
+        self.check_items()?;
         let highest = usize::from(self.map.highest_material());
         if highest >= self.materials.len() {
             return Err(format!(
                 "a tile is made of material {highest}, but there are only {}",
                 self.materials.len()
-            ));
-        }
-        if self.warmth > WARMTH_FULL {
-            return Err(format!(
-                "warmth {} is over the full {WARMTH_FULL}",
-                self.warmth
             ));
         }
         match self.map.get(self.player) {
@@ -472,6 +579,23 @@ impl World {
             )),
             Some(_) => Ok(()),
         }
+    }
+
+    /// Checks the breath and warmth meters aren't over full.
+    fn check_meters(&self) -> Result<(), String> {
+        if self.breath > BREATH_FULL {
+            return Err(format!(
+                "breath {} is over the full {BREATH_FULL}",
+                self.breath
+            ));
+        }
+        if self.warmth > WARMTH_FULL {
+            return Err(format!(
+                "warmth {} is over the full {WARMTH_FULL}",
+                self.warmth
+            ));
+        }
+        Ok(())
     }
 
     /// Checks every tile has a structure from the list, and is in a state
@@ -487,6 +611,29 @@ impl World {
                     "the tile at {p:?} ({}) doesn't fit its structure {:?}",
                     tile.name(),
                     structure.id
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// Checks every item makes sense, everything on the floor lies on a
+    /// walkable tile, and everything worn can be worn.
+    fn check_items(&self) -> Result<(), String> {
+        let ctx = self.item_context();
+        for floor in &self.floor_items {
+            item::check_item(&floor.item, ctx)?;
+            if !self.map.get(floor.at).is_some_and(Tile::is_walkable) {
+                return Err(format!("an item lies inside something at {:?}", floor.at));
+            }
+        }
+        for worn in &self.worn {
+            item::check_item(worn, ctx)?;
+            let kind = &self.item_types[usize::from(worn.kind)];
+            if kind.wear.is_none() {
+                return Err(format!(
+                    "the player is wearing a {}, which can't be worn",
+                    kind.id
                 ));
             }
         }
@@ -521,6 +668,16 @@ impl World {
         h.u64(self.structures.len() as u64);
         for structure in &self.structures {
             structure.hash_into(&mut h);
+        }
+        item::hash_types(&self.item_types, &mut h);
+        h.u64(self.floor_items.len() as u64);
+        for floor in &self.floor_items {
+            h.i32(floor.at.x).i32(floor.at.y).i32(floor.at.z);
+            floor.item.hash_into(&mut h);
+        }
+        h.u64(self.worn.len() as u64);
+        for worn in &self.worn {
+            worn.hash_into(&mut h);
         }
         h.finish()
     }
@@ -1409,5 +1566,187 @@ mod tests {
         let mut changed = test_world();
         changed.structures[0].name.push('!');
         assert_ne!(test_world().state_hash(), changed.state_hash());
+    }
+
+    // --- Items ----------------------------------------------------------------
+
+    /// The test room wearing the test suit (two 1 L pockets), with a cutter
+    /// and three scraps on the floor beside the player at (3, 1).
+    fn world_with_items() -> World {
+        let rows = ["######", "#.@s.#", "#..#.#", "######"];
+        let json = format!(
+            r##"{{ "id": "t", "name": "T",
+                 "legend": {{ "#": "wall", ".": "floor",
+                    "s": {{ "structure": "floor",
+                           "items": [ {{ "item": "cutter" }}, {{ "item": "scrap", "count": 3 }} ] }} }},
+                 "player_wears": [ {{ "item": "suit" }} ],
+                 "decks": [ {{ "rows": {rows:?} }} ] }}"##
+        );
+        World::new(parse_map(&json).unwrap(), TEST_SEED)
+    }
+
+    const PILE: Pos = Pos::new(3, 1, 0);
+
+    fn pick_up_pile(world: &mut World) -> Vec<Event> {
+        world.apply(Command::Interact {
+            at: PILE,
+            action: Action::PickUp,
+        })
+    }
+
+    fn carried(world: &World) -> usize {
+        world.worn()[0].pockets.iter().map(Vec::len).sum()
+    }
+
+    #[test]
+    fn items_lie_where_the_map_put_them() {
+        let world = world_with_items();
+        assert_eq!(world.items_at(PILE).count(), 4);
+        assert_eq!(world.items_at(world.player()).count(), 0);
+        assert_eq!(world.floor_items().len(), 4);
+        assert_eq!(world.item_types().len(), 3);
+        assert_eq!(world.worn().len(), 1);
+    }
+
+    #[test]
+    fn picking_up_puts_everything_that_fits_in_pockets_two_seconds_each() {
+        let mut world = world_with_items();
+        let events = without_ambient(pick_up_pile(&mut world));
+        let picked = events
+            .iter()
+            .filter(|e| matches!(e, Event::PickedUp(_)))
+            .count();
+        assert_eq!(picked, 4);
+        assert_eq!(world.items_at(PILE).count(), 0);
+        assert_eq!(carried(&world), 4);
+        assert_eq!(world.seconds(), 4 * PICK_UP_SECONDS);
+    }
+
+    #[test]
+    fn what_does_not_fit_stays_on_the_floor() {
+        let mut world = world_with_items();
+        // Fill both pockets with cutters (800 ml each), leaving 200 ml free.
+        for p in 0..2 {
+            world.worn[0].pockets[p].push(Item::new(1, 0, &world.item_types));
+        }
+        let events = without_ambient(pick_up_pile(&mut world));
+        // Each pocket has 200 ml left: room for two scraps each, so all
+        // three scraps fit, and only the cutter stays on the floor.
+        let no_room: Vec<&Event> = events
+            .iter()
+            .filter(|e| matches!(e, Event::NoRoom(_)))
+            .collect();
+        assert_eq!(
+            no_room,
+            vec![&Event::NoRoom(ItemRef {
+                kind: 1,
+                material: 0
+            })]
+        );
+        assert_eq!(world.items_at(PILE).count(), 1);
+        assert_eq!(world.seconds(), 3 * PICK_UP_SECONDS);
+    }
+
+    #[test]
+    fn picking_up_nothing_that_fits_costs_no_time() {
+        let mut world = world_with_items();
+        world.worn.clear();
+        let events = pick_up_pile(&mut world);
+        assert!(events.iter().all(|e| matches!(e, Event::NoRoom(_))));
+        assert_eq!(world.seconds(), 0);
+    }
+
+    #[test]
+    fn dropping_puts_an_item_where_you_stand() {
+        let mut world = world_with_items();
+        pick_up_pile(&mut world);
+        let before = world.seconds();
+        let path = ItemPath {
+            worn: 0,
+            pocket: 0,
+            index: 0,
+        };
+        let events = world.apply(Command::Drop(path));
+        assert!(matches!(events[0], Event::Dropped(ItemRef { kind: 1, .. })));
+        assert_eq!(world.items_at(world.player()).count(), 1);
+        assert_eq!(carried(&world), 3);
+        assert_eq!(world.seconds(), before + DROP_SECONDS);
+    }
+
+    #[test]
+    fn dropping_from_an_empty_pocket_does_nothing() {
+        let mut world = world_with_items();
+        let path = ItemPath {
+            worn: 0,
+            pocket: 1,
+            index: 0,
+        };
+        assert_eq!(world.apply(Command::Drop(path)), vec![Event::NothingToDrop]);
+        assert_eq!(world.seconds(), 0);
+    }
+
+    #[test]
+    fn carried_lists_every_pocketed_item_with_where_it_is() {
+        let mut world = world_with_items();
+        assert!(world.carried().is_empty());
+        pick_up_pile(&mut world);
+        let paths: Vec<(usize, usize)> = world
+            .carried()
+            .iter()
+            .map(|(path, _)| (path.pocket, path.index))
+            .collect();
+        // Cutter and two scraps fill the first pocket; the last scrap goes
+        // in the second.
+        assert_eq!(paths, vec![(0, 0), (0, 1), (0, 2), (1, 0)]);
+        assert_eq!(world.carried()[0].1.kind, 1);
+    }
+
+    #[test]
+    fn the_item_context_weighs_what_you_carry() {
+        let mut world = world_with_items();
+        pick_up_pile(&mut world);
+        // Suit 600 g + cutter 400 g + three scraps 100 g each.
+        assert_eq!(world.item_context().mass_g(&world.worn()[0]), 1_300);
+    }
+
+    #[test]
+    fn broken_items_in_a_save_are_inconsistent() {
+        let mut world = world_with_items();
+        world.floor_items[0].item.kind = 99;
+        assert!(world.check_consistent().unwrap_err().contains("type 99"));
+
+        let mut world = world_with_items();
+        world.floor_items[0].at = Pos::new(0, 0, 0);
+        assert!(
+            world
+                .check_consistent()
+                .unwrap_err()
+                .contains("lies inside")
+        );
+
+        let mut world = world_with_items();
+        world.worn[0].pockets.clear();
+        assert!(world.check_consistent().unwrap_err().contains("pockets"));
+
+        let mut world = world_with_items();
+        world.worn = vec![Item::new(2, 0, &world.item_types)];
+        assert_eq!(
+            world.check_consistent(),
+            Err("the player is wearing a scrap, which can't be worn".to_string())
+        );
+    }
+
+    #[test]
+    fn items_are_part_of_the_state_hash() {
+        let base = world_with_items().state_hash();
+        let mut moved = world_with_items();
+        moved.floor_items[0].at = Pos::new(4, 1, 0);
+        let mut carrying = world_with_items();
+        carrying.worn[0].pockets[0].push(Item::new(2, 0, &carrying.item_types));
+        let mut retyped = world_with_items();
+        retyped.item_types[2].glyph = '%';
+        for other in [moved, carrying, retyped] {
+            assert_ne!(base, other.state_hash());
+        }
     }
 }

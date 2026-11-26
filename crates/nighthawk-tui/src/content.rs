@@ -9,8 +9,8 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 use nighthawk_sim::{
-    Catalogue, ContentFile, LoadedMap, MapError, MaterialError, Materials, StructureError,
-    Structures, parse_map, parse_materials, parse_structures,
+    Catalogue, ContentFile, ItemError, ItemTypes, LoadedMap, MapError, MaterialError, Materials,
+    StructureError, Structures, parse_items, parse_map, parse_materials, parse_structures,
 };
 
 /// The map a new game starts on, as a file name in `data/maps/` (no `.json`).
@@ -43,6 +43,11 @@ pub enum LoadError {
         path: PathBuf,
         source: StructureError,
     },
+    /// A mistake in `data/items/` (the error names the file).
+    Items {
+        path: PathBuf,
+        source: ItemError,
+    },
 }
 
 impl fmt::Display for LoadError {
@@ -60,6 +65,7 @@ impl fmt::Display for LoadError {
             }
             LoadError::Map { path, source } => write!(f, "{}: {source}", path.display()),
             LoadError::Structures { path, source } => write!(f, "{}: {source}", path.display()),
+            LoadError::Items { path, source } => write!(f, "{}: {source}", path.display()),
             LoadError::Materials { path, source } => write!(f, "{}: {source}", path.display()),
         }
     }
@@ -119,28 +125,50 @@ fn read_folder(dir: &Path) -> Result<Vec<ContentFile>, LoadError> {
         .collect()
 }
 
-/// Loads and checks `data/materials/` and `data/structures/`.
-pub fn load_catalogue(data_dir: &Path) -> Result<(Materials, Structures), LoadError> {
+/// All the content a map can refer to.
+pub struct Content {
+    pub materials: Materials,
+    pub structures: Structures,
+    pub items: ItemTypes,
+}
+
+impl Content {
+    /// The content as the sim's `Catalogue`, which borrows each list.
+    pub fn catalogue(&self) -> Catalogue<'_> {
+        Catalogue {
+            materials: &self.materials,
+            structures: &self.structures,
+            items: &self.items,
+        }
+    }
+}
+
+/// Loads and checks `data/materials/`, `data/structures/` and
+/// `data/items/`.
+pub fn load_content(data_dir: &Path) -> Result<Content, LoadError> {
     let path = data_dir.join("materials");
     let materials = parse_materials(&read_folder(&path)?)
         .map_err(|source| LoadError::Materials { path, source })?;
     let path = data_dir.join("structures");
     let structures = parse_structures(&read_folder(&path)?, &materials)
         .map_err(|source| LoadError::Structures { path, source })?;
-    Ok((materials, structures))
+    let path = data_dir.join("items");
+    let items = parse_items(&read_folder(&path)?, &materials)
+        .map_err(|source| LoadError::Items { path, source })?;
+    Ok(Content {
+        materials,
+        structures,
+        items,
+    })
 }
 
 /// Loads and checks `data/maps/<map_id>.json`, along with the structures
 /// and materials its tiles are.
 pub fn load_map(data_dir: &Path, map_id: &str) -> Result<LoadedMap, LoadError> {
-    let (materials, structures) = load_catalogue(data_dir)?;
-    let catalogue = Catalogue {
-        materials: &materials,
-        structures: &structures,
-    };
+    let content = load_content(data_dir)?;
     let path = data_dir.join("maps").join(format!("{map_id}.json"));
     let text = read(&path)?;
-    parse_map(&text, catalogue).map_err(|source| LoadError::Map { path, source })
+    parse_map(&text, content.catalogue()).map_err(|source| LoadError::Map { path, source })
 }
 
 /// Finds the data folder and loads the map every new game starts on.
@@ -217,7 +245,7 @@ mod tests {
     /// structures in it.
     fn data_dir_with_content() -> tempfile::TempDir {
         let dir = tempfile::tempdir().unwrap();
-        for folder in ["materials", "structures"] {
+        for folder in ["materials", "structures", "items"] {
             fs::create_dir(dir.path().join(folder)).unwrap();
             for entry in fs::read_dir(repo_data_dir().join(folder)).unwrap() {
                 let from = entry.unwrap().path();
@@ -272,20 +300,31 @@ mod tests {
                 .contains("invalid structures file zz_broken.json"),
             "{err}"
         );
+
+        let dir = data_dir_with_content();
+        fs::write(dir.path().join("items/zz_broken.json"), "{}").unwrap();
+        let err = load_map(dir.path(), "aft_ring").unwrap_err();
+        assert!(matches!(err, LoadError::Items { .. }));
+        assert!(
+            err.to_string()
+                .contains("invalid items file zz_broken.json"),
+            "{err}"
+        );
     }
 
     #[test]
     fn only_json_files_are_content() {
         let dir = data_dir_with_content();
         fs::write(dir.path().join("materials/notes.txt"), "not json").unwrap();
-        assert!(load_catalogue(dir.path()).is_ok());
+        assert!(load_content(dir.path()).is_ok());
     }
 
     #[test]
     fn the_real_content_loads() {
-        let (materials, structures) = load_catalogue(&repo_data_dir()).unwrap();
-        assert!(materials.index_of("nanocarbon_alloy").is_some());
-        assert!(structures.index_of("hull_plating").is_some());
+        let content = load_content(&repo_data_dir()).unwrap();
+        assert!(content.materials.index_of("nanocarbon_alloy").is_some());
+        assert!(content.structures.index_of("hull_plating").is_some());
+        assert!(content.items.index_of("basic_laser_cutter").is_some());
     }
 
     #[test]

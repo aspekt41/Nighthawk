@@ -19,10 +19,11 @@ fn maps_dir() -> PathBuf {
 
 /// Parses a map's text against the shipped materials and structures.
 fn load(text: &str) -> Result<LoadedMap, MapError> {
-    let (materials, structures) = common::catalogue();
+    let (materials, structures, items) = common::catalogue();
     let catalogue = Catalogue {
         materials: &materials,
         structures: &structures,
+        items: &items,
     };
     parse_map(text, catalogue)
 }
@@ -206,7 +207,7 @@ fn every_shipped_structure_is_used_by_the_starting_map() {
 fn the_shipped_materials_have_the_agreed_laser_levels() {
     // Levels are set by hand (decision D35). This test is the list to
     // update on purpose when they're retuned.
-    let (materials, _) = common::catalogue();
+    let (materials, _, _) = common::catalogue();
     let level = |id: &str| {
         let i = usize::from(materials.index_of(id).unwrap());
         materials.list()[i].cut_by.get(&Quality::Laser).copied()
@@ -214,4 +215,55 @@ fn the_shipped_materials_have_the_agreed_laser_levels() {
     assert_eq!(level("aluminium_alloy"), Some(1));
     assert_eq!(level("steel"), Some(2));
     assert_eq!(level("nanocarbon_alloy"), Some(5));
+}
+
+#[test]
+fn you_start_in_a_jumpsuit_with_four_one_litre_pockets() {
+    let world = common::start_world(1);
+    let worn = world.worn();
+    assert_eq!(worn.len(), 1);
+    let jumpsuit = &world.item_types()[usize::from(worn[0].kind)];
+    assert_eq!(jumpsuit.id, "jumpsuit");
+    let pockets: Vec<(&str, u32, u32)> = jumpsuit
+        .pockets()
+        .iter()
+        .map(|p| (p.name.as_str(), p.volume_ml, p.max_mass_g))
+        .collect();
+    assert_eq!(
+        pockets,
+        vec![
+            ("left hip pocket", 1000, 2500),
+            ("right hip pocket", 1000, 2500),
+            ("left leg pocket", 1000, 2500),
+            ("right leg pocket", 1000, 2500),
+        ]
+    );
+}
+
+#[test]
+fn a_laser_cutter_and_four_steel_scraps_lie_near_the_start() {
+    let world = common::start_world(1);
+    let ctx = world.item_context();
+    let near: Vec<(&str, &str, u64)> = world
+        .floor_items()
+        .iter()
+        .filter(|f| f.at.z == 0 && world.player().steps_to(f.at).is_some_and(|d| d <= 3))
+        .map(|f| {
+            let kind = &world.item_types()[usize::from(f.item.kind)];
+            let material = &world.materials()[usize::from(f.item.material)];
+            (kind.id.as_str(), material.id.as_str(), ctx.mass_g(&f.item))
+        })
+        .collect();
+    assert_eq!(
+        near,
+        vec![
+            ("basic_laser_cutter", "aluminium_alloy", 1080),
+            ("scrap", "steel", 785),
+            ("scrap", "steel", 785),
+            ("scrap", "steel", 785),
+            ("scrap", "steel", 785),
+        ]
+    );
+    let laser = &world.item_types()[usize::from(world.floor_items()[0].item.kind)];
+    assert_eq!(laser.qualities.get(&Quality::Laser), Some(&1));
 }

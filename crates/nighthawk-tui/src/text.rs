@@ -1,7 +1,7 @@
 //! The words the game shows the player: log lines for sim events.
 
 use nighthawk_sim::{
-    Action, Blocked, BreathLevel, Cause, Event, Sound, Vertical, WarmthLevel, World,
+    Action, Blocked, BreathLevel, Cause, Event, ItemRef, Sound, Vertical, WarmthLevel, World,
 };
 
 /// Like [`describe`], but with the world to hand, so a bump names the
@@ -11,7 +11,31 @@ pub fn describe_in(world: &World, event: Event) -> Option<String> {
         Event::Bumped { at, .. } if let Some(structure) = world.structure_at(at) => {
             Some(format!("You bump into the {}.", structure.name))
         }
+        Event::PickedUp(id) | Event::NoRoom(id) | Event::Dropped(id) => {
+            Some(item_text(event, &item_name(world, id)))
+        }
         _ => describe(event),
+    }
+}
+
+/// An item's name and material, like "basic laser cutter (Aluminium Alloy)".
+pub fn item_name(world: &World, id: ItemRef) -> String {
+    let kind = world.item_types().get(usize::from(id.kind));
+    let material = world.materials().get(usize::from(id.material));
+    match (kind, material) {
+        (Some(kind), Some(material)) => format!("{} ({})", kind.name, material.name),
+        (Some(kind), None) => kind.name.clone(),
+        _ => "something".into(),
+    }
+}
+
+/// Log lines for picking up and dropping, naming the item `name`.
+fn item_text(event: Event, name: &str) -> String {
+    match event {
+        Event::PickedUp(_) => format!("You pick up the {name}."),
+        Event::NoRoom(_) => format!("There's no room in your pockets for the {name}."),
+        Event::Dropped(_) => format!("You drop the {name}."),
+        _ => "There's nothing there to drop.".into(),
     }
 }
 
@@ -26,6 +50,9 @@ pub fn describe(event: Event) -> Option<String> {
         Event::Bumped { tile, .. } => format!("You bump into the {}.", tile.name()),
         Event::Ambient(sound) => sound_text(sound).into(),
         Event::Unable { blocked, .. } => blocked_text(blocked),
+        Event::PickedUp(_) | Event::NoRoom(_) | Event::Dropped(_) | Event::NothingToDrop => {
+            item_text(event, "item")
+        }
         Event::AirEscaping | Event::Breath(_) | Event::Warmth(_) | Event::BlackedOut(_) => {
             survival_text(event).into()
         }
@@ -106,6 +133,7 @@ pub fn action_name(action: Action) -> &'static str {
         Action::Open => "Open",
         Action::Close => "Close",
         Action::Cut => "Cut",
+        Action::PickUp => "Pick up",
     }
 }
 
@@ -349,7 +377,10 @@ mod tests {
 
     #[test]
     fn actions_have_menu_names() {
-        assert_eq!(Action::ALL.map(action_name), ["Open", "Close", "Cut"]);
+        assert_eq!(
+            Action::ALL.map(action_name),
+            ["Open", "Close", "Cut", "Pick up"]
+        );
     }
 
     #[test]
@@ -380,5 +411,50 @@ mod tests {
             Some("You wait."),
             "other events read as usual"
         );
+    }
+
+    #[test]
+    fn item_events_name_the_item_and_its_material() {
+        let world = nighthawk_sim::World::new(crate::content::load_start_map().unwrap(), 1);
+        let laser = world.floor_items()[0].item.id();
+        let lines: Vec<String> = [
+            Event::PickedUp(laser),
+            Event::NoRoom(laser),
+            Event::Dropped(laser),
+        ]
+        .into_iter()
+        .filter_map(|e| describe_in(&world, e))
+        .collect();
+        assert_eq!(
+            lines,
+            vec![
+                "You pick up the basic laser cutter (Aluminium Alloy).",
+                "There's no room in your pockets for the basic laser cutter (Aluminium Alloy).",
+                "You drop the basic laser cutter (Aluminium Alloy).",
+            ]
+        );
+        assert_eq!(
+            describe_in(&world, Event::NothingToDrop).as_deref(),
+            Some("There's nothing there to drop.")
+        );
+        assert_eq!(
+            describe(Event::PickedUp(laser)).as_deref(),
+            Some("You pick up the item.")
+        );
+    }
+
+    #[test]
+    fn unknown_items_still_get_a_name() {
+        let world = nighthawk_sim::World::new(crate::content::load_start_map().unwrap(), 1);
+        let odd = ItemRef {
+            kind: 0,
+            material: 99,
+        };
+        assert_eq!(item_name(&world, odd), "jumpsuit");
+        let odder = ItemRef {
+            kind: 99,
+            material: 0,
+        };
+        assert_eq!(item_name(&world, odder), "something");
     }
 }

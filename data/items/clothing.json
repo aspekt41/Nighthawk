@@ -1,0 +1,37 @@
+{
+  "items": [
+    {
+      "id": "jumpsuit",
+      "name": "jumpsuit",
+      "description": "A crew jumpsuit, faded and patched, with four deep pockets: two at the hips, two on the thighs.",
+      "glyph": "[",
+      "material": "cotton_fabric",
+      "volume_ml": 2000,
+      "solid_percent": 30,
+      "wear": {
+        "pockets": [
+          {
+            "name": "left hip pocket",
+            "volume_ml": 1000,
+            "max_mass_g": 2500
+          },
+          {
+            "name": "right hip pocket",
+            "volume_ml": 1000,
+            "max_mass_g": 2500
+          },
+          {
+            "name": "left leg pocket",
+            "volume_ml": 1000,
+            "max_mass_g": 2500
+          },
+          {
+            "name": "right leg pocket",
+            "volume_ml": 1000,
+            "max_mass_g": 2500
+          }
+        ]
+      }
+    }
+  ]
+}

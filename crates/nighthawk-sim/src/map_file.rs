@@ -27,6 +27,7 @@ use serde::Deserialize;
 
 use crate::air::Mix;
 use crate::heat::{MAX_CELSIUS, MIN_CELSIUS, celsius_to_mk};
+use crate::item::{FloorItem, Item, ItemType, ItemTypes};
 use crate::map::{Map, StairsError, Tile};
 use crate::material::{Material, Materials};
 use crate::pos::Pos;
@@ -49,6 +50,46 @@ pub struct LoadedMap {
     pub materials: Vec<Material>,
     /// Every structure, in the order the map's tiles refer to them.
     pub structures: Vec<Structure>,
+    /// Every item type, in the order items refer to them.
+    pub item_types: Vec<ItemType>,
+    /// The items lying on the floor, in reading order.
+    pub floor_items: Vec<FloorItem>,
+    /// What the player starts out wearing.
+    pub worn: Vec<Item>,
+}
+
+/// A mistake in a list of items in a map (on the floor, or worn).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ItemSpecError {
+    UnknownItem {
+        item: String,
+    },
+    UnknownMaterial {
+        item: String,
+        material: String,
+    },
+    /// `"count": 0`.
+    NoneOf {
+        item: String,
+    },
+    /// Something in `player_wears` that can't be worn.
+    NotWearable {
+        item: String,
+    },
+}
+
+impl fmt::Display for ItemSpecError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ItemSpecError::UnknownItem { item } => write!(f, "{item:?} isn't an item"),
+            ItemSpecError::UnknownMaterial { item, material } => write!(
+                f,
+                "{item:?} is made of {material:?}, which isn't a material"
+            ),
+            ItemSpecError::NoneOf { item } => write!(f, "{item:?} has a count of 0"),
+            ItemSpecError::NotWearable { item } => write!(f, "{item:?} can't be worn"),
+        }
+    }
 }
 
 /// A mistake in a map's legend. Kept apart from [`MapError`] so each list
@@ -65,6 +106,10 @@ pub enum LegendError {
     NotADoor { glyph: char },
     /// `@` standing on something you can't stand on.
     StartInsideSomething { structure: String },
+    /// A mistake in an entry's list of items.
+    Item { glyph: char, error: ItemSpecError },
+    /// Items placed on something solid.
+    ItemsInSolid { glyph: char },
 }
 
 impl fmt::Display for LegendError {
@@ -84,6 +129,11 @@ impl fmt::Display for LegendError {
             LegendError::NotADoor { glyph } => {
                 write!(f, "legend entry {glyph:?} is open, but only doors can be")
             }
+            LegendError::Item { glyph, error } => write!(f, "legend entry {glyph:?}: {error}"),
+            LegendError::ItemsInSolid { glyph } => write!(
+                f,
+                "legend entry {glyph:?} puts items on something solid; they need a floor"
+            ),
             LegendError::StartInsideSomething { structure } => write!(
                 f,
                 "'{PLAYER_START}' marks where the player starts, so it must stand for something walkable, not {structure:?}"
@@ -101,6 +151,8 @@ pub enum MapError {
     Json(serde_json::Error),
     /// A mistake in the legend.
     Legend(LegendError),
+    /// A mistake in what the player starts out wearing.
+    Wearing(ItemSpecError),
     NoDecks,
     EmptyDeck {
         deck: usize,
@@ -148,6 +200,7 @@ impl fmt::Display for MapError {
         match self {
             MapError::Json(e) => write!(f, "invalid map JSON: {e}"),
             MapError::Legend(e) => write!(f, "{e}"),
+            MapError::Wearing(e) => write!(f, "player_wears: {e}"),
             // Problems with the decks' size and shape get their own function,
             // so this `match` stays under the complexity limit.
             MapError::NoDecks
@@ -218,6 +271,26 @@ struct MapFile {
     name: String,
     legend: HashMap<String, LegendEntry>,
     decks: Vec<DeckFile>,
+    /// What the player starts out wearing.
+    #[serde(default)]
+    player_wears: Vec<ItemSpec>,
+}
+
+/// Some items, in a map: a type, optionally a material other than its own,
+/// and how many (1 if left out).
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ItemSpec {
+    item: String,
+    #[serde(default)]
+    material: Option<String>,
+    #[serde(default = "one")]
+    count: u32,
+}
+
+/// The default `count`. Serde's `default = "..."` names a function.
+fn one() -> u32 {
+    1
 }
 
 /// What a legend character stands for: just a structure's id
@@ -242,6 +315,9 @@ struct Placed {
     material: Option<String>,
     #[serde(default)]
     open: bool,
+    /// Items lying on it.
+    #[serde(default)]
+    items: Vec<ItemSpec>,
 }
 
 #[derive(Deserialize)]
@@ -266,11 +342,12 @@ struct DeckFile {
 /// The highest starting pressure a deck may ask for, in percent.
 const MAX_PRESSURE_PERCENT: u32 = 200;
 
-/// The structures and materials a map's legend can name.
+/// The structures, materials and items a map can name.
 #[derive(Clone, Copy)]
 pub struct Catalogue<'a> {
     pub materials: &'a Materials,
     pub structures: &'a Structures,
+    pub items: &'a ItemTypes,
 }
 
 /// Parses and validates a map file's text. Its legend names structures from
@@ -280,24 +357,16 @@ pub fn parse_map(json: &str, catalogue: Catalogue) -> Result<LoadedMap, MapError
     let legend = glyph_legend(&file.legend, catalogue)?;
     let (width, height) = dimensions(&file.decks)?;
 
-    let depth = file.decks.len();
-    let mut map = Map::filled(to_i32(width), to_i32(height), to_i32(depth), Tile::Floor);
-    let mut starts = Vec::new();
-
-    for (z, y, x, glyph) in cells(&file.decks) {
-        let pos = Pos::new(to_i32(x), to_i32(y), to_i32(z));
-        let (tile, structure, material) = tile_for(glyph, &legend, (z, y, x))?;
-        map.set(pos, tile);
-        map.set_structure(pos, structure);
-        map.set_material(pos, material);
-        if glyph == PLAYER_START {
-            starts.push(pos);
-        }
-    }
+    let Built {
+        mut map,
+        starts,
+        floor_items,
+    } = build(&file.decks, &legend, (width, height))?;
 
     map.check_stairs().map_err(MapError::Stairs)?;
     fill_air(&mut map, &file.decks)?;
     let deck_names = deck_names(&file.decks);
+    let worn = worn_items(&file.player_wears, catalogue)?;
 
     match starts[..] {
         [player_start] => Ok(LoadedMap {
@@ -308,11 +377,51 @@ pub fn parse_map(json: &str, catalogue: Catalogue) -> Result<LoadedMap, MapError
             player_start,
             materials: catalogue.materials.list().to_vec(),
             structures: catalogue.structures.list().to_vec(),
+            item_types: catalogue.items.list().to_vec(),
+            floor_items,
+            worn,
         }),
         _ => Err(MapError::PlayerStartCount {
             found: starts.len(),
         }),
     }
+}
+
+/// What drawing the decks builds: the map, where `@` appears, and the
+/// items lying about.
+struct Built {
+    map: Map,
+    starts: Vec<Pos>,
+    floor_items: Vec<FloorItem>,
+}
+
+/// Places every glyph of every deck on a new `width` × `height` map.
+fn build(
+    decks: &[DeckFile],
+    legend: &HashMap<char, Placement>,
+    (width, height): (usize, usize),
+) -> Result<Built, MapError> {
+    let depth = to_i32(decks.len());
+    let mut built = Built {
+        map: Map::filled(to_i32(width), to_i32(height), depth, Tile::Floor),
+        starts: Vec::new(),
+        floor_items: Vec::new(),
+    };
+    for (z, y, x, glyph) in cells(decks) {
+        let at = Pos::new(to_i32(x), to_i32(y), to_i32(z));
+        let placed = tile_for(glyph, legend, (z, y, x))?;
+        built.map.set(at, placed.tile);
+        built.map.set_structure(at, placed.structure);
+        built.map.set_material(at, placed.material);
+        let here = placed.items.into_iter();
+        built
+            .floor_items
+            .extend(here.map(|item| FloorItem { at, item }));
+        if glyph == PLAYER_START {
+            built.starts.push(at);
+        }
+    }
+    Ok(built)
 }
 
 /// Every glyph in every deck, as `(deck, row, column, glyph)`, in reading
@@ -359,9 +468,77 @@ fn deck_names(decks: &[DeckFile]) -> Vec<String> {
         .collect()
 }
 
-/// What a legend character places: a tile, and the indexes of its
-/// structure and material.
-type Placement = (Tile, u16, u16);
+/// What a legend character places: a tile, the indexes of its structure
+/// and material, and any items lying on it.
+#[derive(Clone)]
+struct Placement {
+    tile: Tile,
+    structure: u16,
+    material: u16,
+    items: Vec<Item>,
+}
+
+/// The items an item list in a map stands for: `count` new items each.
+fn make_items(specs: &[ItemSpec], catalogue: Catalogue) -> Result<Vec<Item>, ItemSpecError> {
+    let mut items = Vec::new();
+    for spec in specs {
+        let kind =
+            catalogue
+                .items
+                .index_of(&spec.item)
+                .ok_or_else(|| ItemSpecError::UnknownItem {
+                    item: spec.item.clone(),
+                })?;
+        let types = catalogue.items.list();
+        let material_id = spec
+            .material
+            .as_ref()
+            .unwrap_or(&types[usize::from(kind)].material);
+        let material = catalogue.materials.index_of(material_id).ok_or_else(|| {
+            ItemSpecError::UnknownMaterial {
+                item: spec.item.clone(),
+                material: material_id.clone(),
+            }
+        })?;
+        if spec.count == 0 {
+            return Err(ItemSpecError::NoneOf {
+                item: spec.item.clone(),
+            });
+        }
+        let one = Item::new(kind, material, types);
+        items.extend(std::iter::repeat_n(one, spec.count as usize));
+    }
+    Ok(items)
+}
+
+/// The items a legend entry lays on the floor, which needs to be walkable.
+fn floor_items(
+    glyph: char,
+    specs: &[ItemSpec],
+    tile: Tile,
+    catalogue: Catalogue,
+) -> Result<Vec<Item>, LegendError> {
+    let items = make_items(specs, catalogue).map_err(|error| LegendError::Item { glyph, error })?;
+    if !items.is_empty() && !tile.is_walkable() {
+        return Err(LegendError::ItemsInSolid { glyph });
+    }
+    Ok(items)
+}
+
+/// What the player starts out wearing: items that can all be worn.
+fn worn_items(specs: &[ItemSpec], catalogue: Catalogue) -> Result<Vec<Item>, MapError> {
+    let items = make_items(specs, catalogue).map_err(MapError::Wearing)?;
+    let types = catalogue.items.list();
+    match items
+        .iter()
+        .find(|i| types[usize::from(i.kind)].wear.is_none())
+    {
+        Some(item) => Err(MapError::Wearing(ItemSpecError::NotWearable {
+            item: types[usize::from(item.kind)].id.clone(),
+        })),
+        None => Ok(items),
+    }
+}
 
 /// Turns the legend's one-character string keys into `char`s, and each
 /// entry into what it places.
@@ -385,9 +562,9 @@ fn glyph_legend(
 
 /// What a legend entry places.
 fn place(glyph: char, entry: &LegendEntry, catalogue: Catalogue) -> Result<Placement, LegendError> {
-    let (id, material, open) = match entry {
-        LegendEntry::Id(id) => (id, None, false),
-        LegendEntry::Placed(p) => (&p.structure, p.material.as_ref(), p.open),
+    let (id, material, open, specs) = match entry {
+        LegendEntry::Id(id) => (id, None, false, &[][..]),
+        LegendEntry::Placed(p) => (&p.structure, p.material.as_ref(), p.open, &p.items[..]),
     };
     let structure =
         catalogue
@@ -416,7 +593,13 @@ fn place(glyph: char, entry: &LegendEntry, catalogue: Catalogue) -> Result<Place
                 glyph,
                 material: material_id.clone(),
             })?;
-    Ok((tile, structure, material))
+    let items = floor_items(glyph, specs, tile, catalogue)?;
+    Ok(Placement {
+        tile,
+        structure,
+        material,
+        items,
+    })
 }
 
 /// Checks every deck is the same rectangle and returns its `(width, height)`.
@@ -463,7 +646,7 @@ fn tile_for(
     legend: &HashMap<char, Placement>,
     (deck, row, col): (usize, usize, usize),
 ) -> Result<Placement, MapError> {
-    legend.get(&glyph).copied().ok_or(MapError::UnknownGlyph {
+    legend.get(&glyph).cloned().ok_or(MapError::UnknownGlyph {
         glyph,
         deck,
         row,
@@ -486,9 +669,11 @@ fn to_i32(n: usize) -> i32 {
 pub(crate) fn parse_map_for_tests(json: &str) -> Result<LoadedMap, MapError> {
     let materials = crate::material::tests::test_materials();
     let structures = crate::structure::tests::test_structures();
+    let items = crate::item::tests::test_items();
     let catalogue = Catalogue {
         materials: &materials,
         structures: &structures,
+        items: &items,
     };
     // Add `"@": "floor"` to the legend, if the JSON is valid enough to
     // have one and it doesn't say. Otherwise parse it as it is, so tests of
@@ -970,5 +1155,94 @@ mod material_tests {
     #[test]
     fn the_test_helper_leaves_broken_json_for_the_real_parser() {
         assert!(matches!(parse_map("{ nope"), Err(MapError::Json(_))));
+    }
+}
+
+#[cfg(test)]
+mod item_tests {
+    use super::parse_map_for_tests as parse_map;
+    use super::*;
+
+    /// A one-row map: `@`, then `s` (floor with `items` on it), then a wall.
+    /// `top` is extra top-level fields, like `player_wears`.
+    fn map_with(items: &str, top: &str) -> Result<LoadedMap, MapError> {
+        let json = format!(
+            r##"{{ "id": "t", "name": "T", {top}
+                 "legend": {{ "#": "wall",
+                             "s": {{ "structure": "floor", "items": {items} }} }},
+                 "decks": [ {{ "rows": ["@s#"] }} ] }}"##
+        );
+        parse_map(&json)
+    }
+
+    #[test]
+    fn a_legend_entry_can_lay_items_on_the_floor() {
+        let loaded = map_with(
+            r#"[ { "item": "cutter" }, { "item": "scrap", "count": 3 } ]"#,
+            "",
+        )
+        .unwrap();
+        assert_eq!(loaded.floor_items.len(), 4);
+        assert!(loaded.floor_items.iter().all(|f| f.at == Pos::new(1, 0, 0)));
+        assert_eq!(loaded.floor_items[0].item.kind, 1);
+        assert_eq!(loaded.floor_items[3].item.kind, 2);
+        assert_eq!(loaded.item_types.len(), 3);
+        assert!(loaded.worn.is_empty(), "nothing worn unless the map says");
+    }
+
+    #[test]
+    fn items_can_be_made_of_another_material() {
+        let loaded = map_with(r#"[ { "item": "scrap", "material": "hard_alloy" } ]"#, "").unwrap();
+        assert_eq!(loaded.floor_items[0].item.material, 1);
+    }
+
+    #[test]
+    fn the_player_starts_wearing_what_the_map_says() {
+        let loaded = map_with("[]", r#""player_wears": [ { "item": "suit" } ],"#).unwrap();
+        assert_eq!(loaded.worn.len(), 1);
+        assert_eq!(loaded.worn[0].pockets.len(), 2, "with its pockets, empty");
+    }
+
+    fn error(items: &str, top: &str) -> String {
+        map_with(items, top).unwrap_err().to_string()
+    }
+
+    #[test]
+    fn mistakes_in_item_lists_name_the_glyph_and_the_item() {
+        assert_eq!(
+            error(r#"[ { "item": "spoon" } ]"#, ""),
+            r#"legend entry 's': "spoon" isn't an item"#
+        );
+        assert_eq!(
+            error(r#"[ { "item": "scrap", "material": "cheese" } ]"#, ""),
+            r#"legend entry 's': "scrap" is made of "cheese", which isn't a material"#
+        );
+        assert_eq!(
+            error(r#"[ { "item": "scrap", "count": 0 } ]"#, ""),
+            r#"legend entry 's': "scrap" has a count of 0"#
+        );
+    }
+
+    #[test]
+    fn items_cannot_be_put_inside_a_wall() {
+        let json = r##"{ "id": "t", "name": "T",
+            "legend": { "W": { "structure": "wall", "items": [ { "item": "scrap" } ] } },
+            "decks": [ { "rows": ["@W"] } ] }"##;
+        assert_eq!(
+            parse_map(json).unwrap_err().to_string(),
+            "legend entry 'W' puts items on something solid; they need a floor"
+        );
+    }
+
+    #[test]
+    fn the_player_can_only_wear_wearable_things() {
+        assert_eq!(
+            error("[]", r#""player_wears": [ { "item": "scrap" } ],"#),
+            r#"player_wears: "scrap" can't be worn"#
+        );
+        assert_eq!(
+            error("[]", r#""player_wears": [ { "item": "toga" } ],"#),
+            r#"player_wears: "toga" isn't an item"#
+        );
     }
 }

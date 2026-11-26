@@ -6,7 +6,7 @@
 //! ```json
 //! {
 //!   "format": "nighthawk-save",
-//!   "version": 8,
+//!   "version": 9,
 //!   "world": { "deck_names": ["Stasis bay"], "seconds": 36, ... }
 //! }
 //! ```
@@ -33,7 +33,7 @@ pub const SAVE_FORMAT: &str = "nighthawk-save";
 
 /// The save layout this build reads and writes. Bump it when `World` (or
 /// anything inside it) changes shape, and update the save-format test.
-pub const SAVE_VERSION: u32 = 8;
+pub const SAVE_VERSION: u32 = 9;
 
 /// Everything that can be wrong with a save file.
 #[derive(Debug)]
@@ -189,13 +189,13 @@ mod tests {
     fn save_text_is_tagged_and_versioned() {
         let text = save_to_string(&small_world());
         assert!(text.contains(r#""format": "nighthawk-save""#));
-        assert!(text.contains(r#""version": 8"#));
+        assert!(text.contains(r#""version": 9"#));
     }
 
     /// The exact text of the tiny save in `the_save_format_is_stable`.
     const EXPECTED_SAVE: &str = r#"{
   "format": "nighthawk-save",
-  "version": 8,
+  "version": 9,
   "world": {
     "deck_names": [
       "Deck 0"
@@ -261,7 +261,7 @@ mod tests {
         "density": 7850,
         "melting_point": 1450,
         "specific_heat": 490,
-        "thermal_conductivity": 45,
+        "thermal_conductivity": 45000,
         "hardness": 150,
         "cut_by": {
           "LASER": 2
@@ -278,6 +278,29 @@ mod tests {
         "behaviour": "floor",
         "material": "steel"
       }
+    ],
+    "item_types": [
+      {
+        "id": "smock",
+        "name": "smock",
+        "description": "A smock.",
+        "glyph": "[",
+        "material": "steel",
+        "volume_ml": 1,
+        "solid_percent": 1,
+        "qualities": {},
+        "wear": {
+          "pockets": []
+        }
+      }
+    ],
+    "floor_items": [],
+    "worn": [
+      {
+        "kind": 0,
+        "material": 0,
+        "pockets": []
+      }
     ]
   }
 }"#;
@@ -291,7 +314,7 @@ mod tests {
             "metals.json",
             r#"{ "materials": [ { "id": "steel", "name": "Steel", "description": "Steel.",
                  "colour": "grey", "density": 7850, "melting_point": 1450,
-                 "specific_heat": 490, "thermal_conductivity": 45, "hardness": 150,
+                 "specific_heat": 490, "thermal_conductivity": 45000, "hardness": 150,
                  "cut_by": { "LASER": 2 } } ] }"#,
         )])
         .unwrap();
@@ -305,15 +328,27 @@ mod tests {
             &materials,
         )
         .unwrap();
+        let items = crate::item::parse_items(
+            &[ContentFile::new(
+                "clothing.json",
+                r#"{ "items": [ { "id": "smock", "name": "smock", "description": "A smock.",
+                     "glyph": "[", "material": "steel", "volume_ml": 1, "solid_percent": 1,
+                     "wear": { "pockets": [] } } ] }"#,
+            )],
+            &materials,
+        )
+        .unwrap();
         let rows = ["@."];
         let json = format!(
             r#"{{ "id": "t", "name": "Nook",
                  "legend": {{ ".": "deck_plating", "@": "deck_plating" }},
+                 "player_wears": [ {{ "item": "smock" }} ],
                  "decks": [ {{ "rows": {rows:?} }} ] }}"#
         );
         let catalogue = Catalogue {
             materials: &materials,
             structures: &structures,
+            items: &items,
         };
         World::new(crate::map_file::parse_map(&json, catalogue).unwrap(), 7)
     }
@@ -348,20 +383,20 @@ mod tests {
 
     #[test]
     fn a_save_without_a_version_is_not_a_save() {
-        let text = save_with("\"version\": 8,", "");
+        let text = save_with("\"version\": 9,", "");
         assert!(matches!(load_from_str(&text), Err(SaveError::NotASave)));
     }
 
     #[test]
     fn saves_from_other_versions_are_rejected_clearly() {
-        // A save from before structures: exactly what an old save file on
-        // disk looks like after this build is installed.
-        let text = save_with(r#""version": 8"#, r#""version": 7"#);
+        // A save from before items: exactly what an old save file on disk
+        // looks like after this build is installed.
+        let text = save_with(r#""version": 9"#, r#""version": 8"#);
         let err = load_from_str(&text).unwrap_err();
-        assert!(matches!(err, SaveError::UnsupportedVersion { found: 7 }));
+        assert!(matches!(err, SaveError::UnsupportedVersion { found: 8 }));
         assert_eq!(
             err.to_string(),
-            "save file is version 7, but this build only reads version 8"
+            "save file is version 8, but this build only reads version 9"
         );
     }
 

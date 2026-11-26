@@ -14,8 +14,8 @@
 //! ```
 
 use nighthawk_sim::{
-    ActionOption, BREATH_FULL, Colour, Material, Mix, Pos, Quality, Tile, WARMTH_FULL, World,
-    celsius_to_mk, mk_to_tenths_celsius, options_at,
+    ActionOption, BREATH_FULL, Colour, Item, ItemRef, Material, Mix, PocketType, Pos, Quality,
+    Tile, WARMTH_FULL, World, celsius_to_mk, mk_to_tenths_celsius, options_at,
 };
 use ratatui::Frame;
 use ratatui::buffer::Buffer;
@@ -78,6 +78,8 @@ pub struct Cursor {
 pub struct View {
     pub overlay: Option<Overlay>,
     pub cursor: Option<Cursor>,
+    /// The highlighted item, while the inventory screen is open.
+    pub inventory: Option<usize>,
 }
 
 /// Draws whichever screen the app is on.
@@ -85,6 +87,7 @@ pub fn render(app: &App, frame: &mut Frame) {
     let view = View {
         overlay: app.overlay,
         cursor: app.cursor,
+        inventory: app.inventory,
     };
     match &app.screen {
         Screen::Title(menu) => render_title(menu, frame),
@@ -189,7 +192,10 @@ fn render_game(world: &World, log_lines: &[String], view: View, frame: &mut Fram
         overlay: view.overlay,
         cursor: view.cursor.map(|c| c.at),
     };
-    frame.render_widget(map_view, map_inner);
+    match view.inventory {
+        Some(selected) => frame.render_widget(inventory_panel(world, selected), map_area),
+        None => frame.render_widget(map_view, map_inner),
+    }
 
     let log_lines_shown = log_area.height.saturating_sub(2);
     match view.cursor {
@@ -275,12 +281,33 @@ fn glyph_at(world: &World, pos: Pos, overlay: Option<Overlay>) -> (String, Style
     let Some(tile) = map.get(pos) else {
         return (" ".into(), Style::new());
     };
+    // Items lying on the floor show on top, unless an overlay is shading it.
+    if overlay.is_none()
+        && let Some(item) = world.items_at(pos).next()
+    {
+        return item_glyph(world, item);
+    }
     let shaded = match (tile, overlay) {
         (Tile::Floor, Some(Overlay::Air)) => air_glyph(map.air(pos).unwrap_or(Mix::VACUUM)),
         (Tile::Floor, Some(Overlay::Heat)) => heat_glyph(map.temperature(pos)),
         _ => return structure_glyph(world, pos, tile),
     };
     (shaded.0.to_string(), shaded.1)
+}
+
+/// How an item lying on the floor looks: its type's glyph, in its
+/// material's colour, bold so it stands out from the floor.
+fn item_glyph(world: &World, item: &Item) -> (String, Style) {
+    let glyph = world
+        .item_types()
+        .get(usize::from(item.kind))
+        .map_or('?', |t| t.glyph);
+    let colour = world
+        .materials()
+        .get(usize::from(item.material))
+        .map_or(Color::White, |m| colour(m.colour));
+    let style = Style::new().fg(colour).add_modifier(Modifier::BOLD);
+    (glyph.to_string(), style)
 }
 
 /// How the structure at `pos` looks: its own glyph (a door's changes when
@@ -388,8 +415,11 @@ fn sidebar_lines(world: &World) -> Vec<Line<'static>> {
             p.x,
             p.y
         )),
-        Line::raw(format!("Date  {}", world.now().date_text())),
-        Line::raw(format!("Time  {}", world.now().time_text())),
+        Line::raw(format!(
+            "{}  {}",
+            world.now().date_text(),
+            world.now().time_text()
+        )),
         Line::raw(format!("Seed  {}", world.seed())),
         Line::raw(""),
         meter_line("Breath", world.breath(), BREATH_FULL),
@@ -399,10 +429,11 @@ fn sidebar_lines(world: &World) -> Vec<Line<'static>> {
     lines.push(temperature_line(world.map().temperature(p)));
     lines.extend([
         Line::raw(""),
-        Line::styled("move  hjkl yubn", dim),
-        Line::styled("wait .  climb < >", dim),
-        Line::styled("close c  air a  heat t", dim),
-        Line::styled("save S  menu q/Q", dim),
+        Line::styled("move hjkl yubn  wait .", dim),
+        Line::styled("climb < >  close c", dim),
+        Line::styled("look V  use e  items i", dim),
+        Line::styled("air a  heat t  save S", dim),
+        Line::styled("menu q/Q", dim),
     ]);
     lines
 }
@@ -511,12 +542,28 @@ fn material_lines(m: &Material) -> Vec<Line<'static>> {
     vec![
         Line::styled(m.name.clone(), Style::new().fg(colour(m.colour))),
         Line::raw(format!("Density  {} kg/m³", m.density)),
-        Line::raw(format!("Melts    {} °C", m.melting_point)),
+        Line::raw(format!("Melts    {}", melts(m.melting_point))),
         Line::raw(format!("Hardness {} HV", m.hardness)),
         Line::raw(format!("Heat cap {} J/kg·K", m.specific_heat)),
-        Line::raw(format!("Conducts {} W/m·K", m.thermal_conductivity)),
+        Line::raw(format!("Conducts {} W/m·K", watts(m.thermal_conductivity))),
         Line::raw(format!("Cut by   {}", cut_by(m))),
     ]
+}
+
+/// A melting point for the look panel: "1450 °C", or "never" for things
+/// that burn instead.
+fn melts(celsius: Option<i32>) -> String {
+    celsius.map_or_else(|| "never".into(), |c| format!("{c} °C"))
+}
+
+/// Milliwatts as watts, without needless zeros: 45000 → "45", 40 → "0.04".
+fn watts(milliwatts: u32) -> String {
+    let (whole, thousandths) = (milliwatts / 1000, milliwatts % 1000);
+    if thousandths == 0 {
+        return whole.to_string();
+    }
+    let fraction = format!("{thousandths:03}");
+    format!("{whole}.{}", fraction.trim_end_matches('0'))
 }
 
 /// The qualities that cut a material, like "LASER 2", or "nothing".
@@ -618,8 +665,8 @@ fn option_lines(option: ActionOption) -> Vec<Line<'static>> {
     }
 }
 
-/// The bottom panel in look mode: what the structure is, then what it's
-/// made of, wrapped.
+/// The bottom panel in look mode: what's lying there, what the structure
+/// is, then what it's made of, wrapped.
 fn description(world: &World, at: Pos) -> Paragraph<'static> {
     let structure = world
         .structure_at(at)
@@ -627,9 +674,111 @@ fn description(world: &World, at: Pos) -> Paragraph<'static> {
     let material = world
         .material_at(at)
         .map_or(String::new(), |m| format!("{}: {}", m.name, m.description));
-    Paragraph::new(format!("{structure} {material}"))
+    let items = items_here(world, at);
+    Paragraph::new(format!("{items}{structure} {material}"))
         .wrap(Wrap { trim: true })
         .block(Block::bordered().title(" About "))
+}
+
+/// "On the floor: basic laser cutter (Aluminium Alloy), 4 × scrap
+/// (Steel). ", or nothing if the floor is bare. Identical items are
+/// counted together, in the order they first appear.
+fn items_here(world: &World, at: Pos) -> String {
+    let mut counted: Vec<(ItemRef, usize)> = Vec::new();
+    for item in world.items_at(at) {
+        match counted.iter_mut().find(|(id, _)| *id == item.id()) {
+            Some((_, n)) => *n += 1,
+            None => counted.push((item.id(), 1)),
+        }
+    }
+    if counted.is_empty() {
+        return String::new();
+    }
+    let names: Vec<String> = counted
+        .iter()
+        .map(|&(id, n)| match n {
+            1 => text::item_name(world, id),
+            _ => format!("{n} × {}", text::item_name(world, id)),
+        })
+        .collect();
+    format!("On the floor: {}. ", names.join(", "))
+}
+
+/// The inventory screen: what you're wearing, each of its pockets with how
+/// full it is, and what's in them, with the highlighted item in reverse.
+fn inventory_panel(world: &World, selected: usize) -> Paragraph<'static> {
+    Paragraph::new(inventory_lines(world, selected)).block(Block::bordered().title(" Inventory "))
+}
+
+fn inventory_lines(world: &World, selected: usize) -> Vec<Line<'static>> {
+    let ctx = world.item_context();
+    let dim = Style::new().fg(Color::DarkGray);
+    let mut lines = Vec::new();
+    // `next` counts carried items in the same order as `World::carried`,
+    // so it matches the highlighted index.
+    let mut next = 0;
+    for wearing in world.worn() {
+        let name = text::item_name(world, wearing.id());
+        lines.push(Line::raw(format!(
+            "Wearing {name}  {}",
+            kilograms(ctx.mass_g(wearing))
+        )));
+        let pocket_types = world.item_types()[usize::from(wearing.kind)].pockets();
+        for (pocket, held) in pocket_types.iter().zip(&wearing.pockets) {
+            lines.push(Line::styled(pocket_line(world, pocket, held), dim));
+            for item in held {
+                lines.push(carried_line(world, item, next == selected));
+                next += 1;
+            }
+        }
+    }
+    let total: u64 = world.worn().iter().map(|w| ctx.mass_g(w)).sum();
+    lines.extend([
+        Line::raw(format!("Carrying {} in all", kilograms(total))),
+        Line::raw(""),
+        Line::styled("j/k choose   d drop   Esc close", dim),
+    ]);
+    lines
+}
+
+/// A pocket's heading: its name and how full it is, by volume and weight.
+fn pocket_line(world: &World, pocket: &PocketType, held: &[Item]) -> String {
+    let ctx = world.item_context();
+    let volume: u64 = held.iter().map(|i| ctx.volume_ml(i)).sum();
+    let mass: u64 = held.iter().map(|i| ctx.mass_g(i)).sum();
+    let empty = if held.is_empty() { "  (empty)" } else { "" };
+    format!(
+        "  {}  {}/{} L  {}/{}{empty}",
+        capitalised(&pocket.name),
+        litres(volume),
+        litres(u64::from(pocket.volume_ml)),
+        kilograms(mass).trim_end_matches(" kg"),
+        kilograms(u64::from(pocket.max_mass_g)),
+    )
+}
+
+/// One carried item, highlighted in reverse if it's the chosen one.
+fn carried_line(world: &World, item: &Item, chosen: bool) -> Line<'static> {
+    let mass = kilograms(world.item_context().mass_g(item));
+    let text = format!("    {}  {mass}", text::item_name(world, item.id()));
+    let style = if chosen {
+        Style::new().add_modifier(Modifier::REVERSED)
+    } else {
+        Style::new()
+    };
+    Line::styled(text, style)
+}
+
+/// Grams as kilograms with one decimal place, rounded: 785 → "0.8 kg".
+fn kilograms(grams: u64) -> String {
+    let tenths = (grams + 50) / 100;
+    format!("{}.{} kg", tenths / 10, tenths % 10)
+}
+
+/// Millilitres as litres with one decimal place, rounded: 800 → "0.8".
+fn litres(ml: u64) -> String {
+    let tenths = (ml + 50) / 100;
+    format!("{}.{}", tenths / 10, tenths % 10)
 }
 
 /// The newest `lines` log entries, oldest at the top.
@@ -656,12 +805,8 @@ mod tests {
                  "decks": [ {{ "rows": {rows:?} }} ] }}"##
         );
         let data = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../data");
-        let (materials, structures) = crate::content::load_catalogue(&data).unwrap();
-        let catalogue = nighthawk_sim::Catalogue {
-            materials: &materials,
-            structures: &structures,
-        };
-        World::new(parse_map(&json, catalogue).unwrap(), 1)
+        let content = crate::content::load_content(&data).unwrap();
+        World::new(parse_map(&json, content.catalogue()).unwrap(), 1)
     }
 
     /// Renders the map into an off-screen buffer and returns its rows as text.
@@ -723,14 +868,14 @@ mod tests {
             screen.contains(" Deck 0 "),
             "map panel is titled with the deck's name (a number when it has none)"
         );
-        assert!(screen.contains("Date  25 Nov 2631"));
-        assert!(screen.contains("Time  08:42:00"));
+        assert!(screen.contains("25 Nov 2631  08:42:00"));
         assert!(screen.contains("Breath 100%"));
         assert!(screen.contains("Warmth 100%"));
         assert!(screen.contains("Temp  20.0 °C"));
         assert!(screen.contains("Deck 0/1  Pos 3, 2"));
         assert!(screen.contains("Seed  1"));
-        assert!(screen.contains("save S  menu q/Q"));
+        assert!(screen.contains("look V  use e  items i"));
+        assert!(screen.contains("menu q/Q"));
         assert!(screen.contains("You wake in the stasis bay."));
     }
 
@@ -989,6 +1134,7 @@ mod tests {
         let heat = View {
             overlay: Some(Overlay::Heat),
             cursor: None,
+            inventory: None,
         };
         let bay = draw_screen(80, 24, |f| render_game(&world, &[], heat, f));
         assert!(bay.contains("[heat overlay]"));
@@ -1029,6 +1175,7 @@ mod tests {
         View {
             overlay: Some(Overlay::Air),
             cursor: None,
+            inventory: None,
         }
     }
 
@@ -1114,7 +1261,9 @@ mod tests {
 
     #[test]
     fn a_material_nothing_can_cut_says_so() {
-        let mut material = real_world().materials()[0].clone();
+        let world = real_world();
+        let steel = world.materials().iter().find(|m| m.id == "steel").unwrap();
+        let mut material = steel.clone();
         assert_eq!(cut_by(&material), "LASER 2");
         material.cut_by.clear();
         assert_eq!(cut_by(&material), "nothing");
@@ -1129,6 +1278,7 @@ mod tests {
                 at: Pos::new(0, 7, 0),
                 mode: CursorMode::Look,
             }),
+            inventory: None,
         };
         let screen = draw_screen(80, 24, |f| render_game(&world, &[], view, f));
         assert!(screen.contains("[looking]"));
@@ -1253,11 +1403,119 @@ mod tests {
                 at: world.player(),
                 mode: CursorMode::Interact,
             }),
+            inventory: None,
         };
         let log = ["You need a tool with LASER 1 for that.".to_string()];
         let screen = draw_screen(80, 24, |f| render_game(&world, &log, view, f));
         assert!(screen.contains("[interact]"));
         assert!(screen.contains(" Interact "));
         assert!(screen.contains("LASER 1 for that"), "the log stays visible");
+    }
+
+    // --- Items and the inventory ----------------------------------------------
+
+    #[test]
+    fn items_on_the_floor_draw_over_it_in_their_materials_colour() {
+        let world = real_world();
+        let (laser, style) = glyph_at(&world, Pos::new(6, 7, 0), None);
+        assert_eq!(laser, "(");
+        assert_eq!(style.fg, Some(Color::White), "aluminium is white");
+        assert!(style.add_modifier.contains(Modifier::BOLD));
+        assert_eq!(glyph_at(&world, Pos::new(3, 9, 0), None).0, "*");
+        assert_eq!(
+            glyph_at(&world, Pos::new(6, 7, 0), Some(Overlay::Air)).0,
+            "█",
+            "an overlay shades the floor instead"
+        );
+    }
+
+    #[test]
+    fn look_mode_says_what_lies_on_the_floor_counting_alike_items() {
+        let world = real_world();
+        assert_eq!(
+            items_here(&world, Pos::new(3, 9, 0)),
+            "On the floor: 4 × scrap (Steel). "
+        );
+        assert_eq!(
+            items_here(&world, Pos::new(6, 7, 0)),
+            "On the floor: basic laser cutter (Aluminium Alloy). "
+        );
+        assert_eq!(items_here(&world, Pos::new(5, 5, 0)), "");
+    }
+
+    fn inventory_texts(world: &World, selected: usize) -> Vec<String> {
+        inventory_lines(world, selected)
+            .iter()
+            .map(ToString::to_string)
+            .collect()
+    }
+
+    #[test]
+    fn the_inventory_lists_what_you_wear_and_each_pocket() {
+        let world = real_world();
+        let lines = inventory_texts(&world, 0);
+        assert_eq!(lines[0], "Wearing jumpsuit (Cotton Fabric)  0.9 kg");
+        assert_eq!(
+            lines[1],
+            "  Left hip pocket  0.0/1.0 L  0.0/2.5 kg  (empty)"
+        );
+        assert_eq!(lines.len(), 8, "four pockets, total, blank, help");
+        assert_eq!(lines[5], "Carrying 0.9 kg in all");
+    }
+
+    #[test]
+    fn carried_items_show_under_their_pocket_with_the_chosen_one_reversed() {
+        let mut world = real_world();
+        // Step beside the laser cutter and pick it up.
+        world.apply(Command::Move(Dir::East));
+        world.apply(Command::Interact {
+            at: Pos::new(6, 7, 0),
+            action: nighthawk_sim::Action::PickUp,
+        });
+        let lines = inventory_lines(&world, 0);
+        assert_eq!(
+            lines[1].to_string(),
+            "  Left hip pocket  0.8/1.0 L  1.1/2.5 kg"
+        );
+        assert_eq!(
+            lines[2].to_string(),
+            "    basic laser cutter (Aluminium Alloy)  1.1 kg"
+        );
+        assert!(lines[2].style.add_modifier.contains(Modifier::REVERSED));
+        let unchosen = inventory_lines(&world, 5);
+        assert!(!unchosen[2].style.add_modifier.contains(Modifier::REVERSED));
+    }
+
+    #[test]
+    fn the_inventory_screen_replaces_the_map_and_fits_80_by_24() {
+        let world = real_world();
+        let view = View {
+            overlay: None,
+            cursor: None,
+            inventory: Some(0),
+        };
+        let screen = draw_screen(80, 24, |f| render_game(&world, &[], view, f));
+        assert!(screen.contains(" Inventory "));
+        assert!(screen.contains("Right leg pocket"));
+        assert!(!screen.contains(" Stasis bay "), "no map while it's open");
+    }
+
+    #[test]
+    fn weights_and_volumes_round_to_one_decimal() {
+        assert_eq!(kilograms(785), "0.8 kg");
+        assert_eq!(kilograms(1_080), "1.1 kg");
+        assert_eq!(kilograms(49), "0.0 kg");
+        assert_eq!(kilograms(2_500), "2.5 kg");
+        assert_eq!(litres(800), "0.8");
+        assert_eq!(litres(1_000), "1.0");
+    }
+
+    #[test]
+    fn materials_that_burn_never_melt_and_insulators_keep_their_decimals() {
+        assert_eq!(melts(Some(1450)), "1450 °C");
+        assert_eq!(melts(None), "never");
+        assert_eq!(watts(45_000), "45");
+        assert_eq!(watts(40), "0.04");
+        assert_eq!(watts(167_500), "167.5");
     }
 }

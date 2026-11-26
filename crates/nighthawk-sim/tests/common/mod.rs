@@ -10,8 +10,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use nighthawk_sim::{
-    Catalogue, ContentFile, LoadedMap, Materials, Structures, World, parse_map, parse_materials,
-    parse_structures,
+    Catalogue, ContentFile, ItemTypes, LoadedMap, Materials, Structures, World, parse_items,
+    parse_map, parse_materials, parse_structures,
 };
 
 /// The repository's `data/` folder.
@@ -38,21 +38,24 @@ fn file_name(path: &Path) -> String {
     path.file_name().unwrap().to_string_lossy().into_owned()
 }
 
-/// The shipped materials and structures.
-pub fn catalogue() -> (Materials, Structures) {
+/// The shipped materials, structures and items.
+pub fn catalogue() -> (Materials, Structures, ItemTypes) {
     let materials = parse_materials(&read_folder("materials"))
         .unwrap_or_else(|e| panic!("data/materials: {e}"));
     let structures = parse_structures(&read_folder("structures"), &materials)
         .unwrap_or_else(|e| panic!("data/structures: {e}"));
-    (materials, structures)
+    let items = parse_items(&read_folder("items"), &materials)
+        .unwrap_or_else(|e| panic!("data/items: {e}"));
+    (materials, structures, items)
 }
 
 /// Parses a map's text against the shipped content.
 pub fn parse(text: &str) -> LoadedMap {
-    let (materials, structures) = catalogue();
+    let (materials, structures, items) = catalogue();
     let catalogue = Catalogue {
         materials: &materials,
         structures: &structures,
+        items: &items,
     };
     parse_map(text, catalogue).unwrap_or_else(|e| panic!("map: {e}"))
 }

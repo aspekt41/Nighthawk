@@ -10,7 +10,7 @@ use nighthawk_sim::{
 };
 use ratatui::crossterm::event::KeyEvent;
 
-use crate::keys::{self, CursorAction, GameAction, TitleAction};
+use crate::keys::{self, CursorAction, GameAction, InventoryAction, TitleAction};
 use crate::saves::SaveSlot;
 use crate::text;
 use crate::title::{MenuItem, TitleMenu};
@@ -51,6 +51,9 @@ pub struct App {
     /// The look (`V`) or interact (`e`) cursor, while it's up. Moving it
     /// never changes the world or spends time; only choosing an action does.
     pub cursor: Option<Cursor>,
+    /// While the inventory screen is open (`i`), which carried item is
+    /// highlighted, counting from 0.
+    pub inventory: Option<usize>,
 }
 
 impl App {
@@ -72,6 +75,7 @@ impl App {
             asking_close_direction: false,
             overlay: None,
             cursor: None,
+            inventory: None,
         };
         match seed {
             Some(seed) => app.start_new_game(seed),
@@ -88,6 +92,12 @@ impl App {
         }
         if self.asking_close_direction {
             self.answer_close_direction(key);
+            return;
+        }
+        if self.inventory.is_some() {
+            if let Some(action) = keys::inventory_action(key) {
+                self.on_inventory(action);
+            }
             return;
         }
         if self.cursor.is_some() {
@@ -141,12 +151,48 @@ impl App {
             }
             GameAction::ToTitleWithoutSaving => self.show_title(None),
             GameAction::Exit => self.quit = self.save_game(),
-            GameAction::ToggleOverlay(overlay) => self.toggle_overlay(overlay),
-            GameAction::Look => self.raise_cursor(CursorMode::Look),
-            GameAction::Interact => self.raise_cursor(CursorMode::Interact),
+            GameAction::ToggleOverlay(_)
+            | GameAction::Look
+            | GameAction::Interact
+            | GameAction::Inventory => self.change_view(action),
             GameAction::BeginClose => {
                 self.asking_close_direction = true;
                 self.push_log("Close which way? (a direction key; anything else cancels)".into());
+            }
+        }
+    }
+
+    /// The actions that only change what's shown: overlays, the look and
+    /// interact cursors, the inventory. None of them spends any time. `fn
+    /// on_game` sends only those here, so the last arm is the inventory.
+    fn change_view(&mut self, action: GameAction) {
+        match action {
+            GameAction::ToggleOverlay(overlay) => self.toggle_overlay(overlay),
+            GameAction::Look => self.raise_cursor(CursorMode::Look),
+            GameAction::Interact => self.raise_cursor(CursorMode::Interact),
+            _ => self.inventory = Some(0),
+        }
+    }
+
+    /// Moves the inventory highlight, drops the highlighted item, or closes
+    /// the screen. The highlight stays on the list as it shrinks.
+    fn on_inventory(&mut self, action: InventoryAction) {
+        let (Screen::Playing(world), Some(selected)) = (&self.screen, self.inventory) else {
+            return;
+        };
+        let carried = world.carried();
+        let last = carried.len().saturating_sub(1);
+        match action {
+            InventoryAction::Close => self.inventory = None,
+            InventoryAction::Up => self.inventory = Some(selected.saturating_sub(1)),
+            InventoryAction::Down => self.inventory = Some((selected + 1).min(last)),
+            InventoryAction::Drop => {
+                let Some(&(path, _)) = carried.get(selected) else {
+                    self.push_log("You have nothing to drop.".into());
+                    return;
+                };
+                self.apply(Command::Drop(path));
+                self.inventory = Some(selected.min(last.saturating_sub(1)));
             }
         }
     }
@@ -271,6 +317,7 @@ impl App {
 
     fn show_title(&mut self, message: Option<String>) {
         self.cursor = None;
+        self.inventory = None;
         let can_continue = self.slot.as_ref().is_some_and(SaveSlot::exists);
         self.screen = Screen::Title(TitleMenu::new(can_continue).with_message(message));
     }
@@ -339,12 +386,35 @@ impl App {
         }
     }
 
+    /// Adds a line to the log. The same line twice in a row becomes one
+    /// line with a count ("You wait. (×3)"), so picking up four pieces of
+    /// scrap doesn't push everything else off the screen.
     pub fn push_log(&mut self, line: String) {
+        if let Some(last) = self.log.last_mut()
+            && let Some(times) = repeats(last, &line)
+        {
+            *last = format!("{line} (×{})", times + 1);
+            return;
+        }
         self.log.push(line);
         if self.log.len() > LOG_LIMIT {
             self.log.remove(0);
         }
     }
+}
+
+/// How many times `line` is already said by the log line `last`: 1 if
+/// they're the same, `n` if `last` is `line` followed by " (×n)", and
+/// `None` if `last` is something else.
+fn repeats(last: &str, line: &str) -> Option<u32> {
+    if last == line {
+        return Some(1);
+    }
+    let count = last
+        .strip_prefix(line)?
+        .strip_prefix(" (×")?
+        .strip_suffix(')')?;
+    count.parse().ok()
 }
 
 /// The title menu's message after blacking out: why, when, and that the
@@ -976,7 +1046,11 @@ mod tests {
         app.handle_key(key(KeyCode::Enter));
         assert_eq!(last_log(&app), "There's nothing to do with that here.");
         press_all(&mut app, "hjc"); // the door is shut: no Close on the list
-        assert_eq!(last_log(&app), "There's nothing to do with that here.");
+        assert_eq!(
+            last_log(&app),
+            "There's nothing to do with that here. (×2)",
+            "said twice in a row, so counted"
+        );
     }
 
     #[test]
@@ -989,5 +1063,83 @@ mod tests {
             Some(nighthawk_sim::Tile::DoorClosed)
         );
         assert_eq!(app.cursor.map(|c| c.mode), Some(CursorMode::Look));
+    }
+
+    // --- Log ------------------------------------------------------------------
+
+    #[test]
+    fn the_same_line_twice_in_a_row_is_counted_not_repeated() {
+        let (mut app, _dir) = new_app(Some(7));
+        let before = app.log.len();
+        for _ in 0..3 {
+            app.push_log("You wait.".into());
+        }
+        assert_eq!(app.log.len(), before + 1);
+        assert_eq!(last_log(&app), "You wait. (×3)");
+        app.push_log("You open the door.".into());
+        app.push_log("You wait.".into());
+        assert_eq!(last_log(&app), "You wait.", "only lines in a row count");
+    }
+
+    #[test]
+    fn repeats_reads_its_own_counts() {
+        assert_eq!(repeats("a", "a"), Some(1));
+        assert_eq!(repeats("a (×4)", "a"), Some(4));
+        assert_eq!(repeats("a (×x)", "a"), None);
+        assert_eq!(repeats("b", "a"), None);
+        assert_eq!(repeats("a (×4", "a"), None);
+    }
+
+    // --- Inventory --------------------------------------------------------------
+
+    /// A new game standing beside the laser cutter at (6, 7), having picked
+    /// it up, then beside the scrap at (3, 9), having picked that up too.
+    fn carrying_everything() -> (App, tempfile::TempDir) {
+        let (mut app, dir) = new_app(Some(7));
+        press_all(&mut app, "lelg"); // to (5, 7); pick up the cutter at (6, 7)
+        press_all(&mut app, "bebg"); // to (4, 8); pick up the scrap at (3, 9)
+        assert_eq!(world(&app).carried().len(), 5);
+        (app, dir)
+    }
+
+    #[test]
+    fn i_opens_the_inventory_on_the_first_item_and_takes_no_time() {
+        let (mut app, _dir) = carrying_everything();
+        let before = world(&app).seconds();
+        press_all(&mut app, "i");
+        assert_eq!(app.inventory, Some(0));
+        press_all(&mut app, "jjjjjjjj");
+        assert_eq!(app.inventory, Some(4), "stops at the last item");
+        press_all(&mut app, "kkkkkkkk");
+        assert_eq!(app.inventory, Some(0), "and at the first");
+        press_all(&mut app, ".l");
+        assert_eq!(world(&app).seconds(), before, "other keys do nothing");
+        app.handle_key(key(KeyCode::Esc));
+        assert_eq!(app.inventory, None);
+    }
+
+    #[test]
+    fn d_drops_the_highlighted_item_where_you_stand() {
+        let (mut app, _dir) = carrying_everything();
+        let here = world(&app).player();
+        press_all(&mut app, "ijjjjd"); // the last scrap
+        assert_eq!(world(&app).carried().len(), 4);
+        assert_eq!(world(&app).items_at(here).count(), 1);
+        assert_eq!(app.inventory, Some(3), "the highlight stays on the list");
+        assert_eq!(last_log(&app), "You drop the scrap (Steel).");
+        press_all(&mut app, "dddd");
+        assert!(world(&app).carried().is_empty());
+        press_all(&mut app, "d");
+        assert_eq!(last_log(&app), "You have nothing to drop.");
+    }
+
+    #[test]
+    fn leaving_the_game_closes_the_inventory() {
+        let (mut app, _dir) = new_app(Some(7));
+        press_all(&mut app, "i");
+        app.show_title(None);
+        assert_eq!(app.inventory, None);
+        app.on_inventory(InventoryAction::Down); // no game: ignored
+        assert_eq!(app.inventory, None);
     }
 }

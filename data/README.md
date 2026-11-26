@@ -40,10 +40,10 @@ Each material has real physical properties, in whole numbers:
 | `name`, `description` | Shown in look mode (`V`). |
 | `colour` | Walls made of it are drawn in this colour: `white`, `grey`, `dark_grey`, `red`, `yellow`, `green`, `cyan`, `blue`, `magenta`. |
 | `density` | kg/m³ |
-| `melting_point` | °C |
+| `melting_point` | °C. Optional: leave it out for something that doesn't melt (cotton chars and burns). |
 | `specific_heat` | J/(kg·K) |
-| `thermal_conductivity` | W/(m·K) |
-| `hardness` | Vickers hardness (HV) |
+| `thermal_conductivity` | **mW**/(m·K), thousandths of a W/(m·K), so insulators like cotton (40) aren't rounded to zero. Steel is 45000. |
+| `hardness` | Vickers hardness (HV); 0 for soft things like fabric. |
 | `cut_by` | Optional. Tool qualities that cut it, with the level each needs (1 to 10); any one is enough. Leave it out and nothing can cut it. Qualities today: `LASER`. |
 
 Mistakes are reported precisely: a duplicate id, or a level out of range.
@@ -69,6 +69,39 @@ Mistakes are reported precisely: a duplicate id, or a level out of range.
 | `open_glyph` | Doors only, and every door needs one: the character for the door when open. |
 | `behaviour` | What it does in the simulation, one of: `floor` (walk on it; air passes), `wall` (solid, airtight), `stairs_up` / `stairs_down` (a ladder to the next deck; see [Stairs](#stairs)), `door` (opens and shuts; shut, it's airtight), `hull_crack` (solid, a 4 cm² leak to space), `hull_breach` (solid, a 400 cm² hole to space). |
 | `material` | The material it's made of, unless a map legend says otherwise. |
+
+## Items (`items/*.json`)
+
+Things you can pick up, carry and wear, grouped by kind (`clothing.json`,
+`tools.json`, `salvage.json`). An item is an item type made of a material;
+its weight is worked out: volume × the material's density × how solid it
+is, plus whatever is in its pockets.
+
+```json
+{
+  "items": [
+    { "id": "basic_laser_cutter", "name": "basic laser cutter",
+      "description": "A handheld fibre-laser cutter, about a kilowatt.",
+      "glyph": "(", "material": "aluminium_alloy",
+      "volume_ml": 800, "solid_percent": 50, "qualities": { "LASER": 1 } },
+    { "id": "jumpsuit", "name": "jumpsuit", "description": "A crew jumpsuit.",
+      "glyph": "[", "material": "cotton_fabric", "volume_ml": 2000, "solid_percent": 30,
+      "wear": { "pockets": [
+        { "name": "left hip pocket", "volume_ml": 1000, "max_mass_g": 2500 } ] } }
+  ]
+}
+```
+
+| Field | Meaning |
+|---|---|
+| `id` | How maps refer to it. |
+| `name`, `description` | Shown in messages, look mode and the inventory. Items are named with their material: "scrap (Steel)". |
+| `glyph` | The character it's drawn with lying on the floor, in its material's colour. |
+| `material` | What it's made of, unless the map says otherwise. |
+| `volume_ml` | How much room it takes, in millilitres (above 0). |
+| `solid_percent` | How much of that volume is solid material, 1 to 100: 100 for a lump of scrap, 50 for a tool full of air and wiring. |
+| `qualities` | Optional. Tool qualities it has, levels 1 to 10, like `{ "LASER": 1 }`. |
+| `wear` | Optional. Makes it wearable; `pockets` lists what it gives you to carry things in, each with a `name`, a `volume_ml` and a `max_mass_g`. |
 
 ## Maps (`maps/*.json`)
 
@@ -100,6 +133,8 @@ once, and the legend says what it stands on (something walkable).
 | `id` | Must match the file name (`closet.json` → `"closet"`) |
 | `name` | Shown as the map panel's title |
 | `legend` | One character → a structure's id, made of the structure's own material: `"#": "bulkhead"`. Or an object, to give it another material or place a door open: `"H": { "structure": "bulkhead", "material": "nanocarbon_alloy" }`, `"'": { "structure": "door", "open": true }`. Mistakes name the character: an unknown structure or material, `open` on something that isn't a door, or `@` standing on something solid. |
+| `legend[].items` | Optional, in the object form: items lying on that tile, like `"s": { "structure": "deck_plating", "items": [ { "item": "scrap", "count": 4 } ] }`. Each entry is an `item`, optionally a `material` other than its own, and a `count` (default 1). Items need a walkable tile. |
+| `player_wears` | Optional. What the player starts out wearing, as a list of items like `[ { "item": "jumpsuit" } ]`. Everything in it must be wearable. |
 | `decks` | Listed bottom to top: the first is deck 0. All decks must be the same size. |
 | `decks[].name` | Optional. Shown as the map panel's title on that deck. Without it the deck is "Deck 0", "Deck 1" and so on. |
 | `decks[].pressure` | Optional. The deck's starting air pressure as a percentage of normal ship air (101.3 kPa: 21% O2, 79% N2, a trace of CO2), from 0 (vacuum) to 200. Default 100. Each second, air evens out across every connected open space (joined by open floor, open doors and ladders), so a deck at 60% next to a full one shares their air as soon as time passes. |

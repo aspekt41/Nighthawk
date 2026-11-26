@@ -31,27 +31,34 @@ pub enum Action {
     Close,
     /// Cut through it with a tool.
     Cut,
+    /// Pick up the items lying there.
+    PickUp,
 }
 
 impl Action {
     /// Every action, in the order the menu lists them.
-    pub const ALL: [Action; 3] = [Action::Open, Action::Close, Action::Cut];
+    pub const ALL: [Action; 4] = [Action::Open, Action::Close, Action::Cut, Action::PickUp];
 
     /// How far away the action works, in steps (diagonals count as one).
     pub fn reach(self) -> u32 {
         match self {
-            Action::Open | Action::Close => HAND_REACH,
+            Action::Open | Action::Close | Action::PickUp => HAND_REACH,
             Action::Cut => LASER_REACH,
         }
     }
 
-    /// Whether the action makes sense on this kind of tile at all: doors
-    /// open and close; anything solid can, in principle, be cut.
-    fn applies_to(self, tile: Tile) -> bool {
+    /// Whether the action makes sense at `at` at all: doors open and
+    /// close; anything solid can, in principle, be cut; items lying there
+    /// can be picked up.
+    fn applies_at(self, world: &World, at: Pos) -> bool {
+        let Some(tile) = world.map().get(at) else {
+            return false;
+        };
         match self {
             Action::Open => tile == Tile::DoorClosed,
             Action::Close => tile == Tile::DoorOpen,
             Action::Cut => !tile.holds_air(),
+            Action::PickUp => world.items_at(at).next().is_some(),
         }
     }
 }
@@ -84,12 +91,9 @@ pub struct ActionOption {
 /// The actions that make sense on the tile at `at`, each with what blocks
 /// it. Empty for tiles with nothing to do, like open floor.
 pub fn options_at(world: &World, at: Pos) -> Vec<ActionOption> {
-    let Some(tile) = world.map().get(at) else {
-        return Vec::new();
-    };
     Action::ALL
         .into_iter()
-        .filter(|action| action.applies_to(tile))
+        .filter(|action| action.applies_at(world, at))
         .map(|action| ActionOption {
             action,
             blocked: blocked(world, at, action),
@@ -100,13 +104,14 @@ pub fn options_at(world: &World, at: Pos) -> Vec<ActionOption> {
 /// What stops the player doing `action` to the tile at `at` right now, or
 /// `None` if nothing does.
 pub fn blocked(world: &World, at: Pos, action: Action) -> Option<Blocked> {
-    let applies = world.map().get(at).is_some_and(|t| action.applies_to(t));
-    if !applies {
+    if !action.applies_at(world, at) {
         return Some(Blocked::NotPossible);
     }
     match action {
         Action::Cut => cut_blocked(world, at),
         Action::Open | Action::Close => hand_blocked(world, at),
+        // Picking up from the tile you stand on is fine.
+        Action::PickUp => too_far(world, at, HAND_REACH),
     }
 }
 
@@ -309,5 +314,26 @@ mod tests {
         assert_eq!(Action::Open.reach(), 1);
         assert_eq!(Action::Close.reach(), 1);
         assert_eq!(Action::Cut.reach(), 2);
+    }
+
+    #[test]
+    fn items_on_a_tile_within_reach_can_be_picked_up() {
+        let rows = ["####", "#@s#", "#..#", "####"];
+        let json = format!(
+            r##"{{ "id": "t", "name": "T",
+                 "legend": {{ "#": "wall", ".": "floor",
+                    "s": {{ "structure": "floor", "items": [ {{ "item": "scrap" }} ] }} }},
+                 "decks": [ {{ "rows": {rows:?} }} ] }}"##
+        );
+        let w = World::new(parse_map(&json).unwrap(), 1);
+        assert_eq!(
+            only(&w, Pos::new(2, 1, 0)),
+            vec![ActionOption {
+                action: Action::PickUp,
+                blocked: None
+            }]
+        );
+        assert_eq!(only(&w, Pos::new(1, 2, 0)), vec![], "no items there");
+        assert_eq!(Action::PickUp.reach(), 1);
     }
 }

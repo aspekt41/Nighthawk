@@ -33,6 +33,34 @@ pub enum GameAction {
     /// Start the interact menu (`e`): the same cursor, listing what you
     /// can do to the tile under it.
     Interact,
+    /// Show what you're wearing and carrying (`i`).
+    Inventory,
+}
+
+/// Something the player wants on the inventory screen.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InventoryAction {
+    /// Highlight the item above or below.
+    Up,
+    Down,
+    /// Drop the highlighted item.
+    Drop,
+    Close,
+}
+
+/// The action for a key pressed on the inventory screen: up and down
+/// movement keys choose, `d` drops, Esc, `i` or `q` close.
+pub fn inventory_action(key: KeyEvent) -> Option<InventoryAction> {
+    if !is_press(key) {
+        return None;
+    }
+    match (key.code, direction(key)) {
+        (KeyCode::Esc | KeyCode::Char('i' | 'q'), _) => Some(InventoryAction::Close),
+        (KeyCode::Char('d'), _) => Some(InventoryAction::Drop),
+        (_, Some(Dir::North)) => Some(InventoryAction::Up),
+        (_, Some(Dir::South)) => Some(InventoryAction::Down),
+        _ => None,
+    }
 }
 
 /// Something the player wants while the look or interact cursor is up.
@@ -55,6 +83,7 @@ pub fn action_key(action: Action) -> char {
         Action::Open => 'o',
         Action::Close => 'c',
         Action::Cut => 'x',
+        Action::PickUp => 'g',
     }
 }
 
@@ -117,6 +146,7 @@ const GAME_KEYS: &[(char, GameAction)] = &[
     ('t', GameAction::ToggleOverlay(Overlay::Heat)),
     ('V', GameAction::Look),
     ('e', GameAction::Interact),
+    ('i', GameAction::Inventory),
 ];
 
 /// The action for a key pressed while playing, if any. Ctrl-C saves and
@@ -367,7 +397,7 @@ mod tests {
     #[test]
     fn every_action_has_its_own_key_that_is_not_a_movement_key() {
         let keys: Vec<char> = Action::ALL.map(action_key).to_vec();
-        assert_eq!(keys, vec!['o', 'c', 'x']);
+        assert_eq!(keys, vec!['o', 'c', 'x', 'g']);
         for key in keys {
             assert_eq!(direction(press(KeyCode::Char(key))), None, "{key}");
         }
@@ -444,5 +474,29 @@ mod tests {
         // Terminals with the kitty keyboard protocol also send releases.
         assert_eq!(game_action(release(KeyCode::Char('q'))), None);
         assert_eq!(title_action(release(KeyCode::Enter)), None);
+    }
+
+    #[test]
+    fn i_opens_the_inventory_where_up_down_choose_and_d_drops() {
+        assert_eq!(
+            game_action(press(KeyCode::Char('i'))),
+            Some(GameAction::Inventory)
+        );
+        let cases = [
+            (KeyCode::Char('k'), Some(InventoryAction::Up)),
+            (KeyCode::Up, Some(InventoryAction::Up)),
+            (KeyCode::Char('j'), Some(InventoryAction::Down)),
+            (KeyCode::Down, Some(InventoryAction::Down)),
+            (KeyCode::Char('d'), Some(InventoryAction::Drop)),
+            (KeyCode::Esc, Some(InventoryAction::Close)),
+            (KeyCode::Char('i'), Some(InventoryAction::Close)),
+            (KeyCode::Char('q'), Some(InventoryAction::Close)),
+            (KeyCode::Char('l'), None),
+            (KeyCode::Char('.'), None),
+        ];
+        for (code, action) in cases {
+            assert_eq!(inventory_action(press(code)), action, "{code:?}");
+        }
+        assert_eq!(inventory_action(release(KeyCode::Char('d'))), None);
     }
 }
