@@ -1,0 +1,50 @@
+{
+  "materials": [
+    {
+      "id": "steel",
+      "name": "Steel",
+      "description": "Structural steel: deck plating, ladders and the bulkheads between compartments. Heavy, tough and everywhere.",
+      "colour": "grey",
+      "density": 7850,
+      "melting_point": 1450,
+      "specific_heat": 490,
+      "thermal_conductivity": 45,
+      "hardness": 150,
+      "cut_by": { "LASER": 2 }
+    },
+    {
+      "id": "aluminium_alloy",
+      "name": "Aluminium Alloy",
+      "description": "Light aluminium alloy, used for doors and fittings. Soft, and quick to cut.",
+      "colour": "white",
+      "density": 2700,
+      "melting_point": 600,
+      "specific_heat": 896,
+      "thermal_conductivity": 167,
+      "hardness": 107,
+      "cut_by": { "LASER": 1 }
+    },
+    {
+      "id": "nanocarbon_alloy",
+      "name": "Nanocarbon Alloy",
+      "description": "The outer hull: layered carbon lattice bonded into a metal matrix. Built to take micrometeorites and reentry heat. Nothing aboard is likely to cut it.",
+      "colour": "dark_grey",
+      "density": 3200,
+      "melting_point": 3900,
+      "specific_heat": 710,
+      "thermal_conductivity": 8,
+      "hardness": 2500,
+      "cut_by": { "LASER": 5 }
+    }
+  ],
+  "defaults": {
+    "floor": "steel",
+    "wall": "steel",
+    "stairs_up": "steel",
+    "stairs_down": "steel",
+    "door_closed": "aluminium_alloy",
+    "door_open": "aluminium_alloy",
+    "hull_crack": "nanocarbon_alloy",
+    "hull_breach": "nanocarbon_alloy"
+  }
+}

@@ -14,7 +14,8 @@
 //! ```
 
 use nighthawk_sim::{
-    BREATH_FULL, Mix, Pos, Tile, WARMTH_FULL, World, celsius_to_mk, mk_to_tenths_celsius,
+    BREATH_FULL, Colour, Material, Mix, Pos, Quality, Tile, WARMTH_FULL, World, celsius_to_mk,
+    mk_to_tenths_celsius,
 };
 use ratatui::Frame;
 use ratatui::buffer::Buffer;
@@ -53,11 +54,24 @@ impl Overlay {
     }
 }
 
+/// How the player has asked to see the game: view settings that change
+/// nothing in the world. `Default` gives the plain map, not looking.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct View {
+    pub overlay: Option<Overlay>,
+    /// The look cursor, while in look mode.
+    pub look: Option<Pos>,
+}
+
 /// Draws whichever screen the app is on.
 pub fn render(app: &App, frame: &mut Frame) {
+    let view = View {
+        overlay: app.overlay,
+        look: app.look,
+    };
     match &app.screen {
         Screen::Title(menu) => render_title(menu, frame),
-        Screen::Playing(world) => render_game(world, &app.log, app.overlay, frame),
+        Screen::Playing(world) => render_game(world, &app.log, view, frame),
     }
 }
 
@@ -132,20 +146,42 @@ fn centred(area: Rect, width: u16, height: u16) -> Rect {
 }
 
 /// The game screen: map, status sidebar and message log.
-fn render_game(world: &World, log_lines: &[String], overlay: Option<Overlay>, frame: &mut Frame) {
+///
+/// In look mode the map centres on the cursor, the sidebar describes the
+/// tile under it, and the log panel shows its material's description.
+fn render_game(world: &World, log_lines: &[String], view: View, frame: &mut Frame) {
     let [top, log_area] =
         Layout::vertical([Constraint::Min(5), Constraint::Length(LOG_HEIGHT)]).areas(frame.area());
     let [map_area, side_area] =
         Layout::horizontal([Constraint::Min(10), Constraint::Length(SIDEBAR_WIDTH)]).areas(top);
 
-    let overlay_note = overlay.map_or("", Overlay::label);
-    let map_block = Block::bordered().title(format!(" {}{overlay_note} ", world.area_name()));
+    let overlay_note = view.overlay.map_or("", Overlay::label);
+    let look_note = if view.look.is_some() {
+        " [looking]"
+    } else {
+        ""
+    };
+    let title = format!(" {}{overlay_note}{look_note} ", world.area_name());
+    let map_block = Block::bordered().title(title);
     let map_inner = map_block.inner(map_area);
     frame.render_widget(map_block, map_area);
-    frame.render_widget(MapView { world, overlay }, map_inner);
+    let map_view = MapView {
+        world,
+        overlay: view.overlay,
+        cursor: view.look,
+    };
+    frame.render_widget(map_view, map_inner);
 
-    frame.render_widget(sidebar(world), side_area);
-    frame.render_widget(log(log_lines, log_area.height.saturating_sub(2)), log_area);
+    match view.look {
+        Some(at) => {
+            frame.render_widget(look_panel(world, at), side_area);
+            frame.render_widget(description(world, at), log_area);
+        }
+        None => {
+            frame.render_widget(sidebar(world), side_area);
+            frame.render_widget(log(log_lines, log_area.height.saturating_sub(2)), log_area);
+        }
+    }
 }
 
 /// Draws the map with the player in the middle of the view.
@@ -158,28 +194,43 @@ pub struct MapView<'a> {
     /// Shade floor tiles by air pressure or temperature instead of drawing
     /// them as `.`.
     pub overlay: Option<Overlay>,
+    /// The look cursor, if looking: the view centres on it and highlights
+    /// it. Otherwise the view centres on the player.
+    pub cursor: Option<Pos>,
 }
 
 impl Widget for MapView<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
-        let player = self.world.player();
+        let centre = self.cursor.unwrap_or(self.world.player());
         // The map position that lands in the top-left cell of `area`.
-        let origin_x = player.x - i32::from(area.width) / 2;
-        let origin_y = player.y - i32::from(area.height) / 2;
+        let origin_x = centre.x - i32::from(area.width) / 2;
+        let origin_y = centre.y - i32::from(area.height) / 2;
 
         for row in 0..area.height {
             for col in 0..area.width {
                 let pos = Pos::new(
                     origin_x + i32::from(col),
                     origin_y + i32::from(row),
-                    player.z,
+                    centre.z,
                 );
-                let (glyph, style) = glyph_at(self.world, pos, self.overlay);
+                let (glyph, style) = self.cell(pos);
                 buf[(area.x + col, area.y + row)]
                     .set_symbol(glyph)
                     .set_style(style);
             }
         }
+    }
+}
+
+impl MapView<'_> {
+    /// The character and style for the map cell at `pos`, highlighted
+    /// (drawn in reverse) if it's under the look cursor.
+    fn cell(&self, pos: Pos) -> (&'static str, Style) {
+        let (glyph, style) = glyph_at(self.world, pos, self.overlay);
+        if Some(pos) == self.cursor {
+            return (glyph, style.add_modifier(Modifier::REVERSED));
+        }
+        (glyph, style)
     }
 }
 
@@ -196,7 +247,30 @@ fn glyph_at(world: &World, pos: Pos, overlay: Option<Overlay>) -> (&'static str,
     match (map.get(pos), overlay) {
         (Some(Tile::Floor), Some(Overlay::Air)) => air_glyph(map.air(pos).unwrap_or(Mix::VACUUM)),
         (Some(Tile::Floor), Some(Overlay::Heat)) => heat_glyph(map.temperature(pos)),
+        // Walls take their material's colour, so the hull stands out from
+        // the bulkheads inside.
+        (Some(Tile::Wall), _) => {
+            let colour = world
+                .material_at(pos)
+                .map_or(Color::Gray, |m| colour(m.colour));
+            ("#", Style::new().fg(colour))
+        }
         (tile, _) => tile.map_or((" ", Style::new()), tile_glyph),
+    }
+}
+
+/// The terminal colour for a material's colour.
+fn colour(c: Colour) -> Color {
+    match c {
+        Colour::White => Color::White,
+        Colour::Grey => Color::Gray,
+        Colour::DarkGrey => Color::DarkGray,
+        Colour::Red => Color::Red,
+        Colour::Yellow => Color::Yellow,
+        Colour::Green => Color::Green,
+        Colour::Cyan => Color::Cyan,
+        Colour::Blue => Color::Blue,
+        Colour::Magenta => Color::Magenta,
     }
 }
 
@@ -374,6 +448,103 @@ fn percent(per_mille: u32) -> String {
     format!("{}.{}%", per_mille / 10, per_mille % 10)
 }
 
+/// The look panel: what's at `at`, what it's made of, and the air there.
+/// Like the status panel, it must fit in 16 lines.
+fn look_panel(world: &World, at: Pos) -> Paragraph<'static> {
+    Paragraph::new(look_lines(world, at)).block(Block::bordered().title(" Look "))
+}
+
+fn look_lines(world: &World, at: Pos) -> Vec<Line<'static>> {
+    let dim = Style::new().fg(Color::DarkGray);
+    let here = if at == world.player() {
+        Line::styled("You are here.", Style::new().fg(Color::Yellow))
+    } else {
+        Line::raw("")
+    };
+    let mut lines = vec![
+        Line::raw(format!("Look  {}, {}  deck {}", at.x, at.y, at.z)),
+        here,
+    ];
+    let tile = world.map().get(at).unwrap_or(Tile::Wall);
+    lines.push(Line::raw(tile_name(world, at, tile)));
+    if let Some(material) = world.material_at(at) {
+        lines.extend(material_lines(material));
+    }
+    lines.push(Line::raw(""));
+    lines.extend(air_here(world, at, tile));
+    lines.extend([
+        Line::raw(""),
+        Line::styled("move  hjkl yubn", dim),
+        Line::styled("Esc   stop looking", dim),
+    ]);
+    lines
+}
+
+/// A material's name, in its colour, and its properties.
+fn material_lines(m: &Material) -> Vec<Line<'static>> {
+    vec![
+        Line::styled(m.name.clone(), Style::new().fg(colour(m.colour))),
+        Line::raw(format!("Density  {} kg/m³", m.density)),
+        Line::raw(format!("Melts    {} °C", m.melting_point)),
+        Line::raw(format!("Hardness {} HV", m.hardness)),
+        Line::raw(format!("Heat cap {} J/kg·K", m.specific_heat)),
+        Line::raw(format!("Conducts {} W/m·K", m.thermal_conductivity)),
+        Line::raw(format!("Cut by   {}", cut_by(m))),
+    ]
+}
+
+/// The qualities that cut a material, like "LASER 2", or "nothing".
+fn cut_by(m: &Material) -> String {
+    if m.cut_by.is_empty() {
+        return "nothing".into();
+    }
+    let each: Vec<String> = m
+        .cut_by
+        .iter()
+        .map(|(q, level): (&Quality, &u8)| format!("{} {level}", q.name()))
+        .collect();
+    each.join(", ")
+}
+
+/// The air at a looked-at tile: its pressure and temperature, or that
+/// it's solid.
+fn air_here(world: &World, at: Pos, tile: Tile) -> Vec<Line<'static>> {
+    if !tile.holds_air() {
+        return vec![Line::raw("Solid: no air")];
+    }
+    let mix = world.map().air(at).unwrap_or(Mix::VACUUM);
+    let [pressure, ..] = air_lines(mix);
+    vec![pressure, temperature_line(world.map().temperature(at))]
+}
+
+/// What to call the tile at `at`: "Outer hull" for a wall on the hull,
+/// otherwise the shape's own name.
+fn tile_name(world: &World, at: Pos, tile: Tile) -> String {
+    if tile == Tile::Wall && world.map().is_outer_hull(at) {
+        return "Outer hull".into();
+    }
+    capitalised(tile.name())
+}
+
+/// "ladder up" → "Ladder up".
+fn capitalised(text: &str) -> String {
+    let mut chars = text.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().chain(chars).collect(),
+        None => String::new(),
+    }
+}
+
+/// The bottom panel in look mode: the material's description, wrapped.
+fn description(world: &World, at: Pos) -> Paragraph<'static> {
+    let text = world
+        .material_at(at)
+        .map_or(String::new(), |m| m.description.clone());
+    Paragraph::new(text)
+        .wrap(Wrap { trim: true })
+        .block(Block::bordered().title(" Made of "))
+}
+
 /// The newest `lines` log entries, oldest at the top.
 fn log(entries: &[String], lines: u16) -> Paragraph<'static> {
     let start = entries.len().saturating_sub(usize::from(lines));
@@ -396,7 +567,9 @@ mod tests {
             r##"{{ "id": "t", "name": "T", "legend": {{ "#": "wall", ".": "floor" }},
                  "decks": [ {{ "rows": {rows:?} }} ] }}"##
         );
-        World::new(parse_map(&json).unwrap(), 1)
+        let data = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../data");
+        let materials = crate::content::load_materials(&data).unwrap();
+        World::new(parse_map(&json, &materials).unwrap(), 1)
     }
 
     /// Renders the map into an off-screen buffer and returns its rows as text.
@@ -406,6 +579,7 @@ mod tests {
         MapView {
             world,
             overlay: None,
+            cursor: None,
         }
         .render(area, &mut buf);
         (0..h)
@@ -441,7 +615,9 @@ mod tests {
     }
 
     fn game_screen(world: &World, log: &[String]) -> String {
-        draw_screen(80, 24, |frame| render_game(world, log, None, frame))
+        draw_screen(80, 24, |frame| {
+            render_game(world, log, View::default(), frame)
+        })
     }
 
     fn title_screen(menu: &TitleMenu) -> String {
@@ -684,7 +860,10 @@ mod tests {
     fn the_heat_overlay_shows_the_cold_crew_deck_and_is_labelled() {
         let map = crate::content::load_start_map().unwrap();
         let mut world = World::new(map, 1);
-        let heat = Some(Overlay::Heat);
+        let heat = View {
+            overlay: Some(Overlay::Heat),
+            look: None,
+        };
         let bay = draw_screen(80, 24, |f| render_game(&world, &[], heat, f));
         assert!(bay.contains("[heat overlay]"));
         assert!(bay.contains("░░░"), "the stasis bay is comfortable, just");
@@ -720,11 +899,18 @@ mod tests {
         }
     }
 
+    fn air() -> View {
+        View {
+            overlay: Some(Overlay::Air),
+            look: None,
+        }
+    }
+
     #[test]
     fn the_air_overlay_shows_thin_air_upstairs_and_is_labelled() {
         let map = crate::content::load_start_map().unwrap();
         let mut world = World::new(map, 1);
-        let full = draw_screen(80, 24, |f| render_game(&world, &[], Some(Overlay::Air), f));
+        let full = draw_screen(80, 24, |f| render_game(&world, &[], air(), f));
         assert!(full.contains("[air overlay]"));
         assert!(full.contains("███"), "the stasis bay is at full pressure");
 
@@ -736,9 +922,9 @@ mod tests {
         for command in route {
             world.apply(command);
         }
-        let upstairs = draw_screen(80, 24, |f| render_game(&world, &[], Some(Overlay::Air), f));
+        let upstairs = draw_screen(80, 24, |f| render_game(&world, &[], air(), f));
         assert!(upstairs.contains("▒▒▒"), "thin air upstairs:\n{upstairs}");
-        let plain = draw_screen(80, 24, |f| render_game(&world, &[], None, f));
+        let plain = draw_screen(80, 24, |f| render_game(&world, &[], View::default(), f));
         assert!(!plain.contains("▒") && !plain.contains("[air overlay]"));
     }
 
@@ -751,5 +937,126 @@ mod tests {
         // The @ stays centred, so the room scrolls instead.
         assert_eq!(after[5].chars().nth(10), Some('@'));
         assert_ne!(before, after);
+    }
+
+    // --- Look mode and materials -----------------------------------------------
+
+    fn real_world() -> World {
+        World::new(crate::content::load_start_map().unwrap(), 1)
+    }
+
+    fn look_texts(world: &World, at: Pos) -> Vec<String> {
+        look_lines(world, at)
+            .iter()
+            .map(ToString::to_string)
+            .collect()
+    }
+
+    #[test]
+    fn looking_at_the_hull_shows_its_material_and_laser_level() {
+        let world = real_world();
+        let lines = look_texts(&world, Pos::new(0, 7, 0));
+        assert_eq!(lines[0], "Look  0, 7  deck 0");
+        assert_eq!(lines[2], "Outer hull");
+        assert_eq!(lines[3], "Nanocarbon Alloy");
+        assert!(lines.contains(&"Cut by   LASER 5".to_string()));
+        assert!(lines.contains(&"Solid: no air".to_string()));
+    }
+
+    #[test]
+    fn looking_at_your_own_tile_shows_the_air_and_says_you_are_here() {
+        let world = real_world();
+        let lines = look_texts(&world, world.player());
+        assert_eq!(lines[1], "You are here.");
+        assert_eq!(lines[2], "Floor");
+        assert_eq!(lines[3], "Steel");
+        assert!(lines.contains(&"Air   101.3 kPa".to_string()));
+        assert!(lines.contains(&"Temp  14.0 °C".to_string()));
+    }
+
+    #[test]
+    fn the_look_panel_fits_a_minimum_terminal_wherever_it_points() {
+        let world = real_world();
+        for at in world.map().positions() {
+            let lines = look_lines(&world, at);
+            assert!(lines.len() <= 16, "{at:?}: {} lines", lines.len());
+            for line in &lines {
+                assert!(line.width() <= usize::from(SIDEBAR_WIDTH - 2), "{line}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_material_nothing_can_cut_says_so() {
+        let mut material = real_world().materials()[0].clone();
+        assert_eq!(cut_by(&material), "LASER 2");
+        material.cut_by.clear();
+        assert_eq!(cut_by(&material), "nothing");
+    }
+
+    #[test]
+    fn the_look_screen_is_labelled_and_shows_the_description() {
+        let world = real_world();
+        let view = View {
+            overlay: None,
+            look: Some(Pos::new(0, 7, 0)),
+        };
+        let screen = draw_screen(80, 24, |f| render_game(&world, &[], view, f));
+        assert!(screen.contains("[looking]"));
+        assert!(screen.contains(" Made of "));
+        assert!(screen.contains("The outer hull"));
+        assert!(!screen.contains(" Status "), "the look panel replaces it");
+    }
+
+    #[test]
+    fn the_cursor_is_highlighted_and_the_view_centres_on_it() {
+        let world = real_world();
+        let at = Pos::new(1, 1, 0);
+        let area = Rect::new(0, 0, 21, 11);
+        let mut buf = Buffer::empty(area);
+        let view = MapView {
+            world: &world,
+            overlay: None,
+            cursor: Some(at),
+        };
+        view.render(area, &mut buf);
+        let centre = &buf[(10, 5)];
+        assert_eq!(centre.symbol(), ".");
+        assert!(centre.modifier.contains(Modifier::REVERSED));
+        assert!(!buf[(9, 5)].modifier.contains(Modifier::REVERSED));
+    }
+
+    #[test]
+    fn walls_are_drawn_in_their_materials_colour() {
+        let world = real_world();
+        let hull = glyph_at(&world, Pos::new(0, 7, 0), None);
+        let pillar = glyph_at(&world, Pos::new(9, 5, 0), None);
+        assert_eq!(hull, ("#", Style::new().fg(Color::DarkGray)));
+        assert_eq!(pillar, ("#", Style::new().fg(Color::Gray)));
+    }
+
+    #[test]
+    fn every_material_colour_has_a_terminal_colour() {
+        let all = [
+            Colour::White,
+            Colour::Grey,
+            Colour::DarkGrey,
+            Colour::Red,
+            Colour::Yellow,
+            Colour::Green,
+            Colour::Cyan,
+            Colour::Blue,
+            Colour::Magenta,
+        ];
+        let colours: Vec<Color> = all.iter().map(|&c| colour(c)).collect();
+        for (i, c) in colours.iter().enumerate() {
+            assert!(!colours[i + 1..].contains(c), "{c:?} used twice");
+        }
+    }
+
+    #[test]
+    fn names_are_capitalised_for_the_panel() {
+        assert_eq!(capitalised("ladder up"), "Ladder up");
+        assert_eq!(capitalised(""), "");
     }
 }

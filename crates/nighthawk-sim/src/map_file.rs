@@ -28,6 +28,7 @@ use serde::Deserialize;
 use crate::air::Mix;
 use crate::heat::{MAX_CELSIUS, MIN_CELSIUS, celsius_to_mk};
 use crate::map::{Map, StairsError, Tile};
+use crate::material::{Material, Materials};
 use crate::pos::Pos;
 
 /// The glyph that marks the player's starting position.
@@ -42,6 +43,9 @@ pub struct LoadedMap {
     pub deck_names: Vec<String>,
     pub map: Map,
     pub player_start: Pos,
+    /// Every material, in the order the map's tiles refer to them (the
+    /// world keeps its own copy, so a save never depends on data files).
+    pub materials: Vec<Material>,
 }
 
 /// Everything that can be wrong with a map file. Each variant says exactly
@@ -71,6 +75,11 @@ pub enum MapError {
         deck: usize,
         expected: usize,
         found: usize,
+    },
+    /// A legend entry made of a material that isn't in the materials file.
+    UnknownMaterial {
+        glyph: char,
+        material: String,
     },
     /// A character that isn't in the legend and isn't `@`.
     UnknownGlyph {
@@ -121,6 +130,10 @@ impl fmt::Display for MapError {
                 "deck {deck}, row {row}, column {col}: {glyph:?} is not in the legend"
             ),
             MapError::Stairs(e) => write!(f, "{e}"),
+            MapError::UnknownMaterial { glyph, material } => write!(
+                f,
+                "legend entry {glyph:?} is made of {material:?}, which isn't in the materials file"
+            ),
             MapError::BadPressure { deck, percent } => write!(
                 f,
                 "deck {deck} has pressure {percent}%; it must be 0 to {MAX_PRESSURE_PERCENT}"
@@ -173,8 +186,28 @@ impl std::error::Error for MapError {}
 struct MapFile {
     id: String,
     name: String,
-    legend: HashMap<String, Tile>,
+    legend: HashMap<String, LegendEntry>,
     decks: Vec<DeckFile>,
+}
+
+/// What a legend character stands for: just a shape (`"wall"`), made of
+/// that shape's default material, or a shape and a material
+/// (`{ "tile": "wall", "material": "nanocarbon_alloy" }`).
+///
+/// `untagged` means serde tries each form in turn and takes the first that
+/// fits, so the JSON needs no extra label saying which form it is.
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum LegendEntry {
+    Shape(Tile),
+    MadeOf(MadeOf),
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct MadeOf {
+    tile: Tile,
+    material: String,
 }
 
 #[derive(Deserialize)]
@@ -199,10 +232,11 @@ struct DeckFile {
 /// The highest starting pressure a deck may ask for, in percent.
 const MAX_PRESSURE_PERCENT: u32 = 200;
 
-/// Parses and validates a map file's text.
-pub fn parse_map(json: &str) -> Result<LoadedMap, MapError> {
+/// Parses and validates a map file's text. `materials` (from
+/// `materials.json`) says what each tile can be made of.
+pub fn parse_map(json: &str, materials: &Materials) -> Result<LoadedMap, MapError> {
     let file: MapFile = serde_json::from_str(json).map_err(MapError::Json)?;
-    let legend = glyph_legend(&file.legend)?;
+    let legend = glyph_legend(&file.legend, materials)?;
     let (width, height) = dimensions(&file.decks)?;
 
     let depth = file.decks.len();
@@ -211,7 +245,9 @@ pub fn parse_map(json: &str) -> Result<LoadedMap, MapError> {
 
     for (z, y, x, glyph) in cells(&file.decks) {
         let pos = Pos::new(to_i32(x), to_i32(y), to_i32(z));
-        map.set(pos, tile_for(glyph, &legend, (z, y, x))?);
+        let (tile, material) = tile_for(glyph, &legend, materials, (z, y, x))?;
+        map.set(pos, tile);
+        map.set_material(pos, material);
         if glyph == PLAYER_START {
             starts.push(pos);
         }
@@ -228,6 +264,7 @@ pub fn parse_map(json: &str) -> Result<LoadedMap, MapError> {
             deck_names,
             map,
             player_start,
+            materials: materials.list().to_vec(),
         }),
         _ => Err(MapError::PlayerStartCount {
             found: starts.len(),
@@ -279,18 +316,41 @@ fn deck_names(decks: &[DeckFile]) -> Vec<String> {
         .collect()
 }
 
-/// Turns the legend's one-character string keys into `char`s.
-fn glyph_legend(legend: &HashMap<String, Tile>) -> Result<HashMap<char, Tile>, MapError> {
+/// A shape and the index of its material.
+type Made = (Tile, u16);
+
+/// Turns the legend's one-character string keys into `char`s, and each
+/// entry into a shape and a material index.
+fn glyph_legend(
+    legend: &HashMap<String, LegendEntry>,
+    materials: &Materials,
+) -> Result<HashMap<char, Made>, MapError> {
     legend
         .iter()
-        .map(|(key, &tile)| {
+        .map(|(key, entry)| {
             let mut chars = key.chars();
             match (chars.next(), chars.next()) {
-                (Some(c), None) if c != PLAYER_START => Ok((c, tile)),
+                (Some(c), None) if c != PLAYER_START => Ok((c, resolve(c, entry, materials)?)),
                 _ => Err(MapError::BadLegendKey { key: key.clone() }),
             }
         })
         .collect()
+}
+
+/// The shape and material index a legend entry stands for.
+fn resolve(glyph: char, entry: &LegendEntry, materials: &Materials) -> Result<Made, MapError> {
+    match entry {
+        LegendEntry::Shape(tile) => Ok((*tile, materials.default_for(*tile))),
+        LegendEntry::MadeOf(MadeOf { tile, material }) => {
+            let index = materials
+                .index_of(material)
+                .ok_or_else(|| MapError::UnknownMaterial {
+                    glyph,
+                    material: material.clone(),
+                })?;
+            Ok((*tile, index))
+        }
+    }
 }
 
 /// Checks every deck is the same rectangle and returns its `(width, height)`.
@@ -334,11 +394,12 @@ fn dimensions(decks: &[DeckFile]) -> Result<(usize, usize), MapError> {
 /// The tile a glyph stands for. `@` is the player start, on a floor tile.
 fn tile_for(
     glyph: char,
-    legend: &HashMap<char, Tile>,
+    legend: &HashMap<char, Made>,
+    materials: &Materials,
     (deck, row, col): (usize, usize, usize),
-) -> Result<Tile, MapError> {
+) -> Result<Made, MapError> {
     if glyph == PLAYER_START {
-        return Ok(Tile::Floor);
+        return Ok((Tile::Floor, materials.default_for(Tile::Floor)));
     }
     legend.get(&glyph).copied().ok_or(MapError::UnknownGlyph {
         glyph,
@@ -354,9 +415,20 @@ fn to_i32(n: usize) -> i32 {
     i32::try_from(n).expect("map dimension fits in i32")
 }
 
+/// [`parse_map`] with a small set of test materials (steel by default), so
+/// tests can build maps from a few lines of JSON. Other modules' tests
+/// import it *as* `parse_map`.
+#[cfg(test)]
+pub(crate) fn parse_map_for_tests(json: &str) -> Result<LoadedMap, MapError> {
+    parse_map(json, &crate::material::tests::test_materials())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    // This import beats the `parse_map` that `super::*` brings in: names
+    // imported by name win over names imported with `*`.
+    use super::parse_map_for_tests as parse_map;
     use crate::air::Mix;
 
     /// Builds a one-deck map file from rows, with the standard legend.
@@ -665,6 +737,7 @@ mod tests {
 
 #[cfg(test)]
 mod temperature_tests {
+    use super::parse_map_for_tests as parse_map;
     use super::*;
 
     /// A one-row, one-deck map with `deck` as extra fields on the deck.
@@ -719,6 +792,63 @@ mod temperature_tests {
         assert_eq!(
             err.to_string(),
             "deck 0 has temperature 201 °C; it must be -270 to 200"
+        );
+    }
+}
+
+#[cfg(test)]
+mod material_tests {
+    use super::parse_map_for_tests as parse_map;
+    use super::*;
+
+    /// A one-deck map whose legend has `extra` entries besides `.` floor.
+    fn map_with_legend(extra: &str, row: &str) -> Result<LoadedMap, MapError> {
+        let json = format!(
+            r#"{{ "id": "t", "name": "T", "legend": {{ ".": "floor", {extra} }},
+                 "decks": [ {{ "rows": [{row:?}] }} ] }}"#
+        );
+        parse_map(&json)
+    }
+
+    #[test]
+    fn a_plain_shape_is_made_of_its_default_material() {
+        let loaded = map_with_legend(r#""W": "wall""#, "@.W").unwrap();
+        assert_eq!(loaded.map.material_index(Pos::new(2, 0, 0)), Some(0));
+        assert_eq!(loaded.materials[0].id, "steel");
+        assert_eq!(loaded.materials.len(), 2, "the whole list comes along");
+    }
+
+    #[test]
+    fn a_legend_entry_can_name_its_material() {
+        let entry = r#""H": { "tile": "wall", "material": "hard_alloy" }"#;
+        let loaded = map_with_legend(entry, "@.H").unwrap();
+        assert_eq!(loaded.map.get(Pos::new(2, 0, 0)), Some(Tile::Wall));
+        assert_eq!(loaded.map.material_index(Pos::new(2, 0, 0)), Some(1));
+        assert_eq!(
+            loaded.map.material_index(Pos::new(0, 0, 0)),
+            Some(0),
+            "the player starts on default floor"
+        );
+    }
+
+    #[test]
+    fn an_unknown_material_is_an_error_naming_the_glyph() {
+        let entry = r#""H": { "tile": "wall", "material": "cheese" }"#;
+        let err = map_with_legend(entry, "@.H").unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            r#"legend entry 'H' is made of "cheese", which isn't in the materials file"#
+        );
+    }
+
+    #[test]
+    fn a_legend_entry_with_a_misspelled_field_is_an_error() {
+        let entry = r#""H": { "tile": "wall", "materal": "steel" }"#;
+        let err = map_with_legend(entry, "@.H").unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("did not match any variant of untagged enum LegendEntry"),
+            "{err}"
         );
     }
 }

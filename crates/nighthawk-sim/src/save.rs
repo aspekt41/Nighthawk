@@ -6,7 +6,7 @@
 //! ```json
 //! {
 //!   "format": "nighthawk-save",
-//!   "version": 6,
+//!   "version": 7,
 //!   "world": { "deck_names": ["Stasis bay"], "seconds": 36, ... }
 //! }
 //! ```
@@ -33,7 +33,7 @@ pub const SAVE_FORMAT: &str = "nighthawk-save";
 
 /// The save layout this build reads and writes. Bump it when `World` (or
 /// anything inside it) changes shape, and update the save-format test.
-pub const SAVE_VERSION: u32 = 6;
+pub const SAVE_VERSION: u32 = 7;
 
 /// Everything that can be wrong with a save file.
 #[derive(Debug)]
@@ -135,7 +135,7 @@ fn check_header(text: &str) -> Result<(), SaveError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::map_file::parse_map;
+    use crate::map_file::parse_map_for_tests as parse_map;
     use crate::pos::Dir;
     use crate::world::Command;
 
@@ -189,22 +189,13 @@ mod tests {
     fn save_text_is_tagged_and_versioned() {
         let text = save_to_string(&small_world());
         assert!(text.contains(r#""format": "nighthawk-save""#));
-        assert!(text.contains(r#""version": 6"#));
+        assert!(text.contains(r#""version": 7"#));
     }
 
-    #[test]
-    fn the_save_format_is_stable() {
-        // The exact text of a tiny save. If this fails, the save layout
-        // changed: bump SAVE_VERSION, then update this text on purpose.
-        let rows = ["@."];
-        let json = format!(
-            r#"{{ "id": "t", "name": "Nook", "legend": {{ ".": "floor" }},
-                 "decks": [ {{ "rows": {rows:?} }} ] }}"#
-        );
-        let world = World::new(parse_map(&json).unwrap(), 7);
-        let expected = r#"{
+    /// The exact text of the tiny save in `the_save_format_is_stable`.
+    const EXPECTED_SAVE: &str = r#"{
   "format": "nighthawk-save",
-  "version": 6,
+  "version": 7,
   "world": {
     "deck_names": [
       "Deck 0"
@@ -238,7 +229,11 @@ mod tests {
         29703423750,
         29703423750
       ],
-      "heat_lost": 0
+      "heat_lost": 0,
+      "made_of": [
+        0,
+        0
+      ]
     },
     "player": {
       "x": 0,
@@ -252,10 +247,51 @@ mod tests {
       "increment": 3
     },
     "breath": 1000,
-    "warmth": 1000000
+    "warmth": 1000000,
+    "materials": [
+      {
+        "id": "steel",
+        "name": "steel",
+        "description": "A test material.",
+        "colour": "grey",
+        "density": 1000,
+        "melting_point": 1000,
+        "specific_heat": 500,
+        "thermal_conductivity": 10,
+        "hardness": 100,
+        "cut_by": {
+          "LASER": 2
+        }
+      },
+      {
+        "id": "hard_alloy",
+        "name": "hard_alloy",
+        "description": "A test material.",
+        "colour": "grey",
+        "density": 1000,
+        "melting_point": 1000,
+        "specific_heat": 500,
+        "thermal_conductivity": 10,
+        "hardness": 100,
+        "cut_by": {
+          "LASER": 5
+        }
+      }
+    ]
   }
 }"#;
-        assert_eq!(save_to_string(&world), expected);
+
+    #[test]
+    fn the_save_format_is_stable() {
+        // The exact text of a tiny save. If this fails, the save layout
+        // changed: bump SAVE_VERSION, then update this text on purpose.
+        let rows = ["@."];
+        let json = format!(
+            r#"{{ "id": "t", "name": "Nook", "legend": {{ ".": "floor" }},
+                 "decks": [ {{ "rows": {rows:?} }} ] }}"#
+        );
+        let world = World::new(parse_map(&json).unwrap(), 7);
+        assert_eq!(save_to_string(&world), EXPECTED_SAVE);
     }
 
     #[test]
@@ -281,20 +317,20 @@ mod tests {
 
     #[test]
     fn a_save_without_a_version_is_not_a_save() {
-        let text = save_with("\"version\": 6,", "");
+        let text = save_with("\"version\": 7,", "");
         assert!(matches!(load_from_str(&text), Err(SaveError::NotASave)));
     }
 
     #[test]
     fn saves_from_other_versions_are_rejected_clearly() {
-        // A save from before heat and warmth: exactly what an old save file
-        // on disk looks like after this build is installed.
-        let text = save_with(r#""version": 6"#, r#""version": 5"#);
+        // A save from before materials: exactly what an old save file on
+        // disk looks like after this build is installed.
+        let text = save_with(r#""version": 7"#, r#""version": 6"#);
         let err = load_from_str(&text).unwrap_err();
-        assert!(matches!(err, SaveError::UnsupportedVersion { found: 5 }));
+        assert!(matches!(err, SaveError::UnsupportedVersion { found: 6 }));
         assert_eq!(
             err.to_string(),
-            "save file is version 5, but this build only reads version 6"
+            "save file is version 6, but this build only reads version 7"
         );
     }
 

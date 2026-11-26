@@ -5,10 +5,10 @@
 //! action means on the current screen. There's no terminal code here, so all
 //! of it can be tested directly.
 
-use nighthawk_sim::{Cause, Command, DateTime, LoadedMap, World};
+use nighthawk_sim::{Cause, Command, DateTime, LoadedMap, Pos, World};
 use ratatui::crossterm::event::KeyEvent;
 
-use crate::keys::{self, GameAction, TitleAction};
+use crate::keys::{self, GameAction, LookAction, TitleAction};
 use crate::saves::SaveSlot;
 use crate::text;
 use crate::title::{MenuItem, TitleMenu};
@@ -22,7 +22,10 @@ pub const LOG_LIMIT: usize = 100;
 #[derive(Debug)]
 pub enum Screen {
     Title(TitleMenu),
-    Playing(World),
+    /// Boxed (kept on the heap) because a `World` is much bigger than a
+    /// title menu, and an enum is always as big as its biggest variant.
+    /// The box keeps `Screen` itself small either way.
+    Playing(Box<World>),
 }
 
 pub struct App {
@@ -43,6 +46,9 @@ pub struct App {
     /// Which overlay the map shows, if any. A view setting, not part of
     /// the game, so it isn't saved.
     pub overlay: Option<Overlay>,
+    /// Where the look cursor is, while in look mode (`V`). Also a view
+    /// setting: looking never changes the world or spends time.
+    pub look: Option<Pos>,
 }
 
 impl App {
@@ -63,6 +69,7 @@ impl App {
             new_seed,
             asking_close_direction: false,
             overlay: None,
+            look: None,
         };
         match seed {
             Some(seed) => app.start_new_game(seed),
@@ -79,6 +86,12 @@ impl App {
         }
         if self.asking_close_direction {
             self.answer_close_direction(key);
+            return;
+        }
+        if self.look.is_some() {
+            if let Some(action) = keys::look_action(key) {
+                self.on_look(action);
+            }
             return;
         }
         match self.screen {
@@ -127,11 +140,34 @@ impl App {
             GameAction::ToTitleWithoutSaving => self.show_title(None),
             GameAction::Exit => self.quit = self.save_game(),
             GameAction::ToggleOverlay(overlay) => self.toggle_overlay(overlay),
+            GameAction::Look => {
+                if let Screen::Playing(world) = &self.screen {
+                    self.look = Some(world.player());
+                }
+            }
             GameAction::BeginClose => {
                 self.asking_close_direction = true;
                 self.push_log("Close which way? (a direction key; anything else cancels)".into());
             }
         }
+    }
+
+    /// Moves the look cursor, staying on the map, or stops looking.
+    fn on_look(&mut self, action: LookAction) {
+        let (Screen::Playing(world), Some(at)) = (&self.screen, self.look) else {
+            return;
+        };
+        self.look = match action {
+            LookAction::Stop => None,
+            LookAction::Move(dir) => {
+                let next = at.step(dir);
+                Some(if world.map().in_bounds(next) {
+                    next
+                } else {
+                    at
+                })
+            }
+        };
     }
 
     /// Shows `overlay`, or hides it if it's already showing. Asking for a
@@ -170,7 +206,7 @@ impl App {
             "Emergency lighting flickers. Nothing else is moving.".into(),
         ];
         self.warn_if_unsaved();
-        self.screen = Screen::Playing(world);
+        self.screen = Screen::Playing(Box::new(world));
     }
 
     /// Loads the save. If that fails, stays on the title menu and says why,
@@ -187,7 +223,7 @@ impl App {
                     world.now(),
                     world.seed()
                 )];
-                self.screen = Screen::Playing(world);
+                self.screen = Screen::Playing(Box::new(world));
             }
             Ok(None) => self.show_title(Some("There's no saved game yet.".into())),
             Err(message) => self.show_title(Some(message)),
@@ -195,6 +231,7 @@ impl App {
     }
 
     fn show_title(&mut self, message: Option<String>) {
+        self.look = None;
         let can_continue = self.slot.as_ref().is_some_and(SaveSlot::exists);
         self.screen = Screen::Title(TitleMenu::new(can_continue).with_message(message));
     }
@@ -744,5 +781,57 @@ mod tests {
             !SaveSlot::in_dir(dir.path()).exists(),
             "blacking out must not save"
         );
+    }
+
+    // --- Look mode ------------------------------------------------------------
+
+    #[test]
+    fn capital_v_looks_from_where_you_stand_and_movement_moves_the_cursor() {
+        let (mut app, _dir) = new_app(Some(7));
+        let start = world(&app).player();
+        app.handle_key(key(KeyCode::Char('V')));
+        assert_eq!(app.look, Some(start));
+        app.handle_key(key(KeyCode::Char('l')));
+        app.handle_key(key(KeyCode::Char('j')));
+        assert_eq!(app.look, Some(Pos::new(start.x + 1, start.y + 1, start.z)));
+        assert_eq!(world(&app).player(), start, "only the cursor moved");
+        assert_eq!(world(&app).seconds(), 0, "looking takes no time");
+    }
+
+    #[test]
+    fn other_keys_do_nothing_while_looking_and_esc_stops() {
+        let (mut app, _dir) = new_app(Some(7));
+        app.handle_key(key(KeyCode::Char('V')));
+        app.handle_key(key(KeyCode::Char('.')));
+        app.handle_key(key(KeyCode::Char('S')));
+        assert_eq!(world(&app).seconds(), 0, "no waiting");
+        assert!(app.look.is_some());
+        app.handle_key(key(KeyCode::Esc));
+        assert_eq!(app.look, None);
+        app.handle_key(key(KeyCode::Char('.')));
+        assert!(world(&app).seconds() > 0, "keys play normally again");
+    }
+
+    #[test]
+    fn the_look_cursor_stays_on_the_map() {
+        let (mut app, _dir) = new_app(Some(7));
+        app.handle_key(key(KeyCode::Char('V')));
+        for c in ['h', 'k'] {
+            for _ in 0..100 {
+                app.handle_key(key(KeyCode::Char(c)));
+            }
+        }
+        assert_eq!(app.look, Some(Pos::new(0, 0, 0)), "stopped at the corner");
+    }
+
+    #[test]
+    fn leaving_the_game_stops_looking() {
+        let (mut app, _dir) = new_app(Some(7));
+        app.handle_key(key(KeyCode::Char('V')));
+        app.show_title(None);
+        assert_eq!(app.look, None);
+        // Looking with no game is ignored rather than crashing.
+        app.on_look(LookAction::Move(nighthawk_sim::Dir::East));
+        assert_eq!(app.look, None);
     }
 }

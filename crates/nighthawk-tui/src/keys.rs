@@ -28,6 +28,17 @@ pub enum GameAction {
     /// Show or hide an overlay (`a` air, `t` heat). Only changes the view;
     /// no time passes.
     ToggleOverlay(Overlay),
+    /// Start look mode (`V`): a cursor to inspect any tile.
+    Look,
+}
+
+/// Something the player wants while in look mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LookAction {
+    /// Move the cursor one tile.
+    Move(Dir),
+    /// Leave look mode.
+    Stop,
 }
 
 /// Something the player wants on the title menu.
@@ -95,6 +106,7 @@ pub fn game_action(key: KeyEvent) -> Option<GameAction> {
         KeyCode::Char('c') => Some(GameAction::BeginClose),
         KeyCode::Char('a') => Some(GameAction::ToggleOverlay(Overlay::Air)),
         KeyCode::Char('t') => Some(GameAction::ToggleOverlay(Overlay::Heat)),
+        KeyCode::Char('V') => Some(GameAction::Look),
         code => KEYMAP
             .iter()
             .find(|(bound, _)| *bound == code)
@@ -118,6 +130,19 @@ pub fn title_action(key: KeyEvent) -> Option<TitleAction> {
             .into_iter()
             .find(|item| code == KeyCode::Char(item.hotkey()))
             .map(TitleAction::Pick),
+    }
+}
+
+/// The action for a key pressed in look mode: a movement key moves the
+/// cursor; Esc, `V` or `q` stop looking. Other keys do nothing, so a stray
+/// key can't spend time while you're only looking.
+pub fn look_action(key: KeyEvent) -> Option<LookAction> {
+    if !is_press(key) {
+        return None;
+    }
+    match key.code {
+        KeyCode::Esc | KeyCode::Char('V' | 'q') => Some(LookAction::Stop),
+        _ => direction(key).map(LookAction::Move),
     }
 }
 
@@ -248,6 +273,31 @@ mod tests {
             game_action(press(KeyCode::Char('c'))),
             Some(GameAction::BeginClose)
         );
+    }
+
+    #[test]
+    fn capital_v_starts_looking() {
+        assert_eq!(
+            game_action(press(KeyCode::Char('V'))),
+            Some(GameAction::Look)
+        );
+    }
+
+    #[test]
+    fn in_look_mode_movement_keys_move_and_esc_v_q_stop() {
+        assert_eq!(
+            look_action(press(KeyCode::Char('l'))),
+            Some(LookAction::Move(Dir::East))
+        );
+        assert_eq!(
+            look_action(press(KeyCode::Char('y'))),
+            Some(LookAction::Move(Dir::NorthWest))
+        );
+        for code in [KeyCode::Esc, KeyCode::Char('V'), KeyCode::Char('q')] {
+            assert_eq!(look_action(press(code)), Some(LookAction::Stop), "{code:?}");
+        }
+        assert_eq!(look_action(press(KeyCode::Char('.'))), None, "no waiting");
+        assert_eq!(look_action(release(KeyCode::Esc)), None);
     }
 
     #[test]

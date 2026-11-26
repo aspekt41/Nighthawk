@@ -44,7 +44,8 @@ rather than accepting a skipped step.
 ## Architecture rules (do not break)
 
 1. **The sim is pure.** No terminal, file I/O or clock in `nighthawk-sim`.
-   Front-ends read files and pass text in (`parse_map(&str)`), and pass the
+   Front-ends read files and pass text in (`parse_materials(&str)`, then
+   `parse_map(&str, &materials)`), and pass the
    seed in (`World::new(map, seed)`).
 2. **The sim is deterministic (D22).** Randomness only via `GameRng`
    (`crates/nighthawk-sim/src/rng.rs`): add a new `Stream` variant with a
@@ -137,6 +138,11 @@ precise error and exits with code 1 before entering raw mode.
   contains both, so no delimiter is safe. In tests, build the JSON with
   `format!` from a `[&str]` of rows (see `test_world()` in
   `crates/nighthawk-sim/src/world.rs` and `crates/nighthawk-tui/src/ui.rs`).
+- **Test maps and materials.** In the sim's unit tests, import
+  `crate::map_file::parse_map_for_tests as parse_map`: it parses with a
+  small test set of materials (steel by default), so test maps keep plain
+  legends like `"#": "wall"`. Integration tests and the TUI load the real
+  `data/materials.json`.
 - **`cargo test` inside a crate folder** only tests that crate. Run it from the root.
 - **Rust 2024 edition.** Clippy prefers let-chains
   (`if let A = x && let B = y { }`) over nested `if let`.

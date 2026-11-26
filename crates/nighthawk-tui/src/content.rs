@@ -8,7 +8,7 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
-use nighthawk_sim::{LoadedMap, MapError, parse_map};
+use nighthawk_sim::{LoadedMap, MapError, MaterialError, Materials, parse_map, parse_materials};
 
 /// The map a new game starts on, as a file name in `data/maps/` (no `.json`).
 pub const START_MAP: &str = "aft_ring";
@@ -19,9 +19,21 @@ const DATA_ENV: &str = "NIGHTHAWK_DATA";
 /// Anything that can stop the game from loading its content.
 #[derive(Debug)]
 pub enum LoadError {
-    NoDataDir { tried: Vec<PathBuf> },
-    Read { path: PathBuf, source: io::Error },
-    Map { path: PathBuf, source: MapError },
+    NoDataDir {
+        tried: Vec<PathBuf>,
+    },
+    Read {
+        path: PathBuf,
+        source: io::Error,
+    },
+    Map {
+        path: PathBuf,
+        source: MapError,
+    },
+    Materials {
+        path: PathBuf,
+        source: MaterialError,
+    },
 }
 
 impl fmt::Display for LoadError {
@@ -38,6 +50,7 @@ impl fmt::Display for LoadError {
                 write!(f, "could not read {}: {source}", path.display())
             }
             LoadError::Map { path, source } => write!(f, "{}: {source}", path.display()),
+            LoadError::Materials { path, source } => write!(f, "{}: {source}", path.display()),
         }
     }
 }
@@ -64,14 +77,28 @@ pub fn find_data_dir(candidates: &[PathBuf]) -> Option<&Path> {
     candidates.iter().map(PathBuf::as_path).find(|p| p.is_dir())
 }
 
-/// Loads and checks `data/maps/<map_id>.json`.
-pub fn load_map(data_dir: &Path, map_id: &str) -> Result<LoadedMap, LoadError> {
-    let path = data_dir.join("maps").join(format!("{map_id}.json"));
-    let text = fs::read_to_string(&path).map_err(|source| LoadError::Read {
-        path: path.clone(),
+/// Reads a file's text, with an error that names the file.
+fn read(path: &Path) -> Result<String, LoadError> {
+    fs::read_to_string(path).map_err(|source| LoadError::Read {
+        path: path.to_path_buf(),
         source,
-    })?;
-    parse_map(&text).map_err(|source| LoadError::Map { path, source })
+    })
+}
+
+/// Loads and checks `data/materials.json`.
+pub fn load_materials(data_dir: &Path) -> Result<Materials, LoadError> {
+    let path = data_dir.join("materials.json");
+    let text = read(&path)?;
+    parse_materials(&text).map_err(|source| LoadError::Materials { path, source })
+}
+
+/// Loads and checks `data/maps/<map_id>.json`, along with the materials
+/// its tiles are made of.
+pub fn load_map(data_dir: &Path, map_id: &str) -> Result<LoadedMap, LoadError> {
+    let materials = load_materials(data_dir)?;
+    let path = data_dir.join("maps").join(format!("{map_id}.json"));
+    let text = read(&path)?;
+    parse_map(&text, &materials).map_err(|source| LoadError::Map { path, source })
 }
 
 /// Finds the data folder and loads the map every new game starts on.
@@ -144,9 +171,20 @@ mod tests {
         assert!(err.to_string().contains("no_such_map.json"));
     }
 
+    /// A temporary data folder with the real materials file in it.
+    fn data_dir_with_materials() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        fs::copy(
+            repo_data_dir().join("materials.json"),
+            dir.path().join("materials.json"),
+        )
+        .unwrap();
+        dir
+    }
+
     #[test]
     fn broken_map_file_names_the_file_in_the_error() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = data_dir_with_materials();
         fs::create_dir(dir.path().join("maps")).unwrap();
         fs::write(dir.path().join("maps/bad.json"), r#"{ "id": "bad" }"#).unwrap();
 
@@ -154,6 +192,29 @@ mod tests {
 
         assert!(matches!(err, LoadError::Map { .. }));
         assert!(err.to_string().contains("bad.json"));
+    }
+
+    #[test]
+    fn missing_or_broken_materials_name_the_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = load_map(dir.path(), "aft_ring").unwrap_err();
+        assert!(matches!(missing, LoadError::Read { .. }));
+        assert!(missing.to_string().contains("materials.json"));
+
+        fs::write(dir.path().join("materials.json"), "{}").unwrap();
+        let broken = load_map(dir.path(), "aft_ring").unwrap_err();
+        assert!(matches!(broken, LoadError::Materials { .. }));
+        assert!(
+            broken
+                .to_string()
+                .contains("materials.json: invalid materials JSON")
+        );
+    }
+
+    #[test]
+    fn the_real_materials_load() {
+        let materials = load_materials(&repo_data_dir()).unwrap();
+        assert!(materials.index_of("nanocarbon_alloy").is_some());
     }
 
     #[test]

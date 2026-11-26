@@ -7,6 +7,7 @@ use crate::calendar::{DateTime, SHIP_START};
 use crate::hash::Fnv64;
 use crate::map::{Map, Tile};
 use crate::map_file::LoadedMap;
+use crate::material::Material;
 use crate::pos::{Dir, Pos, Vertical};
 use crate::rng::{GameRng, Stream};
 
@@ -132,6 +133,11 @@ pub struct World {
     breath: u32,
     /// The player's warmth meter, 0 to [`WARMTH_FULL`].
     warmth: u32,
+    /// Every material the ship can be made of. Each tile's material is an
+    /// index into this list. It's a copy of `materials.json` taken when
+    /// the game began, saved with the game, so editing the data file never
+    /// changes a game in progress (decision D35).
+    materials: Vec<Material>,
 }
 
 impl World {
@@ -147,6 +153,7 @@ impl World {
             ambient_rng: GameRng::new(seed, Stream::Ambient),
             breath: BREATH_FULL,
             warmth: WARMTH_FULL,
+            materials: loaded.materials,
         }
     }
 
@@ -165,6 +172,17 @@ impl World {
 
     pub fn map(&self) -> &Map {
         &self.map
+    }
+
+    /// What the tile at `p` is made of, or `None` off the map.
+    pub fn material_at(&self, p: Pos) -> Option<&Material> {
+        let index = self.map.material_index(p)?;
+        self.materials.get(usize::from(index))
+    }
+
+    /// Every material in this game, in the order tiles refer to them.
+    pub fn materials(&self) -> &[Material] {
+        &self.materials
     }
 
     pub fn player(&self) -> Pos {
@@ -375,6 +393,13 @@ impl World {
                 self.breath
             ));
         }
+        let highest = usize::from(self.map.highest_material());
+        if highest >= self.materials.len() {
+            return Err(format!(
+                "a tile is made of material {highest}, but there are only {}",
+                self.materials.len()
+            ));
+        }
         if self.warmth > WARMTH_FULL {
             return Err(format!(
                 "warmth {} is over the full {WARMTH_FULL}",
@@ -412,7 +437,11 @@ impl World {
             .u64(self.seed)
             .u64(self.ambient_rng.fingerprint())
             .u64(u64::from(self.breath))
-            .u64(u64::from(self.warmth));
+            .u64(u64::from(self.warmth))
+            .u64(self.materials.len() as u64);
+        for material in &self.materials {
+            material.hash_into(&mut h);
+        }
         h.finish()
     }
 }
@@ -420,7 +449,7 @@ impl World {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::map_file::parse_map;
+    use crate::map_file::parse_map_for_tests as parse_map;
 
     const TEST_SEED: u64 = 1234;
 
@@ -1193,5 +1222,33 @@ mod tests {
             ..test_world()
         };
         assert_ne!(test_world().state_hash(), b.state_hash());
+    }
+
+    // --- Materials -----------------------------------------------------------
+
+    #[test]
+    fn every_tile_is_made_of_a_material_from_the_list() {
+        let world = test_world();
+        let wall = world.material_at(Pos::new(0, 0, 0)).unwrap();
+        assert_eq!(wall.id, "steel");
+        assert_eq!(world.materials().len(), 2);
+        assert_eq!(world.material_at(Pos::new(-1, 0, 0)), None);
+    }
+
+    #[test]
+    fn a_tile_made_of_a_missing_material_is_inconsistent() {
+        let mut world = test_world();
+        world.map.set_material(Pos::new(0, 0, 0), 2);
+        assert_eq!(
+            world.check_consistent(),
+            Err("a tile is made of material 2, but there are only 2".to_string())
+        );
+    }
+
+    #[test]
+    fn the_material_list_is_part_of_the_state_hash() {
+        let mut changed = test_world();
+        changed.materials[1].hardness += 1;
+        assert_ne!(test_world().state_hash(), changed.state_hash());
     }
 }

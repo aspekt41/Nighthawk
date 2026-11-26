@@ -7,6 +7,40 @@ The game looks for this folder in three places, in order:
 `$NIGHTHAWK_DATA`, then `./data`, then the repository's `data/` as it was when
 the game was built.
 
+## Materials (`materials.json`)
+
+Every tile is a *shape* (from the map) made of a *material* (from here).
+Each material has real physical properties, in whole numbers:
+
+```json
+{
+  "materials": [
+    { "id": "steel", "name": "Steel",
+      "description": "Structural steel: deck plating, ladders and bulkheads.",
+      "colour": "grey", "density": 7850, "melting_point": 1450,
+      "specific_heat": 490, "thermal_conductivity": 45, "hardness": 150,
+      "cut_by": { "LASER": 2 } }
+  ],
+  "defaults": { "floor": "steel", "wall": "steel", "...": "one per shape" }
+}
+```
+
+| Field | Meaning |
+|---|---|
+| `id` | How maps refer to it. Must be unique. |
+| `name`, `description` | Shown in look mode (`V`). |
+| `colour` | Walls made of it are drawn in this colour: `white`, `grey`, `dark_grey`, `red`, `yellow`, `green`, `cyan`, `blue`, `magenta`. |
+| `density` | kg/m³ |
+| `melting_point` | °C |
+| `specific_heat` | J/(kg·K) |
+| `thermal_conductivity` | W/(m·K) |
+| `hardness` | Vickers hardness (HV) |
+| `cut_by` | Optional. Tool qualities that cut it, with the level each needs (1 to 10); any one is enough. Leave it out and nothing can cut it. Qualities today: `LASER`. |
+| `defaults` | The material each shape is made of unless a map's legend says otherwise. Every shape needs one. |
+
+Mistakes are reported precisely: a duplicate id, a level out of range, a
+shape with no default, or a default naming a material that doesn't exist.
+
 ## Maps (`maps/*.json`)
 
 Each deck is drawn as rows of characters. The `legend` says which tile each
@@ -35,7 +69,7 @@ exactly once.
 |---|---|
 | `id` | Must match the file name (`closet.json` → `"closet"`) |
 | `name` | Shown as the map panel's title |
-| `legend` | One character → tile name. Tiles today: `wall`, `floor`, `stairs_up`, `stairs_down`, `door_closed`, `door_open`, `hull_crack` (a 4 cm² leak to space), `hull_breach` (a 400 cm² hole to space). `@` is reserved. |
+| `legend` | One character → a tile shape, made of that shape's default material (see [Materials](#materials-materialsjson)): `"#": "wall"`. Or a shape and a material: `"H": { "tile": "wall", "material": "nanocarbon_alloy" }`. Shapes today: `wall`, `floor`, `stairs_up`, `stairs_down`, `door_closed`, `door_open`, `hull_crack` (a 4 cm² leak to space), `hull_breach` (a 400 cm² hole to space). `@` is reserved; the player starts on default floor. |
 | `decks` | Listed bottom to top: the first is deck 0. All decks must be the same size. |
 | `decks[].name` | Optional. Shown as the map panel's title on that deck. Without it the deck is "Deck 0", "Deck 1" and so on. |
 | `decks[].pressure` | Optional. The deck's starting air pressure as a percentage of normal ship air (101.3 kPa: 21% O2, 79% N2, a trace of CO2), from 0 (vacuum) to 200. Default 100. Each second, air evens out across every connected open space (joined by open floor, open doors and ladders), so a deck at 60% next to a full one shares their air as soon as time passes. |

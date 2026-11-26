@@ -12,7 +12,11 @@ use crate::pos::{Dir, Pos, Vertical};
 ///
 /// `Deserialize` lets map files name tiles in JSON. `rename_all` means the
 /// JSON spelling is lowercase: `"wall"`, `"floor"`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// A tile is only the *shape* of what's there. What it's made of is its
+/// material (see `material.rs`). `Ord` and `Hash` let shapes be map keys,
+/// as in the materials file's list of defaults.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Tile {
     Floor,
@@ -36,6 +40,32 @@ pub enum Tile {
 }
 
 impl Tile {
+    /// Every shape, in the order they're listed above.
+    pub const ALL: [Tile; 8] = [
+        Tile::Floor,
+        Tile::Wall,
+        Tile::StairsUp,
+        Tile::StairsDown,
+        Tile::DoorClosed,
+        Tile::DoorOpen,
+        Tile::HullCrack,
+        Tile::HullBreach,
+    ];
+
+    /// The shape's name in data files, like `"stairs_up"`.
+    pub fn json_name(self) -> &'static str {
+        match self {
+            Tile::Floor => "floor",
+            Tile::Wall => "wall",
+            Tile::StairsUp => "stairs_up",
+            Tile::StairsDown => "stairs_down",
+            Tile::DoorClosed => "door_closed",
+            Tile::DoorOpen => "door_open",
+            Tile::HullCrack => "hull_crack",
+            Tile::HullBreach => "hull_breach",
+        }
+    }
+
     pub fn is_walkable(self) -> bool {
         match self {
             Tile::Floor | Tile::StairsUp | Tile::StairsDown | Tile::DoorOpen => true,
@@ -168,6 +198,9 @@ pub struct Map {
     /// Heat on the ship plus heat lost always equals the heat the ship
     /// started with.
     heat_lost: u64,
+    /// What each tile is made of, in the same order as `tiles`: an index
+    /// into the world's list of materials (decision D35).
+    made_of: Vec<u16>,
 }
 
 impl Map {
@@ -187,7 +220,28 @@ impl Map {
             vented: [0; 3],
             heat: vec![0; len],
             heat_lost: 0,
+            made_of: vec![0; len],
         }
+    }
+
+    /// What the tile at `p` is made of: an index into the world's list of
+    /// materials. `None` if `p` is off the map.
+    pub fn material_index(&self, p: Pos) -> Option<u16> {
+        self.index(p).map(|i| self.made_of[i])
+    }
+
+    /// Sets what the tile at `p` is made of. Positions off the map are
+    /// ignored.
+    pub(crate) fn set_material(&mut self, p: Pos, material: u16) {
+        if let Some(i) = self.index(p) {
+            self.made_of[i] = material;
+        }
+    }
+
+    /// The highest material index any tile uses, for checking a saved map
+    /// against its list of materials.
+    pub(crate) fn highest_material(&self) -> u16 {
+        self.made_of.iter().copied().max().unwrap_or(0)
     }
 
     /// The air in the tile at `p`, or `None` if `p` is off the map.
@@ -268,11 +322,14 @@ impl Map {
         }
         let p = self.pos_of(i);
         let sides = [Dir::North, Dir::East, Dir::South, Dir::West].map(|d| p.step(d));
-        let is_hull = |q: Pos| {
-            let on_border = q.x == 0 || q.y == 0 || q.x == self.width - 1 || q.y == self.height - 1;
-            on_border && self.get(q).is_some_and(|tile| !tile.holds_air())
-        };
-        sides.into_iter().filter(|&q| is_hull(q)).count() as u64
+        sides.into_iter().filter(|&q| self.is_outer_hull(q)).count() as u64
+    }
+
+    /// Whether `p` is part of the outer hull: a solid tile on the map's
+    /// border, with deep space behind it.
+    pub fn is_outer_hull(&self, p: Pos) -> bool {
+        let on_border = p.x == 0 || p.y == 0 || p.x == self.width - 1 || p.y == self.height - 1;
+        on_border && self.get(p).is_some_and(|tile| !tile.holds_air())
     }
 
     /// Fills every air-holding tile on deck `z` with `mix`. Used when a map
@@ -502,6 +559,12 @@ impl Map {
                 self.heat.len()
             ));
         }
+        if self.made_of.len() != self.tiles.len() {
+            return Err(format!(
+                "map has {found} tiles but materials for {}",
+                self.made_of.len()
+            ));
+        }
         self.check_heat()?;
         self.check_stairs().map_err(|e| e.to_string())
     }
@@ -552,6 +615,9 @@ impl Map {
             h.u64(lost);
         }
         h.u64(self.heat_lost);
+        for &material in &self.made_of {
+            h.u64(u64::from(material));
+        }
         for &heat in &self.heat {
             h.u64(heat);
         }
@@ -1207,6 +1273,19 @@ mod heat_tests {
     }
 
     #[test]
+    fn the_outer_hull_is_the_solid_border() {
+        let mut map = room();
+        assert!(map.is_outer_hull(Pos::new(0, 2, 0)));
+        assert!(!map.is_outer_hull(Pos::new(2, 2, 0)), "floor inside");
+        assert!(!map.is_outer_hull(Pos::new(9, 9, 9)), "off the map");
+        map.set(Pos::new(0, 2, 0), Tile::Floor);
+        assert!(
+            !map.is_outer_hull(Pos::new(0, 2, 0)),
+            "open border tiles aren't hull"
+        );
+    }
+
+    #[test]
     fn inner_bulkheads_are_not_hull() {
         // A wall inside the map has ship on both sides, not space.
         let mut map = Map::filled(7, 3, 1, Tile::Wall);
@@ -1294,5 +1373,68 @@ mod heat_tests {
         c.heat_lost = 1;
         assert_ne!(hash(&a), hash(&b));
         assert_ne!(hash(&a), hash(&c));
+    }
+}
+
+#[cfg(test)]
+mod material_tests {
+    use super::*;
+
+    #[test]
+    fn every_shape_is_listed_once_with_its_data_file_name() {
+        let names: Vec<&str> = Tile::ALL.iter().map(|t| t.json_name()).collect();
+        assert_eq!(
+            names,
+            [
+                "floor",
+                "wall",
+                "stairs_up",
+                "stairs_down",
+                "door_closed",
+                "door_open",
+                "hull_crack",
+                "hull_breach"
+            ]
+        );
+        // The JSON spelling matches what serde reads and writes.
+        for tile in Tile::ALL {
+            let json = serde_json::to_string(&tile).unwrap();
+            assert_eq!(json, format!("\"{}\"", tile.json_name()));
+        }
+    }
+
+    #[test]
+    fn tiles_start_as_material_0_and_can_be_changed() {
+        let mut map = Map::filled(2, 1, 1, Tile::Wall);
+        let p = Pos::new(1, 0, 0);
+        assert_eq!(map.material_index(p), Some(0));
+        map.set_material(p, 3);
+        map.set_material(Pos::new(9, 9, 9), 3); // off the map: ignored
+        assert_eq!(map.material_index(p), Some(3));
+        assert_eq!(map.highest_material(), 3);
+        assert_eq!(map.material_index(Pos::new(5, 0, 0)), None);
+    }
+
+    #[test]
+    fn mismatched_material_data_is_inconsistent() {
+        let mut map = Map::filled(2, 1, 1, Tile::Wall);
+        map.made_of.pop();
+        assert_eq!(
+            map.check_consistent(),
+            Err("map has 2 tiles but materials for 1".to_string())
+        );
+    }
+
+    #[test]
+    fn materials_are_part_of_the_state_hash() {
+        let hash = |m: &Map| {
+            let mut h = Fnv64::new();
+            m.hash_into(&mut h);
+            h.finish()
+        };
+        let a = Map::filled(2, 1, 1, Tile::Wall);
+        let mut b = a.clone();
+        b.set_material(Pos::new(0, 0, 0), 1);
+        assert_ne!(hash(&a), hash(&b));
     }
 }

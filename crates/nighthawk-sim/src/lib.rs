@@ -24,6 +24,7 @@ mod hash;
 mod heat;
 mod map;
 mod map_file;
+mod material;
 mod pos;
 mod rng;
 mod save;
@@ -41,6 +42,9 @@ pub use heat::{
 };
 pub use map::{Map, StairsError, Tile};
 pub use map_file::{LoadedMap, MapError, parse_map};
+pub use material::{
+    Colour, MAX_QUALITY_LEVEL, Material, MaterialError, Materials, Quality, parse_materials,
+};
 pub use pos::{Dir, Pos, Vertical};
 pub use rng::{GameRng, Stream};
 pub use save::{SAVE_FORMAT, SAVE_VERSION, SaveError, load_from_str, save_to_string};
