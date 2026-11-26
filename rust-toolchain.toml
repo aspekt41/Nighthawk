@@ -1,0 +1,7 @@
+# Pins the Rust toolchain so everyone (people, CI and agents) builds with the
+# same compiler. rustup reads this file and installs the version on first use.
+# To upgrade: change `channel`, run scripts/check.sh, and commit both together.
+[toolchain]
+channel = "1.97"
+components = ["rustfmt", "clippy", "llvm-tools-preview"]
+profile = "minimal"

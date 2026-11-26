@@ -19,6 +19,9 @@ cargo clippy --workspace --all-targets -- -D warnings
 step "Tests"
 cargo test --workspace --quiet
 
+step "Docs (rustdoc; warnings are errors)"
+RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --quiet
+
 step "Coverage (cargo-llvm-cov; at least 90% of lines)"
 if command -v cargo-llvm-cov >/dev/null; then
     cargo llvm-cov --workspace --summary-only --fail-under-lines 90

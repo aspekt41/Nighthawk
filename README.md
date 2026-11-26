@@ -30,7 +30,7 @@ The same documents are also published as a commentable Claude doc, *Nighthawk: R
 
 ## Running it
 
-You need a Rust toolchain (`rustup`, Rust 1.85+ for the 2024 edition).
+You need [rustup](https://rustup.rs). The Rust version is pinned in `rust-toolchain.toml` and installs itself on first use. Full setup, including Debian packages and tmux settings, is in [TOOLING.md](TOOLING.md).
 
 ```sh
 cargo run -p nighthawk-tui     # play
@@ -50,29 +50,20 @@ set -as terminal-features ',xterm*:sync'            # synchronized output (tmux 
 
 ## Quality checks
 
-One command runs every check, in order, and stops at the first failure:
+One command runs every check (formatting, lints, tests, docs, coverage of at
+least 90%, and cyclomatic complexity of at most 10) and stops at the first failure:
 
 ```sh
 scripts/check.sh
 ```
 
-| Check | Tool | Gate |
-|---|---|---|
-| Formatting | `cargo fmt` (rustfmt) | Code must already be formatted |
-| Lints | `cargo clippy` | No warnings at all, including complexity lints (`too_many_lines` over 60, `excessive_nesting` over 4) |
-| Tests | `cargo test` | Every test passes, including loading every file in `data/` |
-| Coverage | [`cargo-llvm-cov`](https://github.com/taiki-e/cargo-llvm-cov) | At least 90% of lines |
-| Cyclomatic complexity | [`lizard`](https://github.com/terryyin/lizard) | No function over 10 |
+How to install and use each tool is in [TOOLING.md](TOOLING.md).
 
-The last two need a one-time install:
+## Contributing
 
-```sh
-rustup component add llvm-tools-preview
-cargo install cargo-llvm-cov
-pipx install lizard          # or: pip install lizard
-```
-
-For a line-by-line coverage report in your browser, run `cargo llvm-cov --open`.
+- [CONTRIBUTING.md](CONTRIBUTING.md): the rules, workflow and definition of done, for everyone
+- [TOOLING.md](TOOLING.md): installing and using cargo, rustfmt, clippy, tests, coverage and complexity tools
+- [AGENTS.md](AGENTS.md): instructions for AI coding agents ([CLAUDE.md](CLAUDE.md) imports it)
 
 ## Layout
 
@@ -83,4 +74,5 @@ crates/
 data/              game content as JSON (see data/README.md)
 docs/              research, scoping and the decision log
 scripts/check.sh   every quality check in one command
+rust-toolchain.toml  the pinned Rust version
 ```
