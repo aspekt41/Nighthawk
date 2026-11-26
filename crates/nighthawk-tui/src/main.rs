@@ -9,7 +9,8 @@ use std::io;
 use std::process::ExitCode;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use args::{Parsed, USAGE};
+use args::{Options, Parsed, USAGE};
+use saves::SaveSlot;
 
 use nighthawk_sim::{Command, Dir, Event, Sound, World};
 use ratatui::crossterm::event::{
@@ -21,6 +22,7 @@ use ratatui::{DefaultTerminal, Frame};
 
 mod args;
 mod content;
+mod saves;
 mod ui;
 
 /// How many log lines to keep. The log panel shows as many as fit.
@@ -38,12 +40,12 @@ fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
-    let seed = options.seed.unwrap_or_else(seed_from_clock);
+    let slot = saves::default_save_dir().map(|dir| SaveSlot::in_dir(&dir));
 
-    // Load content before touching the terminal, so a bad map file prints a
-    // normal error message instead of garbling the screen.
-    let world = match content::load_start_world(seed) {
-        Ok(world) => world,
+    // Load content and saves before touching the terminal, so a bad file
+    // prints a normal error message instead of garbling the screen.
+    let app = match start(options, slot) {
+        Ok(app) => app,
         Err(e) => {
             eprintln!("nighthawk: {e}");
             return ExitCode::FAILURE;
@@ -53,13 +55,30 @@ fn main() -> ExitCode {
     // `ratatui::run` switches the terminal into raw mode and the alternate
     // screen, runs our closure, and restores the terminal afterwards, even if
     // the game panics.
-    match ratatui::run(|terminal| App::new(world).run(terminal)) {
+    match ratatui::run(|terminal| app.run(terminal)) {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             eprintln!("nighthawk: terminal error: {e}");
             ExitCode::FAILURE
         }
     }
+}
+
+/// Builds the app: resumes the saved game if there is one, otherwise starts
+/// a new game. `--seed` always starts a new game, because it asks for a
+/// specific ship.
+fn start(options: Options, slot: Option<SaveSlot>) -> Result<App, String> {
+    if options.seed.is_none()
+        && let Some(slot) = &slot
+        && let Some(world) = slot
+            .load()
+            .map_err(|e| format!("{e}\nMove or delete that file to start a new game."))?
+    {
+        return Ok(App::resumed(world, Some(slot.clone())));
+    }
+    let seed = options.seed.unwrap_or_else(seed_from_clock);
+    let world = content::load_start_world(seed).map_err(|e| e.to_string())?;
+    Ok(App::new_game(world, slot))
 }
 
 /// A seed for a new game when the player didn't pick one: the current time
@@ -75,26 +94,53 @@ fn seed_from_clock() -> u64 {
 /// leaves room for UI-only actions (open inventory, look mode) later.
 enum Action {
     Sim(Command),
+    Save,
+    /// Save, then quit. If saving fails, stay so the player sees why.
     Quit,
+    QuitWithoutSaving,
 }
 
 pub struct App {
     world: World,
     log: Vec<String>,
     quit: bool,
+    /// Where the game is saved, or `None` if this machine has no save folder.
+    slot: Option<SaveSlot>,
 }
 
 impl App {
-    fn new(world: World) -> Self {
+    /// A fresh game, just started.
+    fn new_game(world: World, slot: Option<SaveSlot>) -> Self {
         let seed = world.seed();
+        let log = vec![
+            format!("Seed {seed}. Run with --seed {seed} to replay this ship."),
+            "You wake in the stasis bay. The air is thin and cold.".into(),
+            "Emergency lighting flickers. Nothing else is moving.".into(),
+        ];
+        Self::with_log(world, slot, log)
+    }
+
+    /// A game loaded from the save slot.
+    fn resumed(world: World, slot: Option<SaveSlot>) -> Self {
+        let log = vec![format!(
+            "Game loaded: turn {}, seed {}. The ship is as you left it.",
+            world.turn(),
+            world.seed()
+        )];
+        Self::with_log(world, slot, log)
+    }
+
+    fn with_log(world: World, slot: Option<SaveSlot>, mut log: Vec<String>) -> Self {
+        if slot.is_none() {
+            log.push(
+                "No save folder found (set NIGHTHAWK_SAVE_DIR): this game won't be saved.".into(),
+            );
+        }
         Self {
             world,
-            log: vec![
-                format!("Seed {seed}. Run with --seed {seed} to replay this ship."),
-                "You wake in the stasis bay. The air is thin and cold.".into(),
-                "Emergency lighting flickers. Nothing else is moving.".into(),
-            ],
+            log,
             quit: false,
+            slot,
         }
     }
 
@@ -115,7 +161,11 @@ impl App {
 
     fn handle(&mut self, action: Action) {
         match action {
-            Action::Quit => self.quit = true,
+            Action::Save => {
+                self.save_game();
+            }
+            Action::Quit => self.quit = self.save_game(),
+            Action::QuitWithoutSaving => self.quit = true,
             Action::Sim(command) => {
                 // Keep only the events worth a log line, then log them.
                 let lines: Vec<String> = self
@@ -127,6 +177,26 @@ impl App {
                 for line in lines {
                     self.push_log(line);
                 }
+            }
+        }
+    }
+
+    /// Saves to the slot and logs the result. Returns `false` only if a save
+    /// was attempted and failed. With no save folder there's nothing to do.
+    fn save_game(&mut self) -> bool {
+        let Some(slot) = &self.slot else {
+            return true;
+        };
+        match slot.save(&self.world) {
+            Ok(()) => {
+                let line = format!("Game saved to {}.", slot.path().display());
+                self.push_log(line);
+                true
+            }
+            Err(e) => {
+                self.push_log(format!("Could not save: {e}"));
+                self.push_log("Press Q to quit without saving.".into());
+                false
             }
         }
     }
@@ -185,8 +255,8 @@ fn action_for(key: KeyEvent) -> Option<Action> {
     if key.kind != KeyEventKind::Press {
         return None;
     }
-    if is_quit(key) {
-        return Some(Action::Quit);
+    if let Some(action) = game_action(key) {
+        return Some(action);
     }
     KEYMAP
         .iter()
@@ -194,10 +264,18 @@ fn action_for(key: KeyEvent) -> Option<Action> {
         .map(|&(_, command)| Action::Sim(command))
 }
 
-/// `q`, or Ctrl-C as an escape hatch.
-fn is_quit(key: KeyEvent) -> bool {
+/// Keys that act on the game itself rather than inside it: `S` saves, `q`
+/// (or Ctrl-C, the escape hatch) saves and quits, `Q` quits without saving.
+/// Saving keys are capitals so they're hard to hit by accident.
+fn game_action(key: KeyEvent) -> Option<Action> {
     let ctrl_c = key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c');
-    ctrl_c || key.code == KeyCode::Char('q')
+    match key.code {
+        _ if ctrl_c => Some(Action::Quit),
+        KeyCode::Char('q') => Some(Action::Quit),
+        KeyCode::Char('Q') => Some(Action::QuitWithoutSaving),
+        KeyCode::Char('S') => Some(Action::Save),
+        _ => None,
+    }
 }
 
 /// Turns a sim event into a log line. Ordinary steps aren't worth logging.
@@ -335,10 +413,155 @@ mod tests {
     }
 
     fn test_app() -> App {
-        App::new(content::load_start_world(TEST_SEED).expect("starting map loads"))
+        App::new_game(
+            content::load_start_world(TEST_SEED).expect("starting map loads"),
+            None,
+        )
     }
 
     const TEST_SEED: u64 = 1234;
+
+    /// A new game that saves into a temporary folder. The folder is deleted
+    /// when the returned `TempDir` is dropped, so keep it alive in the test.
+    fn app_with_slot() -> (App, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        let slot = SaveSlot::in_dir(dir.path());
+        let world = content::load_start_world(TEST_SEED).unwrap();
+        (App::new_game(world, Some(slot)), dir)
+    }
+
+    fn slot_in(dir: &tempfile::TempDir) -> SaveSlot {
+        SaveSlot::in_dir(dir.path())
+    }
+
+    fn last_log(app: &App) -> &str {
+        app.log.last().map(String::as_str).unwrap_or("")
+    }
+
+    #[test]
+    fn capital_s_saves_and_capital_q_quits_without_saving() {
+        assert!(matches!(
+            action_for(press(KeyCode::Char('S'))),
+            Some(Action::Save)
+        ));
+        assert!(matches!(
+            action_for(press(KeyCode::Char('Q'))),
+            Some(Action::QuitWithoutSaving)
+        ));
+    }
+
+    #[test]
+    fn save_writes_the_game_and_keeps_playing() {
+        let (mut app, dir) = app_with_slot();
+        app.handle(Action::Sim(Command::Wait));
+
+        app.handle(Action::Save);
+
+        assert!(!app.quit);
+        assert!(
+            last_log(&app).starts_with("Game saved to "),
+            "{}",
+            last_log(&app)
+        );
+        assert!(last_log(&app).ends_with("save.json."));
+        let saved = slot_in(&dir).load().unwrap().unwrap();
+        assert_eq!(saved, app.world);
+    }
+
+    #[test]
+    fn quit_saves_then_stops() {
+        let (mut app, dir) = app_with_slot();
+        app.handle(Action::Sim(Command::Move(Dir::East)));
+
+        app.handle(Action::Quit);
+
+        assert!(app.quit);
+        assert_eq!(slot_in(&dir).load().unwrap().map(|w| w.turn()), Some(1));
+    }
+
+    #[test]
+    fn a_failed_save_keeps_the_game_open_and_explains() {
+        let dir = tempfile::tempdir().unwrap();
+        let blocker = dir.path().join("file_not_folder");
+        std::fs::write(&blocker, "").unwrap();
+        let world = content::load_start_world(TEST_SEED).unwrap();
+        let mut app = App::new_game(world, Some(SaveSlot::in_dir(&blocker)));
+
+        app.handle(Action::Quit);
+
+        assert!(!app.quit, "must not quit when the save failed");
+        assert!(app.log.iter().any(|l| l.starts_with("Could not save:")));
+        assert_eq!(last_log(&app), "Press Q to quit without saving.");
+
+        app.handle(Action::QuitWithoutSaving);
+        assert!(app.quit);
+    }
+
+    #[test]
+    fn without_a_save_folder_the_game_says_so_and_quits_freely() {
+        let mut app = test_app();
+        assert!(app.log.iter().any(|l| l.contains("won't be saved")));
+        app.handle(Action::Save);
+        app.handle(Action::Quit);
+        assert!(app.quit);
+    }
+
+    #[test]
+    fn start_begins_a_new_game_when_there_is_no_save() {
+        let dir = tempfile::tempdir().unwrap();
+        let app = start(Options { seed: None }, Some(slot_in(&dir))).unwrap();
+        assert_eq!(app.world.turn(), 0);
+        assert!(app.log[0].starts_with("Seed "));
+    }
+
+    #[test]
+    fn start_resumes_a_saved_game() {
+        let (mut app, dir) = app_with_slot();
+        for _ in 0..5 {
+            app.handle(Action::Sim(Command::Wait));
+        }
+        app.handle(Action::Save);
+
+        let resumed = start(Options { seed: None }, Some(slot_in(&dir))).unwrap();
+
+        assert_eq!(resumed.world, app.world);
+        assert_eq!(
+            resumed.log[0],
+            "Game loaded: turn 5, seed 1234. The ship is as you left it."
+        );
+    }
+
+    #[test]
+    fn start_with_a_seed_ignores_the_save() {
+        let (mut app, dir) = app_with_slot();
+        app.handle(Action::Sim(Command::Wait));
+        app.handle(Action::Save);
+
+        let fresh = start(Options { seed: Some(77) }, Some(slot_in(&dir))).unwrap();
+
+        assert_eq!(fresh.world.turn(), 0);
+        assert_eq!(fresh.world.seed(), 77);
+    }
+
+    #[test]
+    fn start_refuses_a_damaged_save_and_says_what_to_do() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(slot_in(&dir).path(), "{ broken").unwrap();
+        let err = start(Options { seed: None }, Some(slot_in(&dir)))
+            .err()
+            .unwrap();
+        assert!(
+            err.contains("save.json") && err.contains("Move or delete"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn start_without_a_save_folder_still_plays() {
+        let app = start(Options { seed: Some(3) }, None).unwrap();
+        assert_eq!(app.world.seed(), 3);
+        assert!(app.slot.is_none());
+    }
 
     #[test]
     fn quit_action_stops_the_game() {
@@ -412,7 +635,7 @@ mod tests {
             TEST_SEED,
         )
         .unwrap();
-        let mut app = App::new(world);
+        let mut app = App::new_game(world, None);
         for i in 0..LOG_LIMIT + 10 {
             app.push_log(format!("line {i}"));
         }

@@ -38,7 +38,12 @@ cargo run -p nighthawk-tui -- --seed 42     # replay a specific ship
 cargo test                                  # run all tests
 ```
 
-Controls: arrows, `hjkl` + `yubn` (vi keys) or the numpad to move; `.` or `5` to wait; `q` to quit.
+Controls: arrows, `hjkl` + `yubn` (vi keys) or the numpad to move; `.` or `5` to wait;
+`S` to save; `q` to save and quit; `Q` to quit without saving.
+
+The game saves to one slot: `~/.local/share/nighthawk/save.json` on Linux,
+`~/Library/Application Support/nighthawk/save.json` on macOS, or the folder in
+`$NIGHTHAWK_SAVE_DIR`. Starting the game resumes the save; `--seed` starts a new game.
 Time only passes when you act, so it's safe to leave running in tmux. The seed is shown in the sidebar and in the first log line.
 
 Recommended `~/.tmux.conf` lines for the primary setup (macOS terminal → SSH → Debian → tmux):

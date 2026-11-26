@@ -101,7 +101,9 @@ fn sidebar(world: &World) -> Paragraph<'static> {
         Line::styled("move  arrows hjkl", dim),
         Line::styled("      yubn numpad", dim),
         Line::styled("wait  . or 5", dim),
-        Line::styled("quit  q", dim),
+        Line::styled("save  S", dim),
+        Line::styled("quit  q (saves)", dim),
+        Line::styled("      Q (no save)", dim),
     ])
     .block(Block::bordered().title(" Status "))
 }
@@ -170,7 +172,7 @@ mod tests {
 
     #[test]
     fn whole_screen_shows_map_status_and_log() {
-        let app = App::new(test_world());
+        let app = App::new_game(test_world(), None);
         let screen = draw_screen(&app);
         assert!(
             screen.contains(" T "),
@@ -184,7 +186,7 @@ mod tests {
 
     #[test]
     fn log_panel_shows_the_newest_lines() {
-        let mut app = App::new(test_world());
+        let mut app = App::new_game(test_world(), None);
         for i in 0..20 {
             app.push_log(format!("entry {i}"));
         }

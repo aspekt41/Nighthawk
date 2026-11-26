@@ -103,12 +103,18 @@ owner's sessions, and never run `tmux kill-server`:
 
 ```sh
 cargo build -p nighthawk-tui
-tmux -L nhtest new-session -d -s nh -x 100 -y 30 "./target/debug/nighthawk-tui --seed 42"
+tmux -L nhtest new-session -d -s nh -x 100 -y 30 \
+  "NIGHTHAWK_SAVE_DIR=/tmp/nh-saves ./target/debug/nighthawk-tui --seed 42"
 sleep 1
 tmux -L nhtest send-keys -t nh l l k .   # keys: right, right, up, wait
 tmux -L nhtest capture-pane -t nh -p     # read the screen
 tmux -L nhtest send-keys -t nh q         # quit; the session ends with the game
 ```
+
+**Always set `NIGHTHAWK_SAVE_DIR` to a scratch folder** when running the
+game. Without it, quitting saves over the owner's real game. Tests must use
+temporary folders too (`tempfile::tempdir()` with `SaveSlot::in_dir`), never
+the default save folder.
 
 Pass `--seed` so the screen is reproducible: the same seed and keys give a
 byte-identical `capture-pane`, which is an easy end-to-end determinism check.

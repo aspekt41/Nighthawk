@@ -98,6 +98,10 @@ cargo check --workspace           # type-check only: the fastest way to see erro
   (`cargo clean`).
 - The game reads content from `data/`. To point it somewhere else, set
   `NIGHTHAWK_DATA=/path/to/data`.
+- Saves go to `~/.local/share/nighthawk/save.json` (Linux) or
+  `~/Library/Application Support/nighthawk/save.json` (macOS). To keep test
+  runs away from your real save, set `NIGHTHAWK_SAVE_DIR=/tmp/nh-saves`.
+  Save files are readable JSON, so you can open one to see what was saved.
 - If the game ever crashes and leaves your terminal in a strange state, type
   `reset` and press Enter.
 
@@ -292,7 +296,7 @@ private tmux socket (`-L nhtest`) keeps it separate from your own sessions:
 
 ```sh
 cargo build -p nighthawk-tui
-tmux -L nhtest new-session -d -s nh -x 100 -y 30 "./target/debug/nighthawk-tui --seed 42"
+tmux -L nhtest new-session -d -s nh -x 100 -y 30 "NIGHTHAWK_SAVE_DIR=/tmp/nh-saves ./target/debug/nighthawk-tui --seed 42"
 tmux -L nhtest send-keys -t nh l l k .      # press keys: right, right, up, wait
 tmux -L nhtest capture-pane -t nh -p        # print what's on screen
 tmux -L nhtest send-keys -t nh q            # quit
