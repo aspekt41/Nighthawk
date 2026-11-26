@@ -1,6 +1,6 @@
 //! The words the game shows the player: log lines for sim events.
 
-use nighthawk_sim::{BreathLevel, Cause, Event, Sound, Vertical, WarmthLevel};
+use nighthawk_sim::{Action, Blocked, BreathLevel, Cause, Event, Sound, Vertical, WarmthLevel};
 
 /// Turns a sim event into a log line. Ordinary steps aren't worth logging.
 ///
@@ -12,6 +12,7 @@ pub fn describe(event: Event) -> Option<String> {
         Event::Moved { .. } => return None,
         Event::Bumped { tile, .. } => format!("You bump into the {}.", tile.name()),
         Event::Ambient(sound) => sound_text(sound).into(),
+        Event::Unable { blocked, .. } => blocked_text(blocked),
         Event::AirEscaping | Event::Breath(_) | Event::Warmth(_) | Event::BlackedOut(_) => {
             survival_text(event).into()
         }
@@ -83,6 +84,47 @@ fn warmth_text(level: WarmthLevel) -> &'static str {
         WarmthLevel::Numb => "Your fingers are numb. You need to get warm.",
         WarmthLevel::Freezing => "You can't stop shaking. You're freezing!",
         WarmthLevel::Recovered => "The warmth comes back into your hands.",
+    }
+}
+
+/// The menu's name for an action.
+pub fn action_name(action: Action) -> &'static str {
+    match action {
+        Action::Open => "Open",
+        Action::Close => "Close",
+        Action::Cut => "Cut",
+    }
+}
+
+/// A short reason an action can't be done, for under it in the interact
+/// menu (at most 19 characters, to fit the panel).
+pub fn blocked_short(blocked: Blocked) -> String {
+    match blocked {
+        Blocked::TooFar { reach } => format!("too far: reach {reach}"),
+        Blocked::InTheWay { .. } => "path blocked".into(),
+        Blocked::StandingInIt => "step out first".into(),
+        Blocked::Needs { quality, level } => format!("needs {} {level}", quality.name()),
+        Blocked::Uncuttable => "nothing cuts it".into(),
+        Blocked::NotPossible => "not possible".into(),
+    }
+}
+
+/// The log line for an action that couldn't be done.
+pub fn blocked_text(blocked: Blocked) -> String {
+    match blocked {
+        Blocked::TooFar { reach: 1 } => {
+            "That's too far away: you need to be right beside it.".into()
+        }
+        Blocked::TooFar { reach } => {
+            format!("That's out of reach: you need to be within {reach} tiles.")
+        }
+        Blocked::InTheWay { .. } => "Something solid is in the way.".into(),
+        Blocked::StandingInIt => "You're standing in the doorway.".into(),
+        Blocked::Needs { quality, level } => {
+            format!("You need a tool with {} {level} for that.", quality.name())
+        }
+        Blocked::Uncuttable => "Nothing you could carry would cut that.".into(),
+        Blocked::NotPossible => "You can't do that there.".into(),
     }
 }
 
@@ -226,6 +268,75 @@ mod tests {
         for (i, line) in lines.iter().enumerate() {
             assert!(!lines[i + 1..].contains(line), "{line:?} is used twice");
         }
+    }
+
+    /// One of each kind of blocked reason.
+    fn every_blocked() -> [Blocked; 7] {
+        [
+            Blocked::TooFar { reach: 1 },
+            Blocked::TooFar { reach: 2 },
+            Blocked::InTheWay {
+                at: Pos::new(0, 0, 0),
+            },
+            Blocked::StandingInIt,
+            Blocked::Needs {
+                quality: nighthawk_sim::Quality::Laser,
+                level: 5,
+            },
+            Blocked::Uncuttable,
+            Blocked::NotPossible,
+        ]
+    }
+
+    #[test]
+    fn blocked_actions_explain_themselves_in_the_log() {
+        let unable = Event::Unable {
+            action: Action::Cut,
+            blocked: Blocked::Needs {
+                quality: nighthawk_sim::Quality::Laser,
+                level: 5,
+            },
+        };
+        assert_eq!(
+            describe(unable).as_deref(),
+            Some("You need a tool with LASER 5 for that.")
+        );
+        assert_eq!(
+            blocked_text(Blocked::TooFar { reach: 1 }),
+            "That's too far away: you need to be right beside it."
+        );
+        assert_eq!(
+            blocked_text(Blocked::TooFar { reach: 2 }),
+            "That's out of reach: you need to be within 2 tiles."
+        );
+        let lines: Vec<String> = every_blocked().map(blocked_text).to_vec();
+        for (i, line) in lines.iter().enumerate() {
+            assert!(!lines[i + 1..].contains(line), "{line:?} is used twice");
+        }
+    }
+
+    #[test]
+    fn short_reasons_fit_under_an_option_in_the_panel() {
+        for blocked in every_blocked() {
+            let short = blocked_short(blocked);
+            assert!(short.chars().count() <= 19, "{short:?}");
+        }
+        assert_eq!(
+            blocked_short(Blocked::TooFar { reach: 1 }),
+            "too far: reach 1"
+        );
+        assert_eq!(
+            blocked_short(Blocked::Needs {
+                quality: nighthawk_sim::Quality::Laser,
+                level: 1
+            }),
+            "needs LASER 1"
+        );
+    }
+
+    #[test]
+    fn actions_have_menu_names() {
+        assert_eq!(Action::ALL.map(action_name), ["Open", "Close", "Cut"]);
     }
 
     #[test]

@@ -14,8 +14,8 @@
 //! ```
 
 use nighthawk_sim::{
-    BREATH_FULL, Colour, Material, Mix, Pos, Quality, Tile, WARMTH_FULL, World, celsius_to_mk,
-    mk_to_tenths_celsius,
+    ActionOption, BREATH_FULL, Colour, Material, Mix, Pos, Quality, Tile, WARMTH_FULL, World,
+    celsius_to_mk, mk_to_tenths_celsius, options_at,
 };
 use ratatui::Frame;
 use ratatui::buffer::Buffer;
@@ -26,6 +26,7 @@ use ratatui::widgets::{Block, Paragraph, Widget, Wrap};
 
 use crate::app::{App, Screen};
 use crate::title::{MenuItem, TitleMenu};
+use crate::{keys, text};
 
 const SIDEBAR_WIDTH: u16 = 24;
 const LOG_HEIGHT: u16 = 6;
@@ -54,20 +55,36 @@ impl Overlay {
     }
 }
 
+/// What the cursor is for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CursorMode {
+    /// Look mode (`V`): describe the tile.
+    Look,
+    /// The interact menu (`e`): list what you can do to the tile.
+    Interact,
+}
+
+/// The cursor for look mode and the interact menu: where it is, and which
+/// of the two it's for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Cursor {
+    pub at: Pos,
+    pub mode: CursorMode,
+}
+
 /// How the player has asked to see the game: view settings that change
-/// nothing in the world. `Default` gives the plain map, not looking.
+/// nothing in the world. `Default` gives the plain map, no cursor.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct View {
     pub overlay: Option<Overlay>,
-    /// The look cursor, while in look mode.
-    pub look: Option<Pos>,
+    pub cursor: Option<Cursor>,
 }
 
 /// Draws whichever screen the app is on.
 pub fn render(app: &App, frame: &mut Frame) {
     let view = View {
         overlay: app.overlay,
-        look: app.look,
+        cursor: app.cursor,
     };
     match &app.screen {
         Screen::Title(menu) => render_title(menu, frame),
@@ -147,8 +164,10 @@ fn centred(area: Rect, width: u16, height: u16) -> Rect {
 
 /// The game screen: map, status sidebar and message log.
 ///
-/// In look mode the map centres on the cursor, the sidebar describes the
-/// tile under it, and the log panel shows its material's description.
+/// With the cursor up, the map centres on it and the side panel is about
+/// the tile under it: a description in look mode (with the material's
+/// description in place of the log), or what you can do in the interact
+/// menu (keeping the log, which says why an action can't be done).
 fn render_game(world: &World, log_lines: &[String], view: View, frame: &mut Frame) {
     let [top, log_area] =
         Layout::vertical([Constraint::Min(5), Constraint::Length(LOG_HEIGHT)]).areas(frame.area());
@@ -156,30 +175,41 @@ fn render_game(world: &World, log_lines: &[String], view: View, frame: &mut Fram
         Layout::horizontal([Constraint::Min(10), Constraint::Length(SIDEBAR_WIDTH)]).areas(top);
 
     let overlay_note = view.overlay.map_or("", Overlay::label);
-    let look_note = if view.look.is_some() {
-        " [looking]"
-    } else {
-        ""
+    let cursor_note = match view.cursor.map(|c| c.mode) {
+        Some(CursorMode::Look) => " [looking]",
+        Some(CursorMode::Interact) => " [interact]",
+        None => "",
     };
-    let title = format!(" {}{overlay_note}{look_note} ", world.area_name());
+    let title = format!(" {}{overlay_note}{cursor_note} ", world.area_name());
     let map_block = Block::bordered().title(title);
     let map_inner = map_block.inner(map_area);
     frame.render_widget(map_block, map_area);
     let map_view = MapView {
         world,
         overlay: view.overlay,
-        cursor: view.look,
+        cursor: view.cursor.map(|c| c.at),
     };
     frame.render_widget(map_view, map_inner);
 
-    match view.look {
-        Some(at) => {
+    let log_lines_shown = log_area.height.saturating_sub(2);
+    match view.cursor {
+        Some(Cursor {
+            at,
+            mode: CursorMode::Look,
+        }) => {
             frame.render_widget(look_panel(world, at), side_area);
             frame.render_widget(description(world, at), log_area);
         }
+        Some(Cursor {
+            at,
+            mode: CursorMode::Interact,
+        }) => {
+            frame.render_widget(interact_panel(world, at), side_area);
+            frame.render_widget(log(log_lines, log_lines_shown), log_area);
+        }
         None => {
             frame.render_widget(sidebar(world), side_area);
-            frame.render_widget(log(log_lines, log_area.height.saturating_sub(2)), log_area);
+            frame.render_widget(log(log_lines, log_lines_shown), log_area);
         }
     }
 }
@@ -535,6 +565,59 @@ fn capitalised(text: &str) -> String {
     }
 }
 
+/// The interact menu's panel: the tile, then each action with its key,
+/// greyed with a short reason when it can't be done.
+fn interact_panel(world: &World, at: Pos) -> Paragraph<'static> {
+    Paragraph::new(interact_lines(world, at)).block(Block::bordered().title(" Interact "))
+}
+
+fn interact_lines(world: &World, at: Pos) -> Vec<Line<'static>> {
+    let dim = Style::new().fg(Color::DarkGray);
+    let tile = world.map().get(at).unwrap_or(Tile::Wall);
+    let mut lines = vec![
+        Line::raw(format!("At    {}, {}  deck {}", at.x, at.y, at.z)),
+        Line::raw(tile_name(world, at, tile)),
+    ];
+    if let Some(material) = world.material_at(at) {
+        lines.push(Line::styled(
+            material.name.clone(),
+            Style::new().fg(colour(material.colour)),
+        ));
+    }
+    lines.push(Line::raw(""));
+    let options = options_at(world, at);
+    if options.is_empty() {
+        lines.push(Line::styled("Nothing to do here.", dim));
+    }
+    for option in options {
+        lines.extend(option_lines(option));
+    }
+    lines.extend([
+        Line::raw(""),
+        Line::styled("Enter first option", dim),
+        Line::styled("move  hjkl yubn", dim),
+        Line::styled("Esc   cancel", dim),
+    ]);
+    lines
+}
+
+/// One option: "o  Open", and if it can't be done, greyed with the reason
+/// on the next line.
+fn option_lines(option: ActionOption) -> Vec<Line<'static>> {
+    let key = keys::action_key(option.action);
+    let label = format!("{key}  {}", text::action_name(option.action));
+    match option.blocked {
+        None => vec![Line::styled(label, Style::new().fg(Color::Yellow))],
+        Some(blocked) => {
+            let dim = Style::new().fg(Color::DarkGray);
+            vec![
+                Line::styled(label, dim),
+                Line::styled(format!("   {}", text::blocked_short(blocked)), dim),
+            ]
+        }
+    }
+}
+
 /// The bottom panel in look mode: the material's description, wrapped.
 fn description(world: &World, at: Pos) -> Paragraph<'static> {
     let text = world
@@ -862,7 +945,7 @@ mod tests {
         let mut world = World::new(map, 1);
         let heat = View {
             overlay: Some(Overlay::Heat),
-            look: None,
+            cursor: None,
         };
         let bay = draw_screen(80, 24, |f| render_game(&world, &[], heat, f));
         assert!(bay.contains("[heat overlay]"));
@@ -902,7 +985,7 @@ mod tests {
     fn air() -> View {
         View {
             overlay: Some(Overlay::Air),
-            look: None,
+            cursor: None,
         }
     }
 
@@ -999,7 +1082,10 @@ mod tests {
         let world = real_world();
         let view = View {
             overlay: None,
-            look: Some(Pos::new(0, 7, 0)),
+            cursor: Some(Cursor {
+                at: Pos::new(0, 7, 0),
+                mode: CursorMode::Look,
+            }),
         };
         let screen = draw_screen(80, 24, |f| render_game(&world, &[], view, f));
         assert!(screen.contains("[looking]"));
@@ -1058,5 +1144,73 @@ mod tests {
     fn names_are_capitalised_for_the_panel() {
         assert_eq!(capitalised("ladder up"), "Ladder up");
         assert_eq!(capitalised(""), "");
+    }
+
+    // --- Interact menu -----------------------------------------------------------
+
+    fn interact_texts(world: &World, at: Pos) -> Vec<String> {
+        interact_lines(world, at)
+            .iter()
+            .map(ToString::to_string)
+            .collect()
+    }
+
+    #[test]
+    fn the_interact_panel_lists_options_with_keys_and_reasons() {
+        let world = real_world();
+        // From the start (4, 7), the hull at (0, 7) is four tiles west.
+        let lines = interact_texts(&world, Pos::new(0, 7, 0));
+        assert_eq!(lines[0], "At    0, 7  deck 0");
+        assert_eq!(lines[1], "Outer hull");
+        assert_eq!(lines[2], "Nanocarbon Alloy");
+        assert_eq!(lines[4], "x  Cut");
+        assert_eq!(lines[5], "   too far: reach 2");
+    }
+
+    #[test]
+    fn open_floor_has_nothing_to_do() {
+        let world = real_world();
+        let lines = interact_texts(&world, world.player());
+        assert!(lines.contains(&"Nothing to do here.".to_string()));
+    }
+
+    #[test]
+    fn options_that_can_be_done_are_highlighted() {
+        let open = option_lines(ActionOption {
+            action: nighthawk_sim::Action::Open,
+            blocked: None,
+        });
+        assert_eq!(open.len(), 1);
+        assert_eq!(open[0].to_string(), "o  Open");
+        assert_eq!(open[0].style.fg, Some(Color::Yellow));
+    }
+
+    #[test]
+    fn the_interact_panel_fits_a_minimum_terminal_wherever_it_points() {
+        let world = real_world();
+        for at in world.map().positions() {
+            let lines = interact_lines(&world, at);
+            assert!(lines.len() <= 16, "{at:?}: {} lines", lines.len());
+            for line in &lines {
+                assert!(line.width() <= usize::from(SIDEBAR_WIDTH - 2), "{line}");
+            }
+        }
+    }
+
+    #[test]
+    fn the_interact_screen_is_labelled_and_keeps_the_log() {
+        let world = real_world();
+        let view = View {
+            overlay: None,
+            cursor: Some(Cursor {
+                at: world.player(),
+                mode: CursorMode::Interact,
+            }),
+        };
+        let log = ["You need a tool with LASER 1 for that.".to_string()];
+        let screen = draw_screen(80, 24, |f| render_game(&world, &log, view, f));
+        assert!(screen.contains("[interact]"));
+        assert!(screen.contains(" Interact "));
+        assert!(screen.contains("LASER 1 for that"), "the log stays visible");
     }
 }

@@ -4,7 +4,7 @@ A terminal-native survival and base-building game where the systems run deep. It
 the Dwarf Fortress / Cataclysm: DDA tradition and is built around the explore → find →
 craft → build loop of Subnautica, Abiotic Factor and Minecraft.
 
-**Status:** M1.5. A title menu, save and load, a clock in real seconds, air (O2, N2 and CO2) that evens out across every connected space each second, hull breaches that vent it to space, heat that moves with the air and leaks out through the hull, breath and warmth meters that run down in thin or cold air, materials with real properties for everything on the ship (look at any tile with `V`), and two decks to explore, the Stasis bay and the Crew quarters above it (with doors to open and close), joined by a ladder (loaded from [`data/maps/aft_ring.json`](data/maps/aft_ring.json)), while the ship creaks around you. Every game comes from a seed, so the same seed and moves replay exactly. See [Running it](#running-it).
+**Status:** M1.6. A title menu, save and load, a clock in real seconds, air (O2, N2 and CO2) that evens out across every connected space each second, hull breaches that vent it to space, heat that moves with the air and leaks out through the hull, breath and warmth meters that run down in thin or cold air, materials with real properties for everything on the ship (look at any tile with `V`, act on one with `e`), and two decks to explore, the Stasis bay and the Crew quarters above it (with doors to open and close), joined by a ladder (loaded from [`data/maps/aft_ring.json`](data/maps/aft_ring.json)), while the ship creaks around you. Every game comes from a seed, so the same seed and moves replay exactly. See [Running it](#running-it).
 
 ## Documents
 
@@ -45,7 +45,7 @@ cargo test                                  # run all tests
 to wait; `>` to climb a ladder up and `<` to climb down (ladders are drawn with
 the same characters); walk into a door to open it,
 `c` then a direction to close one; `a` to show or hide the air overlay and `t` the
-heat overlay; `V` to look at any tile (what it is, what it's made of, what cuts it; Esc to stop); `S` to save; `q` to save and return to the menu; `Q` to return without
+heat overlay; `V` to look at any tile (what it is, what it's made of, what cuts it; Esc to stop); `e` to interact: move the cursor onto a tile and press the key of an action (`o` open, `c` close, `x` cut; Enter for the first that's possible), and anything out of reach or needing a tool says why; `S` to save; `q` to save and return to the menu; `Q` to return without
 saving; Ctrl-C to save and exit.
 
 **Staying alive:** the sidebar's **Breath** meter refills in good air and

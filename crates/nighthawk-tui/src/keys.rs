@@ -5,7 +5,7 @@
 //! decides what an action does. That keeps this file a simple lookup that is
 //! easy to test and, later, to make remappable.
 
-use nighthawk_sim::{Command, Dir, Vertical};
+use nighthawk_sim::{Action, Command, Dir, Vertical};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
 use crate::title::MenuItem;
@@ -30,15 +30,32 @@ pub enum GameAction {
     ToggleOverlay(Overlay),
     /// Start look mode (`V`): a cursor to inspect any tile.
     Look,
+    /// Start the interact menu (`e`): the same cursor, listing what you
+    /// can do to the tile under it.
+    Interact,
 }
 
-/// Something the player wants while in look mode.
+/// Something the player wants while the look or interact cursor is up.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum LookAction {
+pub enum CursorAction {
     /// Move the cursor one tile.
     Move(Dir),
-    /// Leave look mode.
+    /// Put the cursor away.
     Stop,
+    /// Do this action to the tile under the cursor (interact only).
+    Do(Action),
+    /// Do the first action on the list that can be done (Enter).
+    DoFirst,
+}
+
+/// The key that does `action` in the interact menu. None of them is a
+/// movement key, so moving the cursor and choosing never clash.
+pub fn action_key(action: Action) -> char {
+    match action {
+        Action::Open => 'o',
+        Action::Close => 'c',
+        Action::Cut => 'x',
+    }
 }
 
 /// Something the player wants on the title menu.
@@ -87,11 +104,23 @@ const KEYMAP: &[(KeyCode, Command)] = &[
     (KeyCode::Char('<'), Command::Climb(Vertical::Down)),
 ];
 
-/// The action for a key pressed while playing, if any.
-///
-/// `S` saves, `q` saves and returns to the menu, `Q` returns without saving,
-/// and Ctrl-C saves and exits. The saving keys are capitals so they're hard
-/// to hit by accident.
+/// The keys that aren't moves, while playing. `S` saves, `q` saves and
+/// returns to the menu, `Q` returns without saving. The saving keys are
+/// capitals so they're hard to hit by accident. A table, like `KEYMAP`, so
+/// adding a key is one line.
+const GAME_KEYS: &[(char, GameAction)] = &[
+    ('q', GameAction::ToTitle),
+    ('Q', GameAction::ToTitleWithoutSaving),
+    ('S', GameAction::Save),
+    ('c', GameAction::BeginClose),
+    ('a', GameAction::ToggleOverlay(Overlay::Air)),
+    ('t', GameAction::ToggleOverlay(Overlay::Heat)),
+    ('V', GameAction::Look),
+    ('e', GameAction::Interact),
+];
+
+/// The action for a key pressed while playing, if any. Ctrl-C saves and
+/// exits.
 pub fn game_action(key: KeyEvent) -> Option<GameAction> {
     if !is_press(key) {
         return None;
@@ -99,19 +128,16 @@ pub fn game_action(key: KeyEvent) -> Option<GameAction> {
     if is_ctrl_c(key) {
         return Some(GameAction::Exit);
     }
-    match key.code {
-        KeyCode::Char('q') => Some(GameAction::ToTitle),
-        KeyCode::Char('Q') => Some(GameAction::ToTitleWithoutSaving),
-        KeyCode::Char('S') => Some(GameAction::Save),
-        KeyCode::Char('c') => Some(GameAction::BeginClose),
-        KeyCode::Char('a') => Some(GameAction::ToggleOverlay(Overlay::Air)),
-        KeyCode::Char('t') => Some(GameAction::ToggleOverlay(Overlay::Heat)),
-        KeyCode::Char('V') => Some(GameAction::Look),
-        code => KEYMAP
+    let other = GAME_KEYS
+        .iter()
+        .find(|&&(c, _)| key.code == KeyCode::Char(c))
+        .map(|&(_, action)| action);
+    other.or_else(|| {
+        KEYMAP
             .iter()
-            .find(|(bound, _)| *bound == code)
-            .map(|&(_, command)| GameAction::Sim(command)),
-    }
+            .find(|(bound, _)| *bound == key.code)
+            .map(|&(_, command)| GameAction::Sim(command))
+    })
 }
 
 /// The action for a key pressed on the title menu, if any.
@@ -133,16 +159,21 @@ pub fn title_action(key: KeyEvent) -> Option<TitleAction> {
     }
 }
 
-/// The action for a key pressed in look mode: a movement key moves the
-/// cursor; Esc, `V` or `q` stop looking. Other keys do nothing, so a stray
-/// key can't spend time while you're only looking.
-pub fn look_action(key: KeyEvent) -> Option<LookAction> {
+/// The action for a key pressed while the cursor is up: a movement key
+/// moves it; Esc, `V`, `e` or `q` put it away; an action key or Enter
+/// chooses. Other keys do nothing, so a stray key can't spend time.
+pub fn cursor_action(key: KeyEvent) -> Option<CursorAction> {
     if !is_press(key) {
         return None;
     }
     match key.code {
-        KeyCode::Esc | KeyCode::Char('V' | 'q') => Some(LookAction::Stop),
-        _ => direction(key).map(LookAction::Move),
+        KeyCode::Esc | KeyCode::Char('V' | 'e' | 'q') => Some(CursorAction::Stop),
+        KeyCode::Enter => Some(CursorAction::DoFirst),
+        code => Action::ALL
+            .into_iter()
+            .find(|&action| code == KeyCode::Char(action_key(action)))
+            .map(CursorAction::Do)
+            .or_else(|| direction(key).map(CursorAction::Move)),
     }
 }
 
@@ -284,20 +315,62 @@ mod tests {
     }
 
     #[test]
-    fn in_look_mode_movement_keys_move_and_esc_v_q_stop() {
+    fn with_the_cursor_up_movement_keys_move_and_esc_v_e_q_stop() {
         assert_eq!(
-            look_action(press(KeyCode::Char('l'))),
-            Some(LookAction::Move(Dir::East))
+            cursor_action(press(KeyCode::Char('l'))),
+            Some(CursorAction::Move(Dir::East))
         );
         assert_eq!(
-            look_action(press(KeyCode::Char('y'))),
-            Some(LookAction::Move(Dir::NorthWest))
+            cursor_action(press(KeyCode::Char('y'))),
+            Some(CursorAction::Move(Dir::NorthWest))
         );
-        for code in [KeyCode::Esc, KeyCode::Char('V'), KeyCode::Char('q')] {
-            assert_eq!(look_action(press(code)), Some(LookAction::Stop), "{code:?}");
+        for code in [
+            KeyCode::Esc,
+            KeyCode::Char('V'),
+            KeyCode::Char('e'),
+            KeyCode::Char('q'),
+        ] {
+            assert_eq!(
+                cursor_action(press(code)),
+                Some(CursorAction::Stop),
+                "{code:?}"
+            );
         }
-        assert_eq!(look_action(press(KeyCode::Char('.'))), None, "no waiting");
-        assert_eq!(look_action(release(KeyCode::Esc)), None);
+        assert_eq!(cursor_action(press(KeyCode::Char('.'))), None, "no waiting");
+        assert_eq!(cursor_action(release(KeyCode::Esc)), None);
+    }
+
+    #[test]
+    fn e_starts_interacting_and_o_c_x_enter_choose() {
+        assert_eq!(
+            game_action(press(KeyCode::Char('e'))),
+            Some(GameAction::Interact)
+        );
+        assert_eq!(
+            cursor_action(press(KeyCode::Char('o'))),
+            Some(CursorAction::Do(Action::Open))
+        );
+        assert_eq!(
+            cursor_action(press(KeyCode::Char('c'))),
+            Some(CursorAction::Do(Action::Close))
+        );
+        assert_eq!(
+            cursor_action(press(KeyCode::Char('x'))),
+            Some(CursorAction::Do(Action::Cut))
+        );
+        assert_eq!(
+            cursor_action(press(KeyCode::Enter)),
+            Some(CursorAction::DoFirst)
+        );
+    }
+
+    #[test]
+    fn every_action_has_its_own_key_that_is_not_a_movement_key() {
+        let keys: Vec<char> = Action::ALL.map(action_key).to_vec();
+        assert_eq!(keys, vec!['o', 'c', 'x']);
+        for key in keys {
+            assert_eq!(direction(press(KeyCode::Char(key))), None, "{key}");
+        }
     }
 
     #[test]

@@ -33,6 +33,42 @@ impl Pos {
     pub fn climb(self, way: Vertical) -> Pos {
         Pos::new(self.x, self.y, self.z + way.dz())
     }
+
+    /// How many steps apart two spots on the same deck are, counting a
+    /// diagonal step as one (like a king in chess). `None` on different
+    /// decks, where "how far" isn't a number of steps.
+    pub fn steps_to(self, other: Pos) -> Option<u32> {
+        (self.z == other.z).then(|| self.x.abs_diff(other.x).max(self.y.abs_diff(other.y)))
+    }
+
+    /// The tiles a straight line from here to `other` passes over, not
+    /// counting either end: what a laser beam would cross. Uses
+    /// Bresenham's line algorithm, which steps one tile at a time with
+    /// whole numbers only, so it's exact and the same on every machine.
+    /// Both ends should be on the same deck; the line stays on this one.
+    pub fn line_to(self, other: Pos) -> Vec<Pos> {
+        let (dx, dy) = ((other.x - self.x).abs(), -(other.y - self.y).abs());
+        let (sx, sy) = ((other.x - self.x).signum(), (other.y - self.y).signum());
+        let (mut x, mut y, mut err) = (self.x, self.y, dx + dy);
+        let mut between = Vec::new();
+        loop {
+            // `err` tracks how far the line has drifted from the ideal one;
+            // each step moves along whichever axis brings it back closest.
+            let e2 = 2 * err;
+            if e2 >= dy {
+                err += dy;
+                x += sx;
+            }
+            if e2 <= dx {
+                err += dx;
+                y += sy;
+            }
+            if (x, y) == (other.x, other.y) {
+                return between;
+            }
+            between.push(Pos::new(x, y, self.z));
+        }
+    }
 }
 
 /// Up or down between decks. Up is `z + 1`: higher decks have higher numbers.
@@ -160,5 +196,42 @@ mod tests {
         let p = Pos::new(5, 5, 2);
         assert_eq!(p.step(Dir::North), Pos::new(5, 4, 2));
         assert_eq!(p.step(Dir::SouthWest), Pos::new(4, 6, 2));
+    }
+}
+
+#[cfg(test)]
+mod reach_tests {
+    use super::*;
+
+    #[test]
+    fn steps_count_diagonals_as_one_and_need_the_same_deck() {
+        let here = Pos::new(1, 1, 0);
+        assert_eq!(here.steps_to(here), Some(0));
+        assert_eq!(here.steps_to(Pos::new(1, 3, 0)), Some(2));
+        assert_eq!(here.steps_to(Pos::new(3, 3, 0)), Some(2), "diagonal");
+        assert_eq!(here.steps_to(Pos::new(4, 2, 0)), Some(3));
+        assert_eq!(here.steps_to(Pos::new(1, 1, 1)), None, "another deck");
+    }
+
+    #[test]
+    fn a_line_lists_the_tiles_between_but_not_the_ends() {
+        let here = Pos::new(1, 1, 0);
+        assert_eq!(here.line_to(Pos::new(1, 3, 0)), vec![Pos::new(1, 2, 0)]);
+        assert_eq!(here.line_to(Pos::new(3, 3, 0)), vec![Pos::new(2, 2, 0)]);
+        assert_eq!(
+            here.line_to(Pos::new(5, 1, 0)),
+            vec![Pos::new(2, 1, 0), Pos::new(3, 1, 0), Pos::new(4, 1, 0)]
+        );
+        assert_eq!(here.line_to(Pos::new(2, 1, 0)), vec![], "neighbours");
+    }
+
+    #[test]
+    fn lines_work_in_every_direction() {
+        let here = Pos::new(5, 5, 2);
+        assert_eq!(here.line_to(Pos::new(3, 5, 2)), vec![Pos::new(4, 5, 2)]);
+        assert_eq!(here.line_to(Pos::new(5, 3, 2)), vec![Pos::new(5, 4, 2)]);
+        assert_eq!(here.line_to(Pos::new(3, 3, 2)), vec![Pos::new(4, 4, 2)]);
+        // A knight's-move line passes over one of the two in-between tiles.
+        assert_eq!(here.line_to(Pos::new(7, 6, 2)).len(), 1);
     }
 }

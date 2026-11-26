@@ -22,6 +22,7 @@ mod body;
 mod calendar;
 mod hash;
 mod heat;
+mod interact;
 mod map;
 mod map_file;
 mod material;
@@ -40,6 +41,7 @@ pub use heat::{
     HULL_LOSS_PER_BILLION, MAX_CELSIUS, MIN_CELSIUS, MIXING_PER_MILLE, ROOM_TEMPERATURE_MK,
     SPACE_TEMPERATURE_MK, ZERO_CELSIUS_MK, celsius_to_mk, mk_to_tenths_celsius,
 };
+pub use interact::{Action, ActionOption, Blocked, HAND_REACH, LASER_REACH, blocked, options_at};
 pub use map::{Map, StairsError, Tile};
 pub use map_file::{LoadedMap, MapError, parse_map};
 pub use material::{

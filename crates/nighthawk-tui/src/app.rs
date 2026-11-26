@@ -5,14 +5,16 @@
 //! action means on the current screen. There's no terminal code here, so all
 //! of it can be tested directly.
 
-use nighthawk_sim::{Cause, Command, DateTime, LoadedMap, Pos, World};
+use nighthawk_sim::{
+    Action, ActionOption, Cause, Command, DateTime, LoadedMap, Pos, World, options_at,
+};
 use ratatui::crossterm::event::KeyEvent;
 
-use crate::keys::{self, GameAction, LookAction, TitleAction};
+use crate::keys::{self, CursorAction, GameAction, TitleAction};
 use crate::saves::SaveSlot;
 use crate::text;
 use crate::title::{MenuItem, TitleMenu};
-use crate::ui::Overlay;
+use crate::ui::{Cursor, CursorMode, Overlay};
 
 /// How many log lines to keep. The log panel shows as many as fit.
 pub const LOG_LIMIT: usize = 100;
@@ -46,9 +48,9 @@ pub struct App {
     /// Which overlay the map shows, if any. A view setting, not part of
     /// the game, so it isn't saved.
     pub overlay: Option<Overlay>,
-    /// Where the look cursor is, while in look mode (`V`). Also a view
-    /// setting: looking never changes the world or spends time.
-    pub look: Option<Pos>,
+    /// The look (`V`) or interact (`e`) cursor, while it's up. Moving it
+    /// never changes the world or spends time; only choosing an action does.
+    pub cursor: Option<Cursor>,
 }
 
 impl App {
@@ -69,7 +71,7 @@ impl App {
             new_seed,
             asking_close_direction: false,
             overlay: None,
-            look: None,
+            cursor: None,
         };
         match seed {
             Some(seed) => app.start_new_game(seed),
@@ -88,9 +90,9 @@ impl App {
             self.answer_close_direction(key);
             return;
         }
-        if self.look.is_some() {
-            if let Some(action) = keys::look_action(key) {
-                self.on_look(action);
+        if self.cursor.is_some() {
+            if let Some(action) = keys::cursor_action(key) {
+                self.on_cursor(action);
             }
             return;
         }
@@ -140,11 +142,8 @@ impl App {
             GameAction::ToTitleWithoutSaving => self.show_title(None),
             GameAction::Exit => self.quit = self.save_game(),
             GameAction::ToggleOverlay(overlay) => self.toggle_overlay(overlay),
-            GameAction::Look => {
-                if let Screen::Playing(world) = &self.screen {
-                    self.look = Some(world.player());
-                }
-            }
+            GameAction::Look => self.raise_cursor(CursorMode::Look),
+            GameAction::Interact => self.raise_cursor(CursorMode::Interact),
             GameAction::BeginClose => {
                 self.asking_close_direction = true;
                 self.push_log("Close which way? (a direction key; anything else cancels)".into());
@@ -152,22 +151,62 @@ impl App {
         }
     }
 
-    /// Moves the look cursor, staying on the map, or stops looking.
-    fn on_look(&mut self, action: LookAction) {
-        let (Screen::Playing(world), Some(at)) = (&self.screen, self.look) else {
+    /// Puts the cursor up on the player, for looking or interacting.
+    fn raise_cursor(&mut self, mode: CursorMode) {
+        if let Screen::Playing(world) = &self.screen {
+            self.cursor = Some(Cursor {
+                at: world.player(),
+                mode,
+            });
+        }
+    }
+
+    /// Moves the cursor (staying on the map), puts it away, or chooses an
+    /// action in the interact menu.
+    fn on_cursor(&mut self, action: CursorAction) {
+        let (Screen::Playing(world), Some(cursor)) = (&self.screen, self.cursor) else {
             return;
         };
-        self.look = match action {
-            LookAction::Stop => None,
-            LookAction::Move(dir) => {
-                let next = at.step(dir);
-                Some(if world.map().in_bounds(next) {
-                    next
-                } else {
-                    at
-                })
+        match action {
+            CursorAction::Stop => self.cursor = None,
+            CursorAction::Move(dir) => {
+                let next = cursor.at.step(dir);
+                if world.map().in_bounds(next) {
+                    self.cursor = Some(Cursor { at: next, ..cursor });
+                }
             }
+            CursorAction::Do(_) | CursorAction::DoFirst if cursor.mode == CursorMode::Look => {}
+            CursorAction::Do(chosen) => self.choose_action(cursor.at, Some(chosen)),
+            CursorAction::DoFirst => self.choose_action(cursor.at, None),
+        }
+    }
+
+    /// Does `chosen` (or, for `None`, the first action that can be done)
+    /// to the tile at `at`, and puts the cursor away. If it can't be done,
+    /// says why and leaves the cursor up, so you can pick something else.
+    fn choose_action(&mut self, at: Pos, chosen: Option<Action>) {
+        let Screen::Playing(world) = &self.screen else {
+            return;
         };
+        let options = options_at(world, at);
+        let pick = match chosen {
+            Some(action) => options.iter().find(|o| o.action == action),
+            None => options
+                .iter()
+                .find(|o| o.blocked.is_none())
+                .or(options.first()),
+        };
+        match pick {
+            None => self.push_log("There's nothing to do with that here.".into()),
+            Some(&ActionOption {
+                blocked: Some(blocked),
+                ..
+            }) => self.push_log(text::blocked_text(blocked)),
+            Some(&ActionOption { action, .. }) => {
+                self.cursor = None;
+                self.apply(Command::Interact { at, action });
+            }
+        }
     }
 
     /// Shows `overlay`, or hides it if it's already showing. Asking for a
@@ -231,7 +270,7 @@ impl App {
     }
 
     fn show_title(&mut self, message: Option<String>) {
-        self.look = None;
+        self.cursor = None;
         let can_continue = self.slot.as_ref().is_some_and(SaveSlot::exists);
         self.screen = Screen::Title(TitleMenu::new(can_continue).with_message(message));
     }
@@ -790,10 +829,13 @@ mod tests {
         let (mut app, _dir) = new_app(Some(7));
         let start = world(&app).player();
         app.handle_key(key(KeyCode::Char('V')));
-        assert_eq!(app.look, Some(start));
+        assert_eq!(app.cursor.map(|c| c.at), Some(start));
         app.handle_key(key(KeyCode::Char('l')));
         app.handle_key(key(KeyCode::Char('j')));
-        assert_eq!(app.look, Some(Pos::new(start.x + 1, start.y + 1, start.z)));
+        assert_eq!(
+            app.cursor.map(|c| c.at),
+            Some(Pos::new(start.x + 1, start.y + 1, start.z))
+        );
         assert_eq!(world(&app).player(), start, "only the cursor moved");
         assert_eq!(world(&app).seconds(), 0, "looking takes no time");
     }
@@ -805,9 +847,9 @@ mod tests {
         app.handle_key(key(KeyCode::Char('.')));
         app.handle_key(key(KeyCode::Char('S')));
         assert_eq!(world(&app).seconds(), 0, "no waiting");
-        assert!(app.look.is_some());
+        assert!(app.cursor.is_some());
         app.handle_key(key(KeyCode::Esc));
-        assert_eq!(app.look, None);
+        assert_eq!(app.cursor, None);
         app.handle_key(key(KeyCode::Char('.')));
         assert!(world(&app).seconds() > 0, "keys play normally again");
     }
@@ -821,7 +863,11 @@ mod tests {
                 app.handle_key(key(KeyCode::Char(c)));
             }
         }
-        assert_eq!(app.look, Some(Pos::new(0, 0, 0)), "stopped at the corner");
+        assert_eq!(
+            app.cursor.map(|c| c.at),
+            Some(Pos::new(0, 0, 0)),
+            "stopped at the corner"
+        );
     }
 
     #[test]
@@ -829,9 +875,119 @@ mod tests {
         let (mut app, _dir) = new_app(Some(7));
         app.handle_key(key(KeyCode::Char('V')));
         app.show_title(None);
-        assert_eq!(app.look, None);
+        assert_eq!(app.cursor, None);
         // Looking with no game is ignored rather than crashing.
-        app.on_look(LookAction::Move(nighthawk_sim::Dir::East));
-        assert_eq!(app.look, None);
+        app.on_cursor(CursorAction::Move(nighthawk_sim::Dir::East));
+        assert_eq!(app.cursor, None);
+    }
+
+    // --- Interact menu -----------------------------------------------------------
+
+    /// A new game standing beside the first crew-deck door: at (16, 6) with
+    /// the cabin door at (16, 7) just south, and another door at (16, 4)
+    /// two tiles north.
+    fn by_a_door() -> (App, tempfile::TempDir) {
+        let (mut app, dir) = new_app(Some(7));
+        let route = std::iter::repeat_n('k', 5)
+            .chain(std::iter::repeat_n('l', 23))
+            .chain(['>'])
+            .chain(std::iter::repeat_n('j', 4))
+            .chain(std::iter::repeat_n('h', 11));
+        for c in route {
+            app.handle_key(key(KeyCode::Char(c)));
+        }
+        assert_eq!(world(&app).player(), Pos::new(16, 6, 1));
+        (app, dir)
+    }
+
+    fn press_all(app: &mut App, keys: &str) {
+        for c in keys.chars() {
+            app.handle_key(key(KeyCode::Char(c)));
+        }
+    }
+
+    #[test]
+    fn e_starts_the_interact_cursor_on_you() {
+        let (mut app, _dir) = by_a_door();
+        press_all(&mut app, "e");
+        let cursor = app.cursor.unwrap();
+        assert_eq!(cursor.at, Pos::new(16, 6, 1));
+        assert_eq!(cursor.mode, CursorMode::Interact);
+    }
+
+    #[test]
+    fn choosing_open_opens_the_door_and_puts_the_cursor_away() {
+        let (mut app, _dir) = by_a_door();
+        let before = world(&app).seconds();
+        press_all(&mut app, "ejo");
+        let door = Pos::new(16, 7, 1);
+        assert_eq!(
+            world(&app).map().get(door),
+            Some(nighthawk_sim::Tile::DoorOpen)
+        );
+        assert_eq!(app.cursor, None);
+        assert!(world(&app).seconds() > before, "opening takes time");
+        press_all(&mut app, "ejc");
+        assert_eq!(
+            world(&app).map().get(door),
+            Some(nighthawk_sim::Tile::DoorClosed)
+        );
+    }
+
+    #[test]
+    fn a_blocked_choice_says_why_and_keeps_the_cursor_up() {
+        let (mut app, _dir) = by_a_door();
+        let before = world(&app).seconds();
+        press_all(&mut app, "ejx");
+        assert_eq!(last_log(&app), "You need a tool with LASER 1 for that.");
+        assert!(app.cursor.is_some());
+        press_all(&mut app, "kkko"); // from the south door to the one two tiles north of you
+        assert_eq!(
+            last_log(&app),
+            "That's too far away: you need to be right beside it."
+        );
+        assert_eq!(world(&app).seconds(), before, "nothing happened");
+    }
+
+    #[test]
+    fn enter_does_the_first_action_that_can_be_done() {
+        let (mut app, _dir) = by_a_door();
+        press_all(&mut app, "ej");
+        app.handle_key(key(KeyCode::Enter));
+        assert_eq!(
+            world(&app).map().get(Pos::new(16, 7, 1)),
+            Some(nighthawk_sim::Tile::DoorOpen),
+            "Open, not the blocked Cut"
+        );
+    }
+
+    #[test]
+    fn enter_with_nothing_possible_explains_the_first_option() {
+        let (mut app, _dir) = by_a_door();
+        press_all(&mut app, "ekk");
+        app.handle_key(key(KeyCode::Enter));
+        assert!(last_log(&app).starts_with("That's too far away"));
+    }
+
+    #[test]
+    fn choosing_on_open_floor_or_an_action_not_listed_says_so() {
+        let (mut app, _dir) = by_a_door();
+        press_all(&mut app, "el");
+        app.handle_key(key(KeyCode::Enter));
+        assert_eq!(last_log(&app), "There's nothing to do with that here.");
+        press_all(&mut app, "hjc"); // the door is shut: no Close on the list
+        assert_eq!(last_log(&app), "There's nothing to do with that here.");
+    }
+
+    #[test]
+    fn action_keys_do_nothing_in_look_mode() {
+        let (mut app, _dir) = by_a_door();
+        press_all(&mut app, "Vjo");
+        app.handle_key(key(KeyCode::Enter));
+        assert_eq!(
+            world(&app).map().get(Pos::new(16, 7, 1)),
+            Some(nighthawk_sim::Tile::DoorClosed)
+        );
+        assert_eq!(app.cursor.map(|c| c.mode), Some(CursorMode::Look));
     }
 }

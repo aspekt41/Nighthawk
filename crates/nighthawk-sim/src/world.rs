@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use crate::body::{self, BREATH_FULL, BreathLevel, Cause, WARMTH_FULL, WarmthLevel};
 use crate::calendar::{DateTime, SHIP_START};
 use crate::hash::Fnv64;
+use crate::interact::{self, Action, Blocked};
 use crate::map::{Map, Tile};
 use crate::map_file::LoadedMap;
 use crate::material::Material;
@@ -20,6 +21,12 @@ pub enum Command {
     Climb(Vertical),
     /// Close the open door next to you in this direction.
     Close(Dir),
+    /// Do `action` to the tile at `at`, from the interact menu (D36). The
+    /// same rules the menu shows are checked again here.
+    Interact {
+        at: Pos,
+        action: Action,
+    },
 }
 
 /// Something that happened, for the front-end to show or log.
@@ -71,6 +78,11 @@ pub enum Event {
     /// The player's breath or warmth ran out: they've blacked out, and the
     /// world takes no more commands.
     BlackedOut(Cause),
+    /// An interact action couldn't be done, and why. No time passes.
+    Unable {
+        action: Action,
+        blocked: Blocked,
+    },
 }
 
 /// Noises the dead ship makes. Pure atmosphere for now. Later, sounds will
@@ -185,6 +197,12 @@ impl World {
         &self.materials
     }
 
+    /// The materials, changeable, for tests in other modules.
+    #[cfg(test)]
+    pub(crate) fn materials_mut(&mut self) -> &mut Vec<Material> {
+        &mut self.materials
+    }
+
     pub fn player(&self) -> Pos {
         self.player
     }
@@ -218,6 +236,7 @@ impl World {
             Command::Move(dir) => self.walk(dir),
             Command::Climb(way) => self.climb(way),
             Command::Close(dir) => self.close(dir),
+            Command::Interact { at, action } => self.interact(at, action),
             Command::Wait => {
                 let mut events = vec![Event::Waited];
                 self.pass_time(WAIT_SECONDS, &mut events);
@@ -262,10 +281,30 @@ impl World {
         if self.map.get(at) != Some(Tile::DoorOpen) {
             return vec![Event::NothingToClose { at }];
         }
+        self.shut(at)
+    }
+
+    /// Shuts the open door at `at`, which the caller has checked.
+    fn shut(&mut self, at: Pos) -> Vec<Event> {
         self.map.set(at, Tile::DoorClosed);
         let mut events = vec![Event::DoorClosed { at }];
         self.pass_time(DOOR_SECONDS, &mut events);
         events
+    }
+
+    /// An action from the interact menu. If anything blocks it, nothing
+    /// happens and no time passes; the event says why.
+    fn interact(&mut self, at: Pos, action: Action) -> Vec<Event> {
+        if let Some(blocked) = interact::blocked(self, at, action) {
+            return vec![Event::Unable { action, blocked }];
+        }
+        // Only door actions can get this far: cutting always needs a tool,
+        // and nothing can be carried yet (items come in the next step).
+        if action == Action::Open {
+            self.open(at)
+        } else {
+            self.shut(at)
+        }
     }
 
     /// Uses the stairs under the player. Stairs up only go up and stairs
@@ -1250,5 +1289,43 @@ mod tests {
         let mut changed = test_world();
         changed.materials[1].hardness += 1;
         assert_ne!(test_world().state_hash(), changed.state_hash());
+    }
+
+    // --- Interacting ----------------------------------------------------------
+
+    #[test]
+    fn interacting_opens_and_closes_a_door_beside_you() {
+        let mut world = door_world();
+        let door = Pos::new(2, 1, 0);
+        let events = world.apply(Command::Interact {
+            at: door,
+            action: Action::Open,
+        });
+        assert_eq!(events[0], Event::DoorOpened { at: door });
+        assert_eq!(world.map.get(door), Some(Tile::DoorOpen));
+        assert_eq!(world.seconds(), DOOR_SECONDS);
+        let events = world.apply(Command::Interact {
+            at: door,
+            action: Action::Close,
+        });
+        assert_eq!(events[0], Event::DoorClosed { at: door });
+        assert_eq!(world.map.get(door), Some(Tile::DoorClosed));
+    }
+
+    #[test]
+    fn a_blocked_interaction_says_why_and_costs_no_time() {
+        let mut world = door_world();
+        let events = world.apply(Command::Interact {
+            at: Pos::new(3, 1, 0),
+            action: Action::Open,
+        });
+        assert_eq!(
+            events,
+            vec![Event::Unable {
+                action: Action::Open,
+                blocked: Blocked::NotPossible
+            }]
+        );
+        assert_eq!(world.seconds(), 0);
     }
 }
