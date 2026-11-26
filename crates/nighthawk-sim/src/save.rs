@@ -6,7 +6,7 @@
 //! ```json
 //! {
 //!   "format": "nighthawk-save",
-//!   "version": 7,
+//!   "version": 8,
 //!   "world": { "deck_names": ["Stasis bay"], "seconds": 36, ... }
 //! }
 //! ```
@@ -33,7 +33,7 @@ pub const SAVE_FORMAT: &str = "nighthawk-save";
 
 /// The save layout this build reads and writes. Bump it when `World` (or
 /// anything inside it) changes shape, and update the save-format test.
-pub const SAVE_VERSION: u32 = 7;
+pub const SAVE_VERSION: u32 = 8;
 
 /// Everything that can be wrong with a save file.
 #[derive(Debug)]
@@ -189,13 +189,13 @@ mod tests {
     fn save_text_is_tagged_and_versioned() {
         let text = save_to_string(&small_world());
         assert!(text.contains(r#""format": "nighthawk-save""#));
-        assert!(text.contains(r#""version": 7"#));
+        assert!(text.contains(r#""version": 8"#));
     }
 
     /// The exact text of the tiny save in `the_save_format_is_stable`.
     const EXPECTED_SAVE: &str = r#"{
   "format": "nighthawk-save",
-  "version": 7,
+  "version": 8,
   "world": {
     "deck_names": [
       "Deck 0"
@@ -233,6 +233,10 @@ mod tests {
       "made_of": [
         0,
         0
+      ],
+      "structure": [
+        0,
+        0
       ]
     },
     "player": {
@@ -251,47 +255,74 @@ mod tests {
     "materials": [
       {
         "id": "steel",
-        "name": "steel",
-        "description": "A test material.",
+        "name": "Steel",
+        "description": "Steel.",
         "colour": "grey",
-        "density": 1000,
-        "melting_point": 1000,
-        "specific_heat": 500,
-        "thermal_conductivity": 10,
-        "hardness": 100,
+        "density": 7850,
+        "melting_point": 1450,
+        "specific_heat": 490,
+        "thermal_conductivity": 45,
+        "hardness": 150,
         "cut_by": {
           "LASER": 2
         }
-      },
+      }
+    ],
+    "structures": [
       {
-        "id": "hard_alloy",
-        "name": "hard_alloy",
-        "description": "A test material.",
-        "colour": "grey",
-        "density": 1000,
-        "melting_point": 1000,
-        "specific_heat": 500,
-        "thermal_conductivity": 10,
-        "hardness": 100,
-        "cut_by": {
-          "LASER": 5
-        }
+        "id": "deck_plating",
+        "name": "deck plating",
+        "description": "Plating.",
+        "glyph": ".",
+        "open_glyph": null,
+        "behaviour": "floor",
+        "material": "steel"
       }
     ]
   }
 }"#;
 
+    /// A two-tile world built from one material and one structure, so its
+    /// save is short enough to write out in full.
+    fn tiny_world() -> World {
+        use crate::content::ContentFile;
+        use crate::map_file::Catalogue;
+        let materials = crate::material::parse_materials(&[ContentFile::new(
+            "metals.json",
+            r#"{ "materials": [ { "id": "steel", "name": "Steel", "description": "Steel.",
+                 "colour": "grey", "density": 7850, "melting_point": 1450,
+                 "specific_heat": 490, "thermal_conductivity": 45, "hardness": 150,
+                 "cut_by": { "LASER": 2 } } ] }"#,
+        )])
+        .unwrap();
+        let structures = crate::structure::parse_structures(
+            &[ContentFile::new(
+                "floors.json",
+                r#"{ "structures": [ { "id": "deck_plating", "name": "deck plating",
+                     "description": "Plating.", "glyph": ".", "behaviour": "floor",
+                     "material": "steel" } ] }"#,
+            )],
+            &materials,
+        )
+        .unwrap();
+        let rows = ["@."];
+        let json = format!(
+            r#"{{ "id": "t", "name": "Nook",
+                 "legend": {{ ".": "deck_plating", "@": "deck_plating" }},
+                 "decks": [ {{ "rows": {rows:?} }} ] }}"#
+        );
+        let catalogue = Catalogue {
+            materials: &materials,
+            structures: &structures,
+        };
+        World::new(crate::map_file::parse_map(&json, catalogue).unwrap(), 7)
+    }
+
     #[test]
     fn the_save_format_is_stable() {
         // The exact text of a tiny save. If this fails, the save layout
         // changed: bump SAVE_VERSION, then update this text on purpose.
-        let rows = ["@."];
-        let json = format!(
-            r#"{{ "id": "t", "name": "Nook", "legend": {{ ".": "floor" }},
-                 "decks": [ {{ "rows": {rows:?} }} ] }}"#
-        );
-        let world = World::new(parse_map(&json).unwrap(), 7);
-        assert_eq!(save_to_string(&world), EXPECTED_SAVE);
+        assert_eq!(save_to_string(&tiny_world()), EXPECTED_SAVE);
     }
 
     #[test]
@@ -317,20 +348,20 @@ mod tests {
 
     #[test]
     fn a_save_without_a_version_is_not_a_save() {
-        let text = save_with("\"version\": 7,", "");
+        let text = save_with("\"version\": 8,", "");
         assert!(matches!(load_from_str(&text), Err(SaveError::NotASave)));
     }
 
     #[test]
     fn saves_from_other_versions_are_rejected_clearly() {
-        // A save from before materials: exactly what an old save file on
+        // A save from before structures: exactly what an old save file on
         // disk looks like after this build is installed.
-        let text = save_with(r#""version": 7"#, r#""version": 6"#);
+        let text = save_with(r#""version": 8"#, r#""version": 7"#);
         let err = load_from_str(&text).unwrap_err();
-        assert!(matches!(err, SaveError::UnsupportedVersion { found: 6 }));
+        assert!(matches!(err, SaveError::UnsupportedVersion { found: 7 }));
         assert_eq!(
             err.to_string(),
-            "save file is version 6, but this build only reads version 7"
+            "save file is version 7, but this build only reads version 8"
         );
     }
 
@@ -429,7 +460,7 @@ mod tests {
     fn doors_are_saved_open_or_closed() {
         let rows = ["@+'"];
         let json = format!(
-            r#"{{ "id": "t", "name": "T", "legend": {{ "+": "door_closed", "'": "door_open" }},
+            r#"{{ "id": "t", "name": "T", "legend": {{ "+": "door", "'": {{ "structure": "door", "open": true }} }},
                  "decks": [ {{ "rows": {rows:?} }} ] }}"#
         );
         let mut world = World::new(parse_map(&json).unwrap(), 3);

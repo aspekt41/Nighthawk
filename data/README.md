@@ -7,9 +7,19 @@ The game looks for this folder in three places, in order:
 `$NIGHTHAWK_DATA`, then `./data`, then the repository's `data/` as it was when
 the game was built.
 
-## Materials (`materials.json`)
+## Folders of content
 
-Every tile is a *shape* (from the map) made of a *material* (from here).
+Each kind of content has a folder, and **every `.json` file in it is
+loaded**, in name order, so content can be grouped into as many files as
+reads best (`metals.json`, `fabrics.json`…). An id must be unique across all
+the files in its folder. Mistakes name the folder and the file, for example
+`data/structures: invalid structures file doors.json: missing field "name"`.
+
+Every tile on a map is a **structure** (what it is: a bulkhead, a door)
+made of a **material** (what it's made of: steel, Nanocarbon Alloy).
+
+## Materials (`materials/*.json`)
+
 Each material has real physical properties, in whole numbers:
 
 ```json
@@ -20,14 +30,13 @@ Each material has real physical properties, in whole numbers:
       "colour": "grey", "density": 7850, "melting_point": 1450,
       "specific_heat": 490, "thermal_conductivity": 45, "hardness": 150,
       "cut_by": { "LASER": 2 } }
-  ],
-  "defaults": { "floor": "steel", "wall": "steel", "...": "one per shape" }
+  ]
 }
 ```
 
 | Field | Meaning |
 |---|---|
-| `id` | How maps refer to it. Must be unique. |
+| `id` | How structures and maps refer to it. |
 | `name`, `description` | Shown in look mode (`V`). |
 | `colour` | Walls made of it are drawn in this colour: `white`, `grey`, `dark_grey`, `red`, `yellow`, `green`, `cyan`, `blue`, `magenta`. |
 | `density` | kg/m³ |
@@ -36,22 +45,43 @@ Each material has real physical properties, in whole numbers:
 | `thermal_conductivity` | W/(m·K) |
 | `hardness` | Vickers hardness (HV) |
 | `cut_by` | Optional. Tool qualities that cut it, with the level each needs (1 to 10); any one is enough. Leave it out and nothing can cut it. Qualities today: `LASER`. |
-| `defaults` | The material each shape is made of unless a map's legend says otherwise. Every shape needs one. |
 
-Mistakes are reported precisely: a duplicate id, a level out of range, a
-shape with no default, or a default naming a material that doesn't exist.
+Mistakes are reported precisely: a duplicate id, or a level out of range.
+
+## Structures (`structures/*.json`)
+
+```json
+{
+  "structures": [
+    { "id": "door", "name": "door",
+      "description": "A sliding pressure door. Shut, it holds air; open, it doesn't.",
+      "glyph": "+", "open_glyph": "'", "behaviour": "door",
+      "material": "aluminium_alloy" }
+  ]
+}
+```
+
+| Field | Meaning |
+|---|---|
+| `id` | How map legends refer to it. |
+| `name`, `description` | Shown in look mode and in messages ("You bump into the hull plating."). |
+| `glyph` | The one character the map draws it with. |
+| `open_glyph` | Doors only, and every door needs one: the character for the door when open. |
+| `behaviour` | What it does in the simulation, one of: `floor` (walk on it; air passes), `wall` (solid, airtight), `stairs_up` / `stairs_down` (a ladder to the next deck; see [Stairs](#stairs)), `door` (opens and shuts; shut, it's airtight), `hull_crack` (solid, a 4 cm² leak to space), `hull_breach` (solid, a 400 cm² hole to space). |
+| `material` | The material it's made of, unless a map legend says otherwise. |
 
 ## Maps (`maps/*.json`)
 
-Each deck is drawn as rows of characters. The `legend` says which tile each
-character is. `@` marks the player start, on a floor tile, and must appear
-exactly once.
+Each deck is drawn as rows of characters. The `legend` says which structure
+each character is. `@` marks where the player starts: it must appear exactly
+once, and the legend says what it stands on (something walkable).
 
 ```json
 {
   "id": "closet",
   "name": "Supply closet",
-  "legend": { "#": "wall", ".": "floor", ">": "stairs_up", "<": "stairs_down" },
+  "legend": { "#": "bulkhead", ".": "deck_plating", "@": "deck_plating",
+              ">": "ladder_up", "<": "ladder_down" },
   "decks": [
     { "name": "Lower closet",
       "rows": ["#####",
@@ -69,7 +99,7 @@ exactly once.
 |---|---|
 | `id` | Must match the file name (`closet.json` → `"closet"`) |
 | `name` | Shown as the map panel's title |
-| `legend` | One character → a tile shape, made of that shape's default material (see [Materials](#materials-materialsjson)): `"#": "wall"`. Or a shape and a material: `"H": { "tile": "wall", "material": "nanocarbon_alloy" }`. Shapes today: `wall`, `floor`, `stairs_up`, `stairs_down`, `door_closed`, `door_open`, `hull_crack` (a 4 cm² leak to space), `hull_breach` (a 400 cm² hole to space). `@` is reserved; the player starts on default floor. |
+| `legend` | One character → a structure's id, made of the structure's own material: `"#": "bulkhead"`. Or an object, to give it another material or place a door open: `"H": { "structure": "bulkhead", "material": "nanocarbon_alloy" }`, `"'": { "structure": "door", "open": true }`. Mistakes name the character: an unknown structure or material, `open` on something that isn't a door, or `@` standing on something solid. |
 | `decks` | Listed bottom to top: the first is deck 0. All decks must be the same size. |
 | `decks[].name` | Optional. Shown as the map panel's title on that deck. Without it the deck is "Deck 0", "Deck 1" and so on. |
 | `decks[].pressure` | Optional. The deck's starting air pressure as a percentage of normal ship air (101.3 kPa: 21% O2, 79% N2, a trace of CO2), from 0 (vacuum) to 200. Default 100. Each second, air evens out across every connected open space (joined by open floor, open doors and ladders), so a deck at 60% next to a full one shares their air as soon as time passes. |

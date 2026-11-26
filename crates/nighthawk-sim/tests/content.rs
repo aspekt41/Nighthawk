@@ -4,25 +4,27 @@
 //! uses the crate only through its public API, the same way a front-end does.
 //! It's also allowed to read files, unlike the sim itself.
 
+mod common;
+
+use std::collections::{HashSet, VecDeque};
 use std::fs;
 use std::path::PathBuf;
 
-use std::collections::{HashSet, VecDeque};
-
-use nighthawk_sim::{
-    Dir, LoadedMap, Materials, Pos, Quality, Tile, Vertical, parse_map, parse_materials,
-};
+use nighthawk_sim::{Catalogue, Dir, LoadedMap, MapError, Pos, Quality, Tile, Vertical, parse_map};
 
 fn maps_dir() -> PathBuf {
     // CARGO_MANIFEST_DIR is this crate's folder, crates/nighthawk-sim.
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../data/maps")
 }
 
-/// The shipped `data/materials.json`, which every map is checked against.
-fn materials() -> Materials {
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../data/materials.json");
-    let text = fs::read_to_string(path).expect("data/materials.json is readable");
-    parse_materials(&text).unwrap_or_else(|e| panic!("data/materials.json: {e}"))
+/// Parses a map's text against the shipped materials and structures.
+fn load(text: &str) -> Result<LoadedMap, MapError> {
+    let (materials, structures) = common::catalogue();
+    let catalogue = Catalogue {
+        materials: &materials,
+        structures: &structures,
+    };
+    parse_map(text, catalogue)
 }
 
 #[test]
@@ -32,7 +34,7 @@ fn every_shipped_map_loads() {
         let path = entry.expect("readable directory entry").path();
         if path.extension().is_some_and(|ext| ext == "json") {
             let text = fs::read_to_string(&path).expect("readable map file");
-            if let Err(e) = parse_map(&text, &materials()) {
+            if let Err(e) = load(&text) {
                 panic!("{} failed to load: {e}", path.display());
             }
             checked += 1;
@@ -50,7 +52,7 @@ fn every_shipped_map_id_matches_its_file_name() {
     for entry in fs::read_dir(maps_dir()).expect("data/maps exists") {
         let path = entry.expect("readable directory entry").path();
         if path.extension().is_some_and(|ext| ext == "json") {
-            let loaded = parse_map(&fs::read_to_string(&path).unwrap(), &materials()).unwrap();
+            let loaded = load(&fs::read_to_string(&path).unwrap()).unwrap();
             let stem = path.file_stem().unwrap().to_string_lossy();
             assert_eq!(
                 loaded.id,
@@ -68,7 +70,7 @@ fn the_starting_map_has_no_way_off_its_edges() {
     // plain bulkhead, or damaged hull (cracks and breaches leak air, but
     // they're solid).
     let text = fs::read_to_string(maps_dir().join("aft_ring.json")).unwrap();
-    let map = parse_map(&text, &materials()).unwrap().map;
+    let map = load(&text).unwrap().map;
     let on_edge =
         |p: &Pos| p.x == 0 || p.y == 0 || p.x == map.width() - 1 || p.y == map.height() - 1;
     for p in map.positions().filter(on_edge) {
@@ -80,7 +82,7 @@ fn the_starting_map_has_no_way_off_its_edges() {
 #[test]
 fn the_starting_map_has_hull_damage_to_vent_through() {
     let text = fs::read_to_string(maps_dir().join("aft_ring.json")).unwrap();
-    let map = parse_map(&text, &materials()).unwrap().map;
+    let map = load(&text).unwrap().map;
     let holes: u64 = map
         .positions()
         .map(|p| map.get(p).unwrap().hole_cm2())
@@ -94,7 +96,7 @@ fn shipped_maps() -> Vec<(PathBuf, LoadedMap)> {
     for entry in fs::read_dir(maps_dir()).expect("data/maps exists") {
         let path = entry.expect("readable directory entry").path();
         if path.extension().is_some_and(|ext| ext == "json") {
-            let loaded = parse_map(&fs::read_to_string(&path).unwrap(), &materials()).unwrap();
+            let loaded = load(&fs::read_to_string(&path).unwrap()).unwrap();
             maps.push((path, loaded));
         }
     }
@@ -154,27 +156,49 @@ fn every_open_tile_can_be_reached_from_the_start() {
 #[test]
 fn the_starting_map_has_more_than_one_deck() {
     let text = fs::read_to_string(maps_dir().join("aft_ring.json")).unwrap();
-    let loaded = parse_map(&text, &materials()).unwrap();
+    let loaded = load(&text).unwrap();
     assert!(loaded.map.depth() >= 2);
     assert_eq!(loaded.deck_names[0], "Stasis bay");
 }
 
 #[test]
-fn the_hull_is_nanocarbon_and_the_inside_is_not() {
-    // Every solid tile on the map's border is outer hull, made of
-    // Nanocarbon Alloy; nothing inside the ship is.
-    let text = fs::read_to_string(maps_dir().join("aft_ring.json")).unwrap();
-    let loaded = parse_map(&text, &materials()).unwrap();
-    let (map, list) = (&loaded.map, &loaded.materials);
-    let made_of = |p: Pos| {
-        list[usize::from(map.material_index(p).unwrap())]
-            .id
-            .as_str()
-    };
+fn the_hull_is_nanocarbon_hull_structures_and_the_inside_is_neither() {
+    // Every tile on the map's border is a hull structure (plating, a crack
+    // or a breach), made of Nanocarbon Alloy; nothing inside the ship is.
+    let world = common::start_world(1);
+    let map = world.map();
     for p in map.positions() {
         let on_edge = p.x == 0 || p.y == 0 || p.x == map.width() - 1 || p.y == map.height() - 1;
-        let hull = made_of(p) == "nanocarbon_alloy";
-        assert_eq!(on_edge, hull, "{p:?} is {}", made_of(p));
+        let structure = world.structure_at(p).unwrap().id.as_str();
+        let material = world.material_at(p).unwrap().id.as_str();
+        assert_eq!(
+            on_edge,
+            structure.starts_with("hull_"),
+            "{p:?} is {structure}"
+        );
+        assert_eq!(
+            on_edge,
+            material == "nanocarbon_alloy",
+            "{p:?} is {material}"
+        );
+    }
+}
+
+#[test]
+fn every_shipped_structure_is_used_by_the_starting_map() {
+    // A structure nothing uses is probably a typo in a map's legend.
+    let world = common::start_world(1);
+    let used: HashSet<&str> = world
+        .map()
+        .positions()
+        .map(|p| world.structure_at(p).unwrap().id.as_str())
+        .collect();
+    for structure in world.structures() {
+        assert!(
+            used.contains(structure.id.as_str()),
+            "{} is unused",
+            structure.id
+        );
     }
 }
 
@@ -182,7 +206,7 @@ fn the_hull_is_nanocarbon_and_the_inside_is_not() {
 fn the_shipped_materials_have_the_agreed_laser_levels() {
     // Levels are set by hand (decision D35). This test is the list to
     // update on purpose when they're retuned.
-    let materials = materials();
+    let (materials, _) = common::catalogue();
     let level = |id: &str| {
         let i = usize::from(materials.index_of(id).unwrap());
         materials.list()[i].cut_by.get(&Quality::Laser).copied()

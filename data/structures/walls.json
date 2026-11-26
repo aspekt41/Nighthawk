@@ -1,0 +1,12 @@
+{
+  "structures": [
+    {
+      "id": "bulkhead",
+      "name": "bulkhead",
+      "description": "A structural wall between compartments, airtight when whole.",
+      "glyph": "#",
+      "behaviour": "wall",
+      "material": "steel"
+    }
+  ]
+}

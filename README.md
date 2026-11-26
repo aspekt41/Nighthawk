@@ -4,7 +4,7 @@ A terminal-native survival and base-building game where the systems run deep. It
 the Dwarf Fortress / Cataclysm: DDA tradition and is built around the explore → find →
 craft → build loop of Subnautica, Abiotic Factor and Minecraft.
 
-**Status:** M1.6. A title menu, save and load, a clock in real seconds, air (O2, N2 and CO2) that evens out across every connected space each second, hull breaches that vent it to space, heat that moves with the air and leaks out through the hull, breath and warmth meters that run down in thin or cold air, materials with real properties for everything on the ship (look at any tile with `V`, act on one with `e`), and two decks to explore, the Stasis bay and the Crew quarters above it (with doors to open and close), joined by a ladder (loaded from [`data/maps/aft_ring.json`](data/maps/aft_ring.json)), while the ship creaks around you. Every game comes from a seed, so the same seed and moves replay exactly. See [Running it](#running-it).
+**Status:** M1.7a. A title menu, save and load, a clock in real seconds, air (O2, N2 and CO2) that evens out across every connected space each second, hull breaches that vent it to space, heat that moves with the air and leaks out through the hull, breath and warmth meters that run down in thin or cold air, structures (bulkheads, doors, hull plating) made of materials with real properties (look at any tile with `V`, act on one with `e`), and two decks to explore, the Stasis bay and the Crew quarters above it (with doors to open and close), joined by a ladder (loaded from [`data/maps/aft_ring.json`](data/maps/aft_ring.json)), while the ship creaks around you. Every game comes from a seed, so the same seed and moves replay exactly. See [Running it](#running-it).
 
 ## Documents
 

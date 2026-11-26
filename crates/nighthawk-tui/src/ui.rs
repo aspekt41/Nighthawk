@@ -245,7 +245,7 @@ impl Widget for MapView<'_> {
                 );
                 let (glyph, style) = self.cell(pos);
                 buf[(area.x + col, area.y + row)]
-                    .set_symbol(glyph)
+                    .set_symbol(&glyph)
                     .set_style(style);
             }
         }
@@ -255,7 +255,7 @@ impl Widget for MapView<'_> {
 impl MapView<'_> {
     /// The character and style for the map cell at `pos`, highlighted
     /// (drawn in reverse) if it's under the look cursor.
-    fn cell(&self, pos: Pos) -> (&'static str, Style) {
+    fn cell(&self, pos: Pos) -> (String, Style) {
         let (glyph, style) = glyph_at(self.world, pos, self.overlay);
         if Some(pos) == self.cursor {
             return (glyph, style.add_modifier(Modifier::REVERSED));
@@ -266,27 +266,33 @@ impl MapView<'_> {
 
 /// The character and colour for one map cell. The player is drawn on top of
 /// whatever tile they stand on. Off-map cells are blank.
-fn glyph_at(world: &World, pos: Pos, overlay: Option<Overlay>) -> (&'static str, Style) {
+fn glyph_at(world: &World, pos: Pos, overlay: Option<Overlay>) -> (String, Style) {
     if pos == world.player() {
-        return (
-            "@",
-            Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD),
-        );
+        let style = Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD);
+        return ("@".into(), style);
     }
     let map = world.map();
-    match (map.get(pos), overlay) {
-        (Some(Tile::Floor), Some(Overlay::Air)) => air_glyph(map.air(pos).unwrap_or(Mix::VACUUM)),
-        (Some(Tile::Floor), Some(Overlay::Heat)) => heat_glyph(map.temperature(pos)),
-        // Walls take their material's colour, so the hull stands out from
-        // the bulkheads inside.
-        (Some(Tile::Wall), _) => {
-            let colour = world
-                .material_at(pos)
-                .map_or(Color::Gray, |m| colour(m.colour));
-            ("#", Style::new().fg(colour))
-        }
-        (tile, _) => tile.map_or((" ", Style::new()), tile_glyph),
-    }
+    let Some(tile) = map.get(pos) else {
+        return (" ".into(), Style::new());
+    };
+    let shaded = match (tile, overlay) {
+        (Tile::Floor, Some(Overlay::Air)) => air_glyph(map.air(pos).unwrap_or(Mix::VACUUM)),
+        (Tile::Floor, Some(Overlay::Heat)) => heat_glyph(map.temperature(pos)),
+        _ => return structure_glyph(world, pos, tile),
+    };
+    (shaded.0.to_string(), shaded.1)
+}
+
+/// How the structure at `pos` looks: its own glyph (a door's changes when
+/// it opens), in the colour for its kind of tile. Walls take their
+/// material's colour, so the hull stands out from the bulkheads inside.
+fn structure_glyph(world: &World, pos: Pos, tile: Tile) -> (String, Style) {
+    let glyph = world.structure_at(pos).map_or('?', |s| s.glyph_for(tile));
+    let style = match (tile, world.material_at(pos)) {
+        (Tile::Wall, Some(material)) => Style::new().fg(colour(material.colour)),
+        _ => tile_style(tile),
+    };
+    (glyph.to_string(), style)
 }
 
 /// The terminal colour for a material's colour.
@@ -349,28 +355,18 @@ fn air_glyph(mix: Mix) -> (&'static str, Style) {
     }
 }
 
-/// How each kind of tile looks. `<` and `>` are the classic roguelike
-/// glyphs for ways up and down.
-fn tile_glyph(tile: Tile) -> (&'static str, Style) {
+/// The colour for each kind of tile. Ladders and breaches are bold, so
+/// the way on and the danger catch the eye.
+fn tile_style(tile: Tile) -> Style {
     match tile {
-        Tile::Wall => ("#", Style::new().fg(Color::Gray)),
-        Tile::Floor => (".", Style::new().fg(Color::DarkGray)),
-        // Drawn with the key that uses them (D31): `>` up, `<` down.
-        Tile::StairsUp => (
-            ">",
-            Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD),
-        ),
-        Tile::StairsDown => (
-            "<",
-            Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD),
-        ),
-        Tile::DoorClosed => ("+", Style::new().fg(Color::LightRed)),
-        Tile::DoorOpen => ("'", Style::new().fg(Color::LightRed)),
-        Tile::HullCrack => ("x", Style::new().fg(Color::Red)),
-        Tile::HullBreach => (
-            "X",
-            Style::new().fg(Color::Red).add_modifier(Modifier::BOLD),
-        ),
+        Tile::Wall => Style::new().fg(Color::Gray),
+        Tile::Floor => Style::new().fg(Color::DarkGray),
+        Tile::StairsUp | Tile::StairsDown => {
+            Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD)
+        }
+        Tile::DoorClosed | Tile::DoorOpen => Style::new().fg(Color::LightRed),
+        Tile::HullCrack => Style::new().fg(Color::Red),
+        Tile::HullBreach => Style::new().fg(Color::Red).add_modifier(Modifier::BOLD),
     }
 }
 
@@ -547,13 +543,17 @@ fn air_here(world: &World, at: Pos, tile: Tile) -> Vec<Line<'static>> {
     vec![pressure, temperature_line(world.map().temperature(at))]
 }
 
-/// What to call the tile at `at`: "Outer hull" for a wall on the hull,
-/// otherwise the shape's own name.
+/// What to call the tile at `at`: its structure's name, and for a door,
+/// whether it's open.
 fn tile_name(world: &World, at: Pos, tile: Tile) -> String {
-    if tile == Tile::Wall && world.map().is_outer_hull(at) {
-        return "Outer hull".into();
+    let name = world
+        .structure_at(at)
+        .map_or_else(|| capitalised(tile.name()), |s| capitalised(&s.name));
+    match tile {
+        Tile::DoorOpen => format!("{name} (open)"),
+        Tile::DoorClosed => format!("{name} (shut)"),
+        _ => name,
     }
-    capitalised(tile.name())
 }
 
 /// "ladder up" → "Ladder up".
@@ -618,14 +618,18 @@ fn option_lines(option: ActionOption) -> Vec<Line<'static>> {
     }
 }
 
-/// The bottom panel in look mode: the material's description, wrapped.
+/// The bottom panel in look mode: what the structure is, then what it's
+/// made of, wrapped.
 fn description(world: &World, at: Pos) -> Paragraph<'static> {
-    let text = world
+    let structure = world
+        .structure_at(at)
+        .map_or("", |s| s.description.as_str());
+    let material = world
         .material_at(at)
-        .map_or(String::new(), |m| m.description.clone());
-    Paragraph::new(text)
+        .map_or(String::new(), |m| format!("{}: {}", m.name, m.description));
+    Paragraph::new(format!("{structure} {material}"))
         .wrap(Wrap { trim: true })
-        .block(Block::bordered().title(" Made of "))
+        .block(Block::bordered().title(" About "))
 }
 
 /// The newest `lines` log entries, oldest at the top.
@@ -647,12 +651,17 @@ mod tests {
     fn test_world() -> World {
         let rows = ["#######", "#.....#", "#..@..#", "#.....#", "#######"];
         let json = format!(
-            r##"{{ "id": "t", "name": "T", "legend": {{ "#": "wall", ".": "floor" }},
+            r##"{{ "id": "t", "name": "T",
+                 "legend": {{ "#": "bulkhead", ".": "deck_plating", "@": "deck_plating" }},
                  "decks": [ {{ "rows": {rows:?} }} ] }}"##
         );
         let data = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../data");
-        let materials = crate::content::load_materials(&data).unwrap();
-        World::new(parse_map(&json, &materials).unwrap(), 1)
+        let (materials, structures) = crate::content::load_catalogue(&data).unwrap();
+        let catalogue = nighthawk_sim::Catalogue {
+            materials: &materials,
+            structures: &structures,
+        };
+        World::new(parse_map(&json, catalogue).unwrap(), 1)
     }
 
     /// Renders the map into an off-screen buffer and returns its rows as text.
@@ -801,19 +810,53 @@ mod tests {
     }
 
     #[test]
-    fn every_tile_kind_has_a_distinct_glyph() {
-        let tiles = [
-            Tile::Floor,
-            Tile::Wall,
-            Tile::StairsUp,
-            Tile::StairsDown,
-            Tile::DoorClosed,
-            Tile::DoorOpen,
-            Tile::HullCrack,
-            Tile::HullBreach,
-        ];
-        let glyphs: Vec<&str> = tiles.iter().map(|&t| tile_glyph(t).0).collect();
-        assert_eq!(glyphs, vec![".", "#", ">", "<", "+", "'", "x", "X"]);
+    fn every_structure_on_the_real_map_draws_its_own_glyph() {
+        let world = real_world();
+        let glyph = |x, y, z| glyph_at(&world, Pos::new(x, y, z), None).0;
+        assert_eq!(glyph(5, 7, 0), ".", "deck plating");
+        assert_eq!(glyph(0, 7, 0), "#", "hull plating");
+        assert_eq!(glyph(27, 2, 0), ">", "ladder up");
+        assert_eq!(glyph(27, 2, 1), "<", "ladder down");
+        assert_eq!(glyph(5, 4, 1), "+", "a shut door");
+        assert_eq!(glyph(17, 0, 1), "x", "the crack");
+        assert_eq!(glyph(5, 13, 1), "X", "the breach");
+        assert_eq!(glyph(-5, 0, 0), " ", "off the map");
+    }
+
+    #[test]
+    fn an_open_door_draws_its_open_glyph() {
+        let mut world = real_world();
+        // Up the ladder and along to the cabin door at (5, 4) on deck 1.
+        use nighthawk_sim::Command::{Climb, Move};
+        let route = std::iter::repeat_n(Move(Dir::North), 5)
+            .chain(std::iter::repeat_n(Move(Dir::East), 23))
+            .chain([Climb(nighthawk_sim::Vertical::Up)])
+            .chain(std::iter::repeat_n(Move(Dir::South), 3))
+            .chain(std::iter::repeat_n(Move(Dir::West), 22))
+            .chain([Move(Dir::North)]);
+        for command in route {
+            world.apply(command);
+        }
+        assert_eq!(world.player(), Pos::new(5, 5, 1));
+        assert_eq!(glyph_at(&world, Pos::new(5, 4, 1), None).0, "'");
+    }
+
+    #[test]
+    fn tiles_have_their_own_colours() {
+        assert_eq!(tile_style(Tile::Floor).fg, Some(Color::DarkGray));
+        assert_eq!(tile_style(Tile::Wall).fg, Some(Color::Gray));
+        assert_eq!(tile_style(Tile::DoorOpen).fg, Some(Color::LightRed));
+        assert!(
+            tile_style(Tile::StairsUp)
+                .add_modifier
+                .contains(Modifier::BOLD)
+        );
+        assert_eq!(tile_style(Tile::HullCrack).fg, Some(Color::Red));
+        assert!(
+            tile_style(Tile::HullBreach)
+                .add_modifier
+                .contains(Modifier::BOLD)
+        );
     }
 
     #[test]
@@ -1040,7 +1083,7 @@ mod tests {
         let world = real_world();
         let lines = look_texts(&world, Pos::new(0, 7, 0));
         assert_eq!(lines[0], "Look  0, 7  deck 0");
-        assert_eq!(lines[2], "Outer hull");
+        assert_eq!(lines[2], "Hull plating");
         assert_eq!(lines[3], "Nanocarbon Alloy");
         assert!(lines.contains(&"Cut by   LASER 5".to_string()));
         assert!(lines.contains(&"Solid: no air".to_string()));
@@ -1051,7 +1094,7 @@ mod tests {
         let world = real_world();
         let lines = look_texts(&world, world.player());
         assert_eq!(lines[1], "You are here.");
-        assert_eq!(lines[2], "Floor");
+        assert_eq!(lines[2], "Deck plating");
         assert_eq!(lines[3], "Steel");
         assert!(lines.contains(&"Air   101.3 kPa".to_string()));
         assert!(lines.contains(&"Temp  14.0 °C".to_string()));
@@ -1089,8 +1132,12 @@ mod tests {
         };
         let screen = draw_screen(80, 24, |f| render_game(&world, &[], view, f));
         assert!(screen.contains("[looking]"));
-        assert!(screen.contains(" Made of "));
-        assert!(screen.contains("The outer hull"));
+        assert!(screen.contains(" About "));
+        assert!(screen.contains("The outer hull."), "the structure");
+        assert!(
+            screen.contains("Nanocarbon Alloy: Layered carbon"),
+            "and its material"
+        );
         assert!(!screen.contains(" Status "), "the look panel replaces it");
     }
 
@@ -1117,8 +1164,8 @@ mod tests {
         let world = real_world();
         let hull = glyph_at(&world, Pos::new(0, 7, 0), None);
         let pillar = glyph_at(&world, Pos::new(9, 5, 0), None);
-        assert_eq!(hull, ("#", Style::new().fg(Color::DarkGray)));
-        assert_eq!(pillar, ("#", Style::new().fg(Color::Gray)));
+        assert_eq!(hull, ("#".to_string(), Style::new().fg(Color::DarkGray)));
+        assert_eq!(pillar, ("#".to_string(), Style::new().fg(Color::Gray)));
     }
 
     #[test]
@@ -1161,7 +1208,7 @@ mod tests {
         // From the start (4, 7), the hull at (0, 7) is four tiles west.
         let lines = interact_texts(&world, Pos::new(0, 7, 0));
         assert_eq!(lines[0], "At    0, 7  deck 0");
-        assert_eq!(lines[1], "Outer hull");
+        assert_eq!(lines[1], "Hull plating");
         assert_eq!(lines[2], "Nanocarbon Alloy");
         assert_eq!(lines[4], "x  Cut");
         assert_eq!(lines[5], "   too far: reach 2");

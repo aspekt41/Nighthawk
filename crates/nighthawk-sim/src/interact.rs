@@ -171,9 +171,9 @@ mod tests {
         let rows = ["#######", "#@'..H#", "#..##.#", "#+....#", "#######"];
         let json = format!(
             r##"{{ "id": "t", "name": "T",
-                 "legend": {{ "#": "wall", ".": "floor", "+": "door_closed",
-                             "'": "door_open",
-                             "H": {{ "tile": "wall", "material": "hard_alloy" }} }},
+                 "legend": {{ "#": "wall", ".": "floor", "+": "door",
+                             "'": {{ "structure": "door", "open": true }},
+                             "H": {{ "structure": "wall", "material": "hard_alloy" }} }},
                  "decks": [ {{ "rows": {rows:?} }} ] }}"##
         );
         World::new(parse_map(&json).unwrap(), 1)

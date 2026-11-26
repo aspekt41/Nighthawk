@@ -288,10 +288,10 @@ impl App {
             return;
         };
         // Keep only the events worth a log line, then log them.
-        let lines: Vec<String> = world
-            .apply(command)
+        let events = world.apply(command);
+        let lines: Vec<String> = events
             .into_iter()
-            .filter_map(text::describe)
+            .filter_map(|event| text::describe_in(world, event))
             .collect();
         for line in lines {
             self.push_log(line);

@@ -1,6 +1,19 @@
 //! The words the game shows the player: log lines for sim events.
 
-use nighthawk_sim::{Action, Blocked, BreathLevel, Cause, Event, Sound, Vertical, WarmthLevel};
+use nighthawk_sim::{
+    Action, Blocked, BreathLevel, Cause, Event, Sound, Vertical, WarmthLevel, World,
+};
+
+/// Like [`describe`], but with the world to hand, so a bump names the
+/// structure you walked into ("the hull plating", not just "the wall").
+pub fn describe_in(world: &World, event: Event) -> Option<String> {
+    match event {
+        Event::Bumped { at, .. } if let Some(structure) = world.structure_at(at) => {
+            Some(format!("You bump into the {}.", structure.name))
+        }
+        _ => describe(event),
+    }
+}
 
 /// Turns a sim event into a log line. Ordinary steps aren't worth logging.
 ///
@@ -349,5 +362,23 @@ mod tests {
             assert!(!line.is_empty());
             assert!(!lines[i + 1..].contains(line), "{line:?} is used twice");
         }
+    }
+
+    #[test]
+    fn a_bump_names_the_structure_you_walked_into() {
+        let world = nighthawk_sim::World::new(crate::content::load_start_map().unwrap(), 1);
+        let bump = Event::Bumped {
+            at: Pos::new(0, 7, 0),
+            tile: Tile::Wall,
+        };
+        assert_eq!(
+            describe_in(&world, bump).as_deref(),
+            Some("You bump into the hull plating.")
+        );
+        assert_eq!(
+            describe_in(&world, Event::Waited).as_deref(),
+            Some("You wait."),
+            "other events read as usual"
+        );
     }
 }

@@ -6,25 +6,16 @@
 //! the lounge and, through the open ladder shaft, the stasis bay below, and
 //! all of that air starts escaping. Closing the door stops it.
 
-use std::fs;
-use std::path::PathBuf;
+mod common;
 
-use nighthawk_sim::{
-    Cause, Command, Dir, Event, Pos, Tile, Vertical, World, parse_map, parse_materials,
-};
+use nighthawk_sim::{Cause, Command, Dir, Event, Pos, Tile, Vertical, World};
 
 const DOOR: Pos = Pos::new(5, 7, 1); // the breached room's door
 const IN_THE_ROOM: Pos = Pos::new(5, 10, 1);
 const OUTSIDE_THE_DOOR: Pos = Pos::new(5, 6, 1);
 
 fn start_world() -> World {
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../data/maps/aft_ring.json");
-    let data = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../data");
-    let materials = parse_materials(&fs::read_to_string(data.join("materials.json")).unwrap());
-    World::new(
-        parse_map(&fs::read_to_string(path).unwrap(), &materials.unwrap()).unwrap(),
-        1,
-    )
+    common::start_world(1)
 }
 
 fn pressure(world: &World, at: Pos) -> u64 {

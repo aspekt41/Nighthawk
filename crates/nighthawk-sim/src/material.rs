@@ -1,28 +1,30 @@
-//! Materials: what everything on the ship is made of (decisions D10 and D35).
+//! Materials: what everything on the ship is made of (decisions D10, D35
+//! and D37).
 //!
-//! Every tile has a *shape* (a [`Tile`]: wall, floor, door…), which decides
-//! how it behaves, and a *material*, which decides what it's made of. The
-//! two are separate, the way Dwarf Fortress does it: a door that opens
-//! changes shape but not material, and later a wall you build is simply
-//! "wall, in whatever you built it from".
+//! Every tile is a *structure* (bulkhead, door, deck plating…; see
+//! `structure.rs`), which decides what it is and how it behaves, made of a
+//! *material*, which decides what it's made of. The two are separate, the
+//! way Dwarf Fortress does it: the same door can be aluminium or steel, and
+//! later a wall you build is simply "bulkhead, in whatever you built it
+//! from".
 //!
-//! Materials are content, loaded from `data/materials.json`. Each has real
+//! Materials are content, loaded from `data/materials/*.json`. Each has real
 //! physical properties in SI units, as whole numbers (like the air, so every
 //! machine computes the same game), and the tool qualities that can cut it,
 //! CDDA-style (decision D9): `"cut_by": { "LASER": 2 }` means a cutter with
 //! the `LASER` quality at level 2 or more gets through. The levels are set
 //! by hand and tuned as the game grows.
 //!
-//! The file also names a default material for every shape, so a map only
-//! has to spell out the exceptions (the hull, say).
+//! Materials live in `data/materials/*.json`. Which material a structure is
+//! made of by default is up to the structure (see `structure.rs`).
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::BTreeMap;
 use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
+use crate::content::{ContentFile, FileError, first_duplicate, read_all};
 use crate::hash::Fnv64;
-use crate::map::Tile;
 
 /// A tool quality (decision D9). Recipes and actions ask for a quality at a
 /// level, never for a particular tool, so there can be many ways to get one.
@@ -127,13 +129,10 @@ impl Material {
     }
 }
 
-/// The parsed `materials.json`: every material, and which one each tile
-/// shape is made of unless a map says otherwise.
+/// Every material from the files in `data/materials/`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Materials {
     list: Vec<Material>,
-    /// The index into `list` of each shape's default material.
-    defaults: BTreeMap<Tile, u16>,
 }
 
 impl Materials {
@@ -148,19 +147,14 @@ impl Materials {
         let i = self.list.iter().position(|m| m.id == id)?;
         Some(u16::try_from(i).expect("material count was checked on load"))
     }
-
-    /// The index of the material `shape` is made of by default.
-    pub fn default_for(&self, shape: Tile) -> u16 {
-        self.defaults[&shape]
-    }
 }
 
-/// Everything that can be wrong with a materials file.
+/// Everything that can be wrong with the materials files.
 #[derive(Debug)]
 pub enum MaterialError {
-    /// Not valid JSON, or the wrong shape: a missing or misspelled field,
-    /// an unknown colour or quality.
-    Json(serde_json::Error),
+    /// A file that isn't valid JSON, or has the wrong shape: a missing or
+    /// misspelled field, an unknown colour or quality.
+    File(FileError),
     NoMaterials,
     /// More materials than a tile can refer to.
     TooMany {
@@ -175,21 +169,12 @@ pub enum MaterialError {
         quality: Quality,
         level: u8,
     },
-    /// A tile shape with no default material.
-    MissingDefault {
-        shape: Tile,
-    },
-    /// A default that names a material that isn't in the file.
-    UnknownDefault {
-        shape: Tile,
-        material: String,
-    },
 }
 
 impl fmt::Display for MaterialError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            MaterialError::Json(e) => write!(f, "invalid materials JSON: {e}"),
+            MaterialError::File(e) => write!(f, "invalid materials file {e}"),
             MaterialError::NoMaterials => write!(f, "there are no materials"),
             MaterialError::TooMany { count } => {
                 write!(f, "{count} materials is too many; the most is {}", u16::MAX)
@@ -204,56 +189,28 @@ impl fmt::Display for MaterialError {
                 "material {material:?} needs {} {level} to cut; levels go from 1 to {MAX_QUALITY_LEVEL}",
                 quality.name()
             ),
-            MaterialError::MissingDefault { shape } => {
-                write!(f, "no default material for {}", shape.json_name())
-            }
-            MaterialError::UnknownDefault { shape, material } => write!(
-                f,
-                "the default material for {} is {material:?}, which isn't defined",
-                shape.json_name()
-            ),
         }
     }
 }
 
 impl std::error::Error for MaterialError {}
 
-/// The JSON shape of `materials.json`.
+/// The JSON shape of one file in `data/materials/`.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct MaterialsFile {
     materials: Vec<Material>,
-    defaults: BTreeMap<Tile, String>,
 }
 
-/// Parses and checks a materials file's text.
-pub fn parse_materials(json: &str) -> Result<Materials, MaterialError> {
-    let file: MaterialsFile = serde_json::from_str(json).map_err(MaterialError::Json)?;
-    check_list(&file.materials)?;
-    let mut defaults = BTreeMap::new();
-    for shape in Tile::ALL {
-        let id = file
-            .defaults
-            .get(&shape)
-            .ok_or(MaterialError::MissingDefault { shape })?;
-        let index = file
-            .materials
-            .iter()
-            .position(|m| &m.id == id)
-            .ok_or_else(|| MaterialError::UnknownDefault {
-                shape,
-                material: id.clone(),
-            })?;
-        defaults.insert(shape, u16::try_from(index).expect("checked by check_list"));
-    }
-    Ok(Materials {
-        list: file.materials,
-        defaults,
-    })
+/// Parses and checks every materials file.
+pub fn parse_materials(files: &[ContentFile]) -> Result<Materials, MaterialError> {
+    let list = read_all(files, |f: MaterialsFile| f.materials).map_err(MaterialError::File)?;
+    check_list(&list)?;
+    Ok(Materials { list })
 }
 
-/// Checks the list of materials on its own: not empty, not too long, no id
-/// twice, every level in range.
+/// Checks the list of materials: not empty, not too long, no id twice,
+/// every level in range.
 fn check_list(list: &[Material]) -> Result<(), MaterialError> {
     if list.is_empty() {
         return Err(MaterialError::NoMaterials);
@@ -261,16 +218,10 @@ fn check_list(list: &[Material]) -> Result<(), MaterialError> {
     if u16::try_from(list.len()).is_err() {
         return Err(MaterialError::TooMany { count: list.len() });
     }
-    let mut seen = HashSet::new();
-    for material in list {
-        if !seen.insert(material.id.as_str()) {
-            return Err(MaterialError::DuplicateId {
-                id: material.id.clone(),
-            });
-        }
-        check_levels(material)?;
+    if let Some(id) = first_duplicate(list.iter().map(|m| m.id.as_str())) {
+        return Err(MaterialError::DuplicateId { id: id.into() });
     }
-    Ok(())
+    list.iter().try_for_each(check_levels)
 }
 
 fn check_levels(material: &Material) -> Result<(), MaterialError> {
@@ -302,85 +253,93 @@ pub(crate) mod tests {
         )
     }
 
-    /// Every shape made of `id` by default.
-    fn defaults_all(id: &str) -> String {
-        let pairs: Vec<String> = Tile::ALL
-            .iter()
-            .map(|t| format!(r#""{}": "{id}""#, t.json_name()))
-            .collect();
-        format!("{{ {} }}", pairs.join(", "))
-    }
-
-    /// A small, valid materials file: steel (LASER 2) as every default,
-    /// and a hard alloy (LASER 5).
+    /// A small, valid materials file: steel (LASER 2) and a hard alloy
+    /// (LASER 5).
     pub(crate) fn test_materials_json() -> String {
         format!(
-            r#"{{ "materials": [ {}, {} ], "defaults": {} }}"#,
+            r#"{{ "materials": [ {}, {} ] }}"#,
             material("steel", r#"{ "LASER": 2 }"#),
             material("hard_alloy", r#"{ "LASER": 5 }"#),
-            defaults_all("steel")
         )
     }
 
     /// The parsed test materials, for other modules' tests.
     pub(crate) fn test_materials() -> Materials {
-        parse_materials(&test_materials_json()).expect("test materials are valid")
+        parse_materials(&[ContentFile::new("test.json", test_materials_json())])
+            .expect("test materials are valid")
+    }
+
+    fn parse_one(json: &str) -> Result<Materials, MaterialError> {
+        parse_materials(&[ContentFile::new("metals.json", json)])
     }
 
     #[test]
-    fn a_valid_file_loads_with_its_defaults() {
+    fn a_valid_file_loads() {
         let materials = test_materials();
         assert_eq!(materials.list().len(), 2);
         assert_eq!(materials.index_of("hard_alloy"), Some(1));
         assert_eq!(materials.index_of("cheese"), None);
-        assert_eq!(materials.default_for(Tile::Wall), 0);
         let alloy = &materials.list()[1];
         assert_eq!(alloy.cut_by.get(&Quality::Laser), Some(&5));
         assert_eq!(Quality::Laser.name(), "LASER");
     }
 
     #[test]
+    fn materials_can_be_spread_over_several_files() {
+        let files = [
+            ContentFile::new(
+                "metals.json",
+                format!(r#"{{ "materials": [ {} ] }}"#, material("steel", "{}")),
+            ),
+            ContentFile::new(
+                "fabrics.json",
+                format!(r#"{{ "materials": [ {} ] }}"#, material("cotton", "{}")),
+            ),
+        ];
+        let materials = parse_materials(&files).unwrap();
+        assert_eq!(materials.index_of("cotton"), Some(1), "file order");
+    }
+
+    #[test]
     fn cut_by_is_optional_and_empty_means_uncuttable() {
         let json = format!(
-            r#"{{ "materials": [ {} ], "defaults": {} }}"#,
-            material("x", "{}").replace(r#", "cut_by": {}"#, ""),
-            defaults_all("x")
+            r#"{{ "materials": [ {} ] }}"#,
+            material("x", "{}").replace(r#", "cut_by": {}"#, "")
         );
-        let materials = parse_materials(&json).unwrap();
+        let materials = parse_one(&json).unwrap();
         assert!(materials.list()[0].cut_by.is_empty());
     }
 
     fn error_of(json: &str) -> String {
-        parse_materials(json).unwrap_err().to_string()
+        parse_one(json).unwrap_err().to_string()
     }
 
     #[test]
-    fn misspelled_fields_unknown_qualities_and_colours_are_errors() {
+    fn misspelled_fields_unknown_qualities_and_colours_are_errors_naming_the_file() {
         let typo = test_materials_json().replace("\"density\"", "\"densty\"");
         assert!(error_of(&typo).contains("unknown field `densty`"));
         let quality = test_materials_json().replace("LASER\": 5", "SPOON\": 5");
         assert!(error_of(&quality).contains("SPOON"));
         let colour = test_materials_json().replace("\"grey\"", "\"plaid\"");
         assert!(error_of(&colour).contains("plaid"));
-        assert!(error_of("[").starts_with("invalid materials JSON"));
+        assert!(error_of("[").starts_with("invalid materials file metals.json: "));
     }
 
     #[test]
-    fn an_empty_list_is_an_error() {
-        let json = format!(
-            r#"{{ "materials": [], "defaults": {} }}"#,
-            defaults_all("x")
-        );
-        assert_eq!(error_of(&json), "there are no materials");
+    fn no_materials_at_all_is_an_error() {
+        assert_eq!(error_of(r#"{ "materials": [] }"#), "there are no materials");
+        assert!(matches!(
+            parse_materials(&[]),
+            Err(MaterialError::NoMaterials)
+        ));
     }
 
     #[test]
     fn the_same_id_twice_is_an_error() {
         let json = format!(
-            r#"{{ "materials": [ {}, {} ], "defaults": {} }}"#,
+            r#"{{ "materials": [ {}, {} ] }}"#,
             material("steel", "{}"),
             material("steel", "{}"),
-            defaults_all("steel")
         );
         assert_eq!(error_of(&json), r#"material "steel" is defined twice"#);
     }
@@ -396,17 +355,6 @@ pub(crate) mod tests {
                 )
             );
         }
-    }
-
-    #[test]
-    fn every_shape_needs_a_default_that_exists() {
-        let missing = test_materials_json().replace(r#""door_open": "steel","#, "");
-        assert_eq!(error_of(&missing), "no default material for door_open");
-        let unknown = test_materials_json().replace(r#""floor": "steel""#, r#""floor": "wood""#);
-        assert_eq!(
-            error_of(&unknown),
-            r#"the default material for floor is "wood", which isn't defined"#
-        );
     }
 
     #[test]

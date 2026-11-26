@@ -11,6 +11,7 @@ use crate::map_file::LoadedMap;
 use crate::material::Material;
 use crate::pos::{Dir, Pos, Vertical};
 use crate::rng::{GameRng, Stream};
+use crate::structure::Structure;
 
 /// Something the player wants to do. Front-ends turn key presses into these.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -150,6 +151,10 @@ pub struct World {
     /// the game began, saved with the game, so editing the data file never
     /// changes a game in progress (decision D35).
     materials: Vec<Material>,
+    /// Every structure the ship can be built from (decision D37), copied
+    /// from `data/structures/` when the game began, like the materials.
+    /// Each tile's structure is an index into this list.
+    structures: Vec<Structure>,
 }
 
 impl World {
@@ -166,6 +171,7 @@ impl World {
             breath: BREATH_FULL,
             warmth: WARMTH_FULL,
             materials: loaded.materials,
+            structures: loaded.structures,
         }
     }
 
@@ -190,6 +196,17 @@ impl World {
     pub fn material_at(&self, p: Pos) -> Option<&Material> {
         let index = self.map.material_index(p)?;
         self.materials.get(usize::from(index))
+    }
+
+    /// What the tile at `p` is, or `None` off the map.
+    pub fn structure_at(&self, p: Pos) -> Option<&Structure> {
+        let index = self.map.structure_index(p)?;
+        self.structures.get(usize::from(index))
+    }
+
+    /// Every structure in this game, in the order tiles refer to them.
+    pub fn structures(&self) -> &[Structure] {
+        &self.structures
     }
 
     /// Every material in this game, in the order tiles refer to them.
@@ -432,6 +449,7 @@ impl World {
                 self.breath
             ));
         }
+        self.check_structures()?;
         let highest = usize::from(self.map.highest_material());
         if highest >= self.materials.len() {
             return Err(format!(
@@ -454,6 +472,25 @@ impl World {
             )),
             Some(_) => Ok(()),
         }
+    }
+
+    /// Checks every tile has a structure from the list, and is in a state
+    /// that structure's behaviour allows (a door tile is a door).
+    fn check_structures(&self) -> Result<(), String> {
+        for p in self.map.positions() {
+            let tile = self.map.get(p).expect("positions are on the map");
+            let Some(structure) = self.structure_at(p) else {
+                return Err(format!("the tile at {p:?} has no structure"));
+            };
+            if !structure.behaviour.allows(tile) {
+                return Err(format!(
+                    "the tile at {p:?} ({}) doesn't fit its structure {:?}",
+                    tile.name(),
+                    structure.id
+                ));
+            }
+        }
+        Ok(())
     }
 
     /// A fingerprint of the entire game state.
@@ -480,6 +517,10 @@ impl World {
             .u64(self.materials.len() as u64);
         for material in &self.materials {
             material.hash_into(&mut h);
+        }
+        h.u64(self.structures.len() as u64);
+        for structure in &self.structures {
+            structure.hash_into(&mut h);
         }
         h.finish()
     }
@@ -892,7 +933,7 @@ mod tests {
         let rows = ["#####", "#@+.#", "#####"];
         let json = format!(
             r##"{{ "id": "t", "name": "T", "legend": {{ "#": "wall", ".": "floor",
-                     "+": "door_closed", "'": "door_open" }},
+                     "+": "door", "'": {{ "structure": "door", "open": true }} }},
                   "decks": [ {{ "rows": {rows:?} }} ] }}"##
         );
         World::new(parse_map(&json).expect("test map is valid"), TEST_SEED)
@@ -1327,5 +1368,46 @@ mod tests {
             }]
         );
         assert_eq!(world.seconds(), 0);
+    }
+
+    // --- Structures -----------------------------------------------------------
+
+    #[test]
+    fn every_tile_has_a_structure_from_the_list() {
+        let world = test_world();
+        assert_eq!(world.structure_at(Pos::new(0, 0, 0)).unwrap().id, "wall");
+        assert_eq!(world.structure_at(Pos::new(1, 1, 0)).unwrap().id, "floor");
+        assert_eq!(world.structure_at(Pos::new(-1, 0, 0)), None);
+        assert_eq!(world.structures().len(), 7);
+    }
+
+    #[test]
+    fn a_tile_that_does_not_match_its_structure_is_inconsistent() {
+        let mut world = test_world();
+        world.map.set(Pos::new(0, 0, 0), Tile::DoorOpen); // still a "wall"
+        assert_eq!(
+            world.check_consistent(),
+            Err(
+                "the tile at Pos { x: 0, y: 0, z: 0 } (open door) doesn't fit its structure \"wall\""
+                    .to_string()
+            )
+        );
+    }
+
+    #[test]
+    fn a_tile_with_a_missing_structure_is_inconsistent() {
+        let mut world = test_world();
+        world.map.set_structure(Pos::new(0, 0, 0), 99);
+        assert_eq!(
+            world.check_consistent(),
+            Err("the tile at Pos { x: 0, y: 0, z: 0 } has no structure".to_string())
+        );
+    }
+
+    #[test]
+    fn the_structure_list_is_part_of_the_state_hash() {
+        let mut changed = test_world();
+        changed.structures[0].name.push('!');
+        assert_ne!(test_world().state_hash(), changed.state_hash());
     }
 }

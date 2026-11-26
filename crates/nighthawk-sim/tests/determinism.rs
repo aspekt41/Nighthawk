@@ -14,31 +14,19 @@
 //!   stored value to the one in the failure message, and say why in the
 //!   commit message.
 
-use std::fs;
-use std::path::PathBuf;
+mod common;
 
-use nighthawk_sim::{
-    Command, Dir, Event, Vertical, World, load_from_str, parse_map, parse_materials, save_to_string,
-};
+use nighthawk_sim::{Command, Dir, Event, Vertical, World, load_from_str, save_to_string};
 
 const SEED: u64 = 0x4e49_4748_5448_4157; // "NIGHTHAW" in ASCII
 const TURNS: usize = 500;
 
 /// The stored fingerprints. See "If this test fails" above.
-const EXPECTED_STATE_HASH: u64 = 0xd2cf_70ea_3a9a_a198;
+const EXPECTED_STATE_HASH: u64 = 0xcbda_6508_37ac_905c;
 const EXPECTED_AMBIENT_COUNT: usize = 74;
 
 fn start_world() -> World {
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../data/maps/aft_ring.json");
-    let text = fs::read_to_string(path).expect("starting map is readable");
-    let materials_path =
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../data/materials.json");
-    let materials = fs::read_to_string(materials_path).expect("materials are readable");
-    let materials = parse_materials(&materials).expect("materials are valid");
-    World::new(
-        parse_map(&text, &materials).expect("starting map is valid"),
-        SEED,
-    )
+    common::start_world(SEED)
 }
 
 /// A fixed script: walk to the ladder, then loop around it forever,

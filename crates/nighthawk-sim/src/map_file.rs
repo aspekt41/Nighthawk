@@ -30,6 +30,7 @@ use crate::heat::{MAX_CELSIUS, MIN_CELSIUS, celsius_to_mk};
 use crate::map::{Map, StairsError, Tile};
 use crate::material::{Material, Materials};
 use crate::pos::Pos;
+use crate::structure::{Behaviour, Structure, Structures};
 
 /// The glyph that marks the player's starting position.
 const PLAYER_START: char = '@';
@@ -46,6 +47,49 @@ pub struct LoadedMap {
     /// Every material, in the order the map's tiles refer to them (the
     /// world keeps its own copy, so a save never depends on data files).
     pub materials: Vec<Material>,
+    /// Every structure, in the order the map's tiles refer to them.
+    pub structures: Vec<Structure>,
+}
+
+/// A mistake in a map's legend. Kept apart from [`MapError`] so each list
+/// of messages stays short.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LegendError {
+    /// A key that isn't exactly one character.
+    BadKey { key: String },
+    /// An entry naming a structure that isn't defined.
+    UnknownStructure { glyph: char, structure: String },
+    /// An entry naming a material that isn't defined.
+    UnknownMaterial { glyph: char, material: String },
+    /// `"open": true` on something that isn't a door.
+    NotADoor { glyph: char },
+    /// `@` standing on something you can't stand on.
+    StartInsideSomething { structure: String },
+}
+
+impl fmt::Display for LegendError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            LegendError::BadKey { key } => {
+                write!(f, "legend key {key:?} must be exactly one character")
+            }
+            LegendError::UnknownStructure { glyph, structure } => write!(
+                f,
+                "legend entry {glyph:?} is {structure:?}, which isn't a structure"
+            ),
+            LegendError::UnknownMaterial { glyph, material } => write!(
+                f,
+                "legend entry {glyph:?} is made of {material:?}, which isn't a material"
+            ),
+            LegendError::NotADoor { glyph } => {
+                write!(f, "legend entry {glyph:?} is open, but only doors can be")
+            }
+            LegendError::StartInsideSomething { structure } => write!(
+                f,
+                "'{PLAYER_START}' marks where the player starts, so it must stand for something walkable, not {structure:?}"
+            ),
+        }
+    }
 }
 
 /// Everything that can be wrong with a map file. Each variant says exactly
@@ -55,10 +99,8 @@ pub enum MapError {
     /// Not valid JSON, or the wrong shape: a missing field, a misspelled
     /// field name, or an unknown tile name in the legend.
     Json(serde_json::Error),
-    /// A legend key that isn't exactly one character, or is the reserved `@`.
-    BadLegendKey {
-        key: String,
-    },
+    /// A mistake in the legend.
+    Legend(LegendError),
     NoDecks,
     EmptyDeck {
         deck: usize,
@@ -76,12 +118,7 @@ pub enum MapError {
         expected: usize,
         found: usize,
     },
-    /// A legend entry made of a material that isn't in the materials file.
-    UnknownMaterial {
-        glyph: char,
-        material: String,
-    },
-    /// A character that isn't in the legend and isn't `@`.
+    /// A character that isn't in the legend.
     UnknownGlyph {
         glyph: char,
         deck: usize,
@@ -110,10 +147,7 @@ impl fmt::Display for MapError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             MapError::Json(e) => write!(f, "invalid map JSON: {e}"),
-            MapError::BadLegendKey { key } => write!(
-                f,
-                "legend key {key:?} must be exactly one character and not '{PLAYER_START}'"
-            ),
+            MapError::Legend(e) => write!(f, "{e}"),
             // Problems with the decks' size and shape get their own function,
             // so this `match` stays under the complexity limit.
             MapError::NoDecks
@@ -130,10 +164,6 @@ impl fmt::Display for MapError {
                 "deck {deck}, row {row}, column {col}: {glyph:?} is not in the legend"
             ),
             MapError::Stairs(e) => write!(f, "{e}"),
-            MapError::UnknownMaterial { glyph, material } => write!(
-                f,
-                "legend entry {glyph:?} is made of {material:?}, which isn't in the materials file"
-            ),
             MapError::BadPressure { deck, percent } => write!(
                 f,
                 "deck {deck} has pressure {percent}%; it must be 0 to {MAX_PRESSURE_PERCENT}"
@@ -190,24 +220,28 @@ struct MapFile {
     decks: Vec<DeckFile>,
 }
 
-/// What a legend character stands for: just a shape (`"wall"`), made of
-/// that shape's default material, or a shape and a material
-/// (`{ "tile": "wall", "material": "nanocarbon_alloy" }`).
+/// What a legend character stands for: just a structure's id
+/// (`"bulkhead"`), made of the structure's own material; or a structure
+/// with a different material, or a door placed open
+/// (`{ "structure": "door", "open": true, "material": "steel" }`).
 ///
 /// `untagged` means serde tries each form in turn and takes the first that
 /// fits, so the JSON needs no extra label saying which form it is.
 #[derive(Deserialize)]
 #[serde(untagged)]
 enum LegendEntry {
-    Shape(Tile),
-    MadeOf(MadeOf),
+    Id(String),
+    Placed(Placed),
 }
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct MadeOf {
-    tile: Tile,
-    material: String,
+struct Placed {
+    structure: String,
+    #[serde(default)]
+    material: Option<String>,
+    #[serde(default)]
+    open: bool,
 }
 
 #[derive(Deserialize)]
@@ -232,11 +266,18 @@ struct DeckFile {
 /// The highest starting pressure a deck may ask for, in percent.
 const MAX_PRESSURE_PERCENT: u32 = 200;
 
-/// Parses and validates a map file's text. `materials` (from
-/// `materials.json`) says what each tile can be made of.
-pub fn parse_map(json: &str, materials: &Materials) -> Result<LoadedMap, MapError> {
+/// The structures and materials a map's legend can name.
+#[derive(Clone, Copy)]
+pub struct Catalogue<'a> {
+    pub materials: &'a Materials,
+    pub structures: &'a Structures,
+}
+
+/// Parses and validates a map file's text. Its legend names structures from
+/// `catalogue`, made of its materials.
+pub fn parse_map(json: &str, catalogue: Catalogue) -> Result<LoadedMap, MapError> {
     let file: MapFile = serde_json::from_str(json).map_err(MapError::Json)?;
-    let legend = glyph_legend(&file.legend, materials)?;
+    let legend = glyph_legend(&file.legend, catalogue)?;
     let (width, height) = dimensions(&file.decks)?;
 
     let depth = file.decks.len();
@@ -245,8 +286,9 @@ pub fn parse_map(json: &str, materials: &Materials) -> Result<LoadedMap, MapErro
 
     for (z, y, x, glyph) in cells(&file.decks) {
         let pos = Pos::new(to_i32(x), to_i32(y), to_i32(z));
-        let (tile, material) = tile_for(glyph, &legend, materials, (z, y, x))?;
+        let (tile, structure, material) = tile_for(glyph, &legend, (z, y, x))?;
         map.set(pos, tile);
+        map.set_structure(pos, structure);
         map.set_material(pos, material);
         if glyph == PLAYER_START {
             starts.push(pos);
@@ -264,7 +306,8 @@ pub fn parse_map(json: &str, materials: &Materials) -> Result<LoadedMap, MapErro
             deck_names,
             map,
             player_start,
-            materials: materials.list().to_vec(),
+            materials: catalogue.materials.list().to_vec(),
+            structures: catalogue.structures.list().to_vec(),
         }),
         _ => Err(MapError::PlayerStartCount {
             found: starts.len(),
@@ -316,41 +359,64 @@ fn deck_names(decks: &[DeckFile]) -> Vec<String> {
         .collect()
 }
 
-/// A shape and the index of its material.
-type Made = (Tile, u16);
+/// What a legend character places: a tile, and the indexes of its
+/// structure and material.
+type Placement = (Tile, u16, u16);
 
 /// Turns the legend's one-character string keys into `char`s, and each
-/// entry into a shape and a material index.
+/// entry into what it places.
 fn glyph_legend(
     legend: &HashMap<String, LegendEntry>,
-    materials: &Materials,
-) -> Result<HashMap<char, Made>, MapError> {
+    catalogue: Catalogue,
+) -> Result<HashMap<char, Placement>, MapError> {
     legend
         .iter()
         .map(|(key, entry)| {
             let mut chars = key.chars();
-            match (chars.next(), chars.next()) {
-                (Some(c), None) if c != PLAYER_START => Ok((c, resolve(c, entry, materials)?)),
-                _ => Err(MapError::BadLegendKey { key: key.clone() }),
-            }
+            let glyph = match (chars.next(), chars.next()) {
+                (Some(c), None) => c,
+                _ => return Err(LegendError::BadKey { key: key.clone() }),
+            };
+            Ok((glyph, place(glyph, entry, catalogue)?))
         })
-        .collect()
+        .collect::<Result<_, LegendError>>()
+        .map_err(MapError::Legend)
 }
 
-/// The shape and material index a legend entry stands for.
-fn resolve(glyph: char, entry: &LegendEntry, materials: &Materials) -> Result<Made, MapError> {
-    match entry {
-        LegendEntry::Shape(tile) => Ok((*tile, materials.default_for(*tile))),
-        LegendEntry::MadeOf(MadeOf { tile, material }) => {
-            let index = materials
-                .index_of(material)
-                .ok_or_else(|| MapError::UnknownMaterial {
-                    glyph,
-                    material: material.clone(),
-                })?;
-            Ok((*tile, index))
-        }
+/// What a legend entry places.
+fn place(glyph: char, entry: &LegendEntry, catalogue: Catalogue) -> Result<Placement, LegendError> {
+    let (id, material, open) = match entry {
+        LegendEntry::Id(id) => (id, None, false),
+        LegendEntry::Placed(p) => (&p.structure, p.material.as_ref(), p.open),
+    };
+    let structure =
+        catalogue
+            .structures
+            .index_of(id)
+            .ok_or_else(|| LegendError::UnknownStructure {
+                glyph,
+                structure: id.clone(),
+            })?;
+    let made = &catalogue.structures.list()[usize::from(structure)];
+    if open && made.behaviour != Behaviour::Door {
+        return Err(LegendError::NotADoor { glyph });
     }
+    let tile = made.behaviour.tile(open);
+    if glyph == PLAYER_START && !tile.is_walkable() {
+        return Err(LegendError::StartInsideSomething {
+            structure: id.clone(),
+        });
+    }
+    let material_id = material.unwrap_or(&made.material);
+    let material =
+        catalogue
+            .materials
+            .index_of(material_id)
+            .ok_or_else(|| LegendError::UnknownMaterial {
+                glyph,
+                material: material_id.clone(),
+            })?;
+    Ok((tile, structure, material))
 }
 
 /// Checks every deck is the same rectangle and returns its `(width, height)`.
@@ -394,13 +460,9 @@ fn dimensions(decks: &[DeckFile]) -> Result<(usize, usize), MapError> {
 /// The tile a glyph stands for. `@` is the player start, on a floor tile.
 fn tile_for(
     glyph: char,
-    legend: &HashMap<char, Made>,
-    materials: &Materials,
+    legend: &HashMap<char, Placement>,
     (deck, row, col): (usize, usize, usize),
-) -> Result<Made, MapError> {
-    if glyph == PLAYER_START {
-        return Ok((Tile::Floor, materials.default_for(Tile::Floor)));
-    }
+) -> Result<Placement, MapError> {
     legend.get(&glyph).copied().ok_or(MapError::UnknownGlyph {
         glyph,
         deck,
@@ -415,12 +477,30 @@ fn to_i32(n: usize) -> i32 {
     i32::try_from(n).expect("map dimension fits in i32")
 }
 
-/// [`parse_map`] with a small set of test materials (steel by default), so
-/// tests can build maps from a few lines of JSON. Other modules' tests
-/// import it *as* `parse_map`.
+/// [`parse_map`] with a small set of test structures (named after their
+/// behaviours: `"wall"`, `"floor"`, `"door"`…, all steel), so tests can
+/// build maps from a few lines of JSON. If the legend doesn't say what `@`
+/// stands on, it's `"floor"`. Other modules' tests import it *as*
+/// `parse_map`.
 #[cfg(test)]
 pub(crate) fn parse_map_for_tests(json: &str) -> Result<LoadedMap, MapError> {
-    parse_map(json, &crate::material::tests::test_materials())
+    let materials = crate::material::tests::test_materials();
+    let structures = crate::structure::tests::test_structures();
+    let catalogue = Catalogue {
+        materials: &materials,
+        structures: &structures,
+    };
+    // Add `"@": "floor"` to the legend, if the JSON is valid enough to
+    // have one and it doesn't say. Otherwise parse it as it is, so tests of
+    // broken JSON see the real error.
+    let mut value: serde_json::Value = match serde_json::from_str(json) {
+        Ok(value) => value,
+        Err(_) => return parse_map(json, catalogue),
+    };
+    if let Some(legend) = value.get_mut("legend").and_then(|l| l.as_object_mut()) {
+        legend.entry("@").or_insert_with(|| "floor".into());
+    }
+    parse_map(&value.to_string(), catalogue)
 }
 
 #[cfg(test)]
@@ -492,10 +572,13 @@ mod tests {
     }
 
     #[test]
-    fn unknown_tile_name_is_rejected() {
+    fn unknown_structure_name_is_rejected() {
         let json = r###"{ "id": "t", "name": "T", "legend": { "#": "wal" },
             "decks": [ { "rows": ["@"] } ] }"###;
-        assert!(matches!(parse_map(json), Err(MapError::Json(_))));
+        assert!(matches!(
+            parse_map(json),
+            Err(MapError::Legend(LegendError::UnknownStructure { .. }))
+        ));
     }
 
     #[test]
@@ -558,17 +641,20 @@ mod tests {
         let json = r###"{ "id": "t", "name": "T", "legend": { "##": "wall" },
             "decks": [ { "rows": ["@"] } ] }"###;
         let err = parse_map(json).unwrap_err();
-        assert!(matches!(err, MapError::BadLegendKey { ref key } if key == "##"));
+        assert!(matches!(
+            err,
+            MapError::Legend(LegendError::BadKey { ref key }) if key == "##"
+        ));
     }
 
     #[test]
-    fn legend_cannot_redefine_the_player_start() {
+    fn the_player_cannot_start_inside_a_wall() {
         let json = r#"{ "id": "t", "name": "T", "legend": { "@": "wall" },
             "decks": [ { "rows": ["@"] } ] }"#;
-        assert!(matches!(
-            parse_map(json),
-            Err(MapError::BadLegendKey { .. })
-        ));
+        assert_eq!(
+            parse_map(json).unwrap_err().to_string(),
+            "'@' marks where the player starts, so it must stand for something walkable, not \"wall\""
+        );
     }
 
     #[test]
@@ -599,7 +685,10 @@ mod tests {
     #[test]
     fn every_error_message_says_where_the_problem_is() {
         let cases = [
-            (MapError::BadLegendKey { key: "ab".into() }, "\"ab\""),
+            (
+                MapError::Legend(LegendError::BadKey { key: "ab".into() }),
+                "\"ab\"",
+            ),
             (MapError::NoDecks, "no decks"),
             (MapError::EmptyDeck { deck: 3 }, "deck 3"),
             (
@@ -811,44 +900,75 @@ mod material_tests {
     }
 
     #[test]
-    fn a_plain_shape_is_made_of_its_default_material() {
+    fn a_structure_is_made_of_its_own_material_unless_the_legend_says() {
         let loaded = map_with_legend(r#""W": "wall""#, "@.W").unwrap();
-        assert_eq!(loaded.map.material_index(Pos::new(2, 0, 0)), Some(0));
+        let wall = Pos::new(2, 0, 0);
+        assert_eq!(loaded.map.structure_index(wall), Some(1));
+        assert_eq!(loaded.map.material_index(wall), Some(0));
         assert_eq!(loaded.materials[0].id, "steel");
         assert_eq!(loaded.materials.len(), 2, "the whole list comes along");
+        assert_eq!(loaded.structures.len(), 7);
     }
 
     #[test]
     fn a_legend_entry_can_name_its_material() {
-        let entry = r#""H": { "tile": "wall", "material": "hard_alloy" }"#;
+        let entry = r#""H": { "structure": "wall", "material": "hard_alloy" }"#;
         let loaded = map_with_legend(entry, "@.H").unwrap();
         assert_eq!(loaded.map.get(Pos::new(2, 0, 0)), Some(Tile::Wall));
         assert_eq!(loaded.map.material_index(Pos::new(2, 0, 0)), Some(1));
         assert_eq!(
             loaded.map.material_index(Pos::new(0, 0, 0)),
             Some(0),
-            "the player starts on default floor"
+            "the player starts on steel floor"
         );
     }
 
     #[test]
-    fn an_unknown_material_is_an_error_naming_the_glyph() {
-        let entry = r#""H": { "tile": "wall", "material": "cheese" }"#;
+    fn a_door_can_be_placed_open() {
+        let entry = r#""'": { "structure": "door", "open": true }"#;
+        let loaded = map_with_legend(entry, "@.'").unwrap();
+        assert_eq!(loaded.map.get(Pos::new(2, 0, 0)), Some(Tile::DoorOpen));
+        assert_eq!(loaded.map.structure_index(Pos::new(2, 0, 0)), Some(4));
+    }
+
+    #[test]
+    fn only_doors_can_be_placed_open() {
+        let entry = r#""W": { "structure": "wall", "open": true }"#;
+        let err = map_with_legend(entry, "@.W").unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "legend entry 'W' is open, but only doors can be"
+        );
+    }
+
+    #[test]
+    fn unknown_structures_and_materials_are_errors_naming_the_glyph() {
+        let err = map_with_legend(r#""H": "cheese_wall""#, "@.H").unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            r#"legend entry 'H' is "cheese_wall", which isn't a structure"#
+        );
+        let entry = r#""H": { "structure": "wall", "material": "cheese" }"#;
         let err = map_with_legend(entry, "@.H").unwrap_err();
         assert_eq!(
             err.to_string(),
-            r#"legend entry 'H' is made of "cheese", which isn't in the materials file"#
+            r#"legend entry 'H' is made of "cheese", which isn't a material"#
         );
     }
 
     #[test]
     fn a_legend_entry_with_a_misspelled_field_is_an_error() {
-        let entry = r#""H": { "tile": "wall", "materal": "steel" }"#;
+        let entry = r#""H": { "structure": "wall", "materal": "steel" }"#;
         let err = map_with_legend(entry, "@.H").unwrap_err();
         assert!(
             err.to_string()
                 .contains("did not match any variant of untagged enum LegendEntry"),
             "{err}"
         );
+    }
+
+    #[test]
+    fn the_test_helper_leaves_broken_json_for_the_real_parser() {
+        assert!(matches!(parse_map("{ nope"), Err(MapError::Json(_))));
     }
 }

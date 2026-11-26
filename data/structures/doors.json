@@ -1,0 +1,13 @@
+{
+  "structures": [
+    {
+      "id": "door",
+      "name": "door",
+      "description": "A sliding pressure door. Shut, it holds air; open, it doesn't.",
+      "glyph": "+",
+      "open_glyph": "'",
+      "behaviour": "door",
+      "material": "aluminium_alloy"
+    }
+  ]
+}

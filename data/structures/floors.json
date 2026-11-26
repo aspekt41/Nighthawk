@@ -1,0 +1,12 @@
+{
+  "structures": [
+    {
+      "id": "deck_plating",
+      "name": "deck plating",
+      "description": "Ribbed deck plates bolted over the ship's frame. Cold underfoot.",
+      "glyph": ".",
+      "behaviour": "floor",
+      "material": "steel"
+    }
+  ]
+}

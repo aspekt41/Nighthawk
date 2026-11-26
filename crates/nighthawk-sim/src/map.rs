@@ -201,6 +201,11 @@ pub struct Map {
     /// What each tile is made of, in the same order as `tiles`: an index
     /// into the world's list of materials (decision D35).
     made_of: Vec<u16>,
+    /// What each tile is, in the same order as `tiles`: an index into the
+    /// world's list of structures (decision D37). `tiles` says how it
+    /// behaves right now (a door open or shut); this says which structure
+    /// it is.
+    structure: Vec<u16>,
 }
 
 impl Map {
@@ -221,6 +226,7 @@ impl Map {
             heat: vec![0; len],
             heat_lost: 0,
             made_of: vec![0; len],
+            structure: vec![0; len],
         }
     }
 
@@ -242,6 +248,20 @@ impl Map {
     /// against its list of materials.
     pub(crate) fn highest_material(&self) -> u16 {
         self.made_of.iter().copied().max().unwrap_or(0)
+    }
+
+    /// What the tile at `p` is: an index into the world's list of
+    /// structures. `None` if `p` is off the map.
+    pub fn structure_index(&self, p: Pos) -> Option<u16> {
+        self.index(p).map(|i| self.structure[i])
+    }
+
+    /// Sets which structure the tile at `p` is. Positions off the map are
+    /// ignored.
+    pub(crate) fn set_structure(&mut self, p: Pos, structure: u16) {
+        if let Some(i) = self.index(p) {
+            self.structure[i] = structure;
+        }
     }
 
     /// The air in the tile at `p`, or `None` if `p` is off the map.
@@ -565,6 +585,12 @@ impl Map {
                 self.made_of.len()
             ));
         }
+        if self.structure.len() != self.tiles.len() {
+            return Err(format!(
+                "map has {found} tiles but structures for {}",
+                self.structure.len()
+            ));
+        }
         self.check_heat()?;
         self.check_stairs().map_err(|e| e.to_string())
     }
@@ -617,6 +643,9 @@ impl Map {
         h.u64(self.heat_lost);
         for &material in &self.made_of {
             h.u64(u64::from(material));
+        }
+        for &structure in &self.structure {
+            h.u64(u64::from(structure));
         }
         for &heat in &self.heat {
             h.u64(heat);
@@ -1413,6 +1442,40 @@ mod material_tests {
         assert_eq!(map.material_index(p), Some(3));
         assert_eq!(map.highest_material(), 3);
         assert_eq!(map.material_index(Pos::new(5, 0, 0)), None);
+    }
+
+    #[test]
+    fn tiles_start_as_structure_0_and_can_be_changed() {
+        let mut map = Map::filled(2, 1, 1, Tile::Wall);
+        let p = Pos::new(1, 0, 0);
+        assert_eq!(map.structure_index(p), Some(0));
+        map.set_structure(p, 4);
+        map.set_structure(Pos::new(9, 9, 9), 4); // off the map: ignored
+        assert_eq!(map.structure_index(p), Some(4));
+        assert_eq!(map.structure_index(Pos::new(5, 0, 0)), None);
+    }
+
+    #[test]
+    fn mismatched_structure_data_is_inconsistent() {
+        let mut map = Map::filled(2, 1, 1, Tile::Wall);
+        map.structure.pop();
+        assert_eq!(
+            map.check_consistent(),
+            Err("map has 2 tiles but structures for 1".to_string())
+        );
+    }
+
+    #[test]
+    fn structures_are_part_of_the_state_hash() {
+        let hash = |m: &Map| {
+            let mut h = Fnv64::new();
+            m.hash_into(&mut h);
+            h.finish()
+        };
+        let a = Map::filled(2, 1, 1, Tile::Wall);
+        let mut b = a.clone();
+        b.set_structure(Pos::new(0, 0, 0), 1);
+        assert_ne!(hash(&a), hash(&b));
     }
 
     #[test]
