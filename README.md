@@ -96,5 +96,6 @@ crates/
 data/              game content as JSON (see data/README.md)
 docs/              research, scoping and the decision log
 scripts/check.sh   every quality check in one command
+agent-tools/       helper scripts for AI agents (see agent-tools/tool-descriptions.md)
 rust-toolchain.toml  the pinned Rust version
 ```

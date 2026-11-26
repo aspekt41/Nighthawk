@@ -51,4 +51,11 @@ else
     missing "install with 'pipx install lizard' (or 'pip install lizard')"
 fi
 
+step "Agent tools (their own tests)"
+if command -v python3 >/dev/null; then
+    python3 -m unittest discover -s agent-tools -p 'test_*.py' --quiet
+else
+    missing "install python3 to test the agent tools in agent-tools/"
+fi
+
 printf '\nAll checks passed.\n'

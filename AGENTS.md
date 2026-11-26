@@ -68,6 +68,23 @@ rather than accepting a skipped step.
 6. **Default keys are plain keys**, with no kitty keyboard protocol required (D16).
 7. **No `unsafe`** (forbidden in the workspace lints). **Single-player only** (D3).
 
+## Agent tools
+
+`agent-tools/` holds scripts that prevent common agent mistakes; see
+[`agent-tools/tool-descriptions.md`](agent-tools/tool-descriptions.md).
+Use them by default:
+
+- **Read before editing with `agent-tools/show.py FILE PATTERN`.** It runs
+  `cargo fmt` first, so what you read is what an edit must match.
+- **Edit existing files with `agent-tools/replace.py FILE`** and OLD/NEW
+  blocks on standard input, not ad-hoc Python or `sed`. It formats, matches
+  ignoring whitespace and rustfmt's trailing commas, refuses an OLD that
+  matches nowhere or twice (pointing at the closest text), and writes all
+  edits or none.
+
+When a mistake keeps recurring, consider a new tool: add it with tests in
+`agent-tools/test_tools.py` and a section in `tool-descriptions.md`.
+
 ## How to work
 
 - **Small steps.** Do the one roadmap step asked for, not the next three.

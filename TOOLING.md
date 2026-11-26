@@ -269,10 +269,14 @@ To reproduce a game by hand, run with the seed from its sidebar:
 scripts/check.sh
 ```
 
-This runs formatting → clippy → tests → docs → coverage → complexity, and
-stops at the first failure. Run it before every commit. If cargo-llvm-cov or
-lizard isn't installed, that step is skipped with an install hint, and
-everything else still runs.
+This runs formatting → clippy → tests → docs → coverage → complexity → the
+agent tools' own tests (Python), and stops at the first failure. Run it
+before every commit. If cargo-llvm-cov, lizard or python3 isn't installed,
+that step is skipped with an install hint, and everything else still runs.
+
+The helper scripts in `agent-tools/` (reading a file after formatting it,
+and making exact edits that survive rustfmt) work for people too; see
+`agent-tools/tool-descriptions.md`.
 
 ---
 
