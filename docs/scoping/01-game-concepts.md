@@ -105,6 +105,8 @@ Scores are 1 (weak) to 5 (strong). Scope risk is inverted, so 5 means the most m
 
 ## Recommendation
 
+**Decided (D1): Concept C, *Nighthawk*, as laid out above.** See [03-decisions.md](03-decisions.md).
+
 **Go with Concept C, *Nighthawk*.** It's the only concept where *the thing you build and
 the thing you explore are the same object*. Base expansion and world progression are one
 mechanic: reclaiming the ship. That ties the progression loop and the systems depth together
@@ -115,7 +117,7 @@ Concept B's strengths, sector gating and dense interiors, are already part of C.
 open exploration can come back later as **away missions**, without making the core an
 infinite-world problem.
 
-**Possible variant (decide in pre-production):** *The Nighthawk has crash-landed.* The wreck
+**Variant considered and not chosen:** *The Nighthawk has crash-landed.* The wreck
 is your base, and the hostile planet surface and caves around it are the exploration space.
 This gives up some of C's purity (base and world stop being the same object) for outdoor
 variety. See [open questions](02-scope-and-roadmap.md#open-questions).

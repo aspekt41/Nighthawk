@@ -17,17 +17,19 @@
 2. **Gates are simulation states, not locks.** You can't go there *because there's no air, it's −80 °C, or it's full of coolant*, and you can see why and plan around it.
 3. **Exploration pays in capability.** The best loot is a schematic, a working machine, or a piece of the story that points to the next place.
 4. **Legible depth.** If a system matters, it has an overlay, a readout and a log line. Terminal-first readability is a feature.
-5. **Runs everywhere.** It's a single binary, works in any modern terminal, stays playable at 80×24, and comes to the browser later.
+5. **Runs everywhere.** It's a single binary, works in any modern terminal (tmux over SSH first), and stays playable at 80×24.
+6. **Time moves only when you do.** No real-time ticking anywhere. Leave it in tmux for a week and nothing has happened.
+7. **The world is 3D.** Decks are z-levels, and air, heat, creatures and you move between them.
 
 ## Non-goals for the first playable (MVP)
 
 These are deliberately out of scope, so we can say no to them:
 
-- Multiplayer of any kind, including SSH play (the architecture keeps it possible)
+- Multiplayer of any kind. It's dropped from the vision, not just postponed (D3).
 - Real-time play. The game is turn-based only.
 - A graphical tile mode (keep the glyph table data-driven so this stays open)
 - An infinite or procedurally generated world. The deck layout is authored, with procedural room contents.
-- NPC crew or colony management
+- NPC crew or colony management (not planned; maybe very late, D6)
 - Fluid simulation (water and coolant flow). Atmosphere and temperature come first.
 - Scripting and a modding API. Content is data files only.
 - Audio
@@ -61,8 +63,9 @@ These are deliberately out of scope, so we can say no to them:
 | Atmosphere | Per tile O2, CO2/toxin and pressure; diffusion; doors seal; breaches vent |
 | Temperature | Per tile, sharing the atmosphere grid; heaters; heat loss to vacuum |
 | Power | Network graph of generators, batteries, cables and consumers; brown-outs |
-| Player body | HP, O2, body heat, hunger, fatigue |
-| Items and crafting | Material-based items, quality-based recipes, crafting from nearby storage |
+| Player body | HP, O2, body heat, hunger, thirst, fatigue |
+| Death | Respawn at the stasis pod or base; difficulty decides keep vs drop items (D5) |
+| Items and crafting | Material-based items in physical containers with pockets; quality-based recipes; crafting from your inventory and containers within reach |
 | Construction | Place and deconstruct buildables, with time cost and tool qualities |
 | Turn system | Energy and action-cost scheduler, interruptible long actions |
 | UI | Map, sidebar status, message log, inventory, crafting screen, look mode, overlays (air, power, heat) |
@@ -70,7 +73,7 @@ These are deliberately out of scope, so we can say no to them:
 
 ### The MVP progression arc
 
-1. Wake in the stasis bay with emergency power failing. **Restore emergency power** by repairing a generator. You learn to scavenge and craft.
+1. Wake in the stasis bay. The **stasis pod is your lifepod** (D15): a trickle of emergency O2 and heat, a basic fabricator, and your respawn point. It's enough to scrape by on. **Restore emergency power** by repairing a generator, and learn to scavenge and craft.
 2. **Seal and pressurise** the hab ring: patch the breach, build an airlock, run an O2 scrubber. *The base exists.*
 3. **Build a fabricator** and craft the first **EVA suit**, which opens the vacuum section (crew quarters) on a timer.
 4. Find the **heater and insulation** schematics in crew quarters, which open the cold maintenance deck and its power junctions.
@@ -93,9 +96,9 @@ calendar estimates yet. Re-estimate after M0.
 
 | Milestone | Deliverable | Exit criteria |
 |---|---|---|
-| **M0: Tech spike** | Cargo workspace (`sim`, `tui`); an `@` walking around one room; crossterm and ratatui with synchronized output; data file loading; seeded RNG; a minimal Ratzilla build of the same room | It runs on Linux, macOS and Windows Terminal; it builds for wasm; there's a determinism test in CI |
+| **M0: Tech spike** | M0.1 an `@` walking around one room (sim and tui crates, 3D positions, turn counter that only moves when you act). M0.2 the room loaded from JSON. M0.3 seeded RNG and a determinism test in CI. M0.4 a second deck and stairs. M0.5 a minimal browser build. | Runs in tmux over SSH on Debian and natively on macOS; tests pass in CI |
 | **M1: World and simulation grid** | Chunked multi-deck map; FOV and lighting; atmosphere and temperature diffusion on dense arrays; doors and breaches; debug overlays | A breach visibly vents a room; profiled sim stays inside budget; soak test passes 100k turns |
-| **M2: Items and crafting** | Materials → items → recipes from data; inventory; quality-based crafting; crafting from nearby containers | All ~25 MVP recipes are craftable; a content-validation test passes |
+| **M2: Items and crafting** | Materials → items → recipes from data; container-based inventory; quality-based crafting from containers within reach | All ~25 MVP recipes are craftable; a content-validation test passes |
 | **M3: Building and power** | Construction system; power network solver; buildables with power draw; brown-outs | You can build a pressurised, powered, heated room from scratch |
 | **M4: The first deck** | Three authored decks with procedural room contents; hazards; 1–2 creatures; lore; the progression arc | The full arc can be played start to finish |
 | **M5: Legibility pass** | UI polish: look mode, tooltips, a contextual help panel, a log that explains itself, keymap, accessibility settings for colour | Playtests with 3+ fresh players meet the MVP success criteria |
@@ -125,15 +128,15 @@ calendar estimates yet. Re-estimate after M0.
 
 ---
 
-## Open questions
+## Decisions
 
-These need a decision from the project owner. The last column is the current lean, which the owner can overrule.
+The six open questions from the first draft were all answered in review on 2026-11-26. They're recorded with the rest of the decisions in [03-decisions.md](03-decisions.md):
 
-| # | Question | Options | Lean |
-|---|---|---|---|
-| 1 | Concept | Derelict ship (C); crash-landed wreck plus a planet; another concept | Derelict ship |
-| 2 | SSH / multiplayer ambition | Core goal (look hard at Go + Bubble Tea + Wish before M0) or nice-to-have (stay with Rust) | Nice-to-have, so Rust |
-| 3 | Tone | Grim survival horror (Dead Space, Barotrauma) or wry and absurd (Abiotic Factor) | Grim, with dry humour in crew logs |
-| 4 | Content format | RON (fastest for us) or JSON + schema (friendliest to modders) | RON now; revisit before modding |
-| 5 | Death | Permadeath, respawn at base, or a difficulty setting | Difficulty setting, respawn by default |
-| 6 | Crew layer | DF-style management of woken crew later, or solo forever | Optional late-game layer |
+| # | Question | Decision |
+|---|---|---|
+| 1 | Concept | Derelict ship, as laid out (D1) |
+| 2 | SSH / multiplayer | Single-player only; Rust (D2, D3) |
+| 3 | Tone | Gritty realism; writing can shift the mood (D4) |
+| 4 | Content format | JSON, with a schema generated from the Rust types (D17) |
+| 5 | Death | Respawn at base; difficulty decides keep vs drop items (D5) |
+| 6 | Crew layer | Not planned; maybe very late (D6) |

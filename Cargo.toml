@@ -1,0 +1,3 @@
+[workspace]
+resolver = "3"
+members = ["crates/nighthawk-sim", "crates/nighthawk-tui"]

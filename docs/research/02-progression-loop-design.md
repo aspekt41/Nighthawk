@@ -88,6 +88,8 @@ each one reads in a terminal.
 | **Temperature per tile** | High: cold and heat zones, fire, cryo, reactors | Medium (shares atmosphere's grid code) | Yes (overlay) | **Core-lite**, add with atmosphere |
 | **Fluids** (water, coolant, fuel) | Medium-high: flooding, plumbing, hazards | High | Yes, but tricky | **Phase 2** |
 | **Body / health** (needs, injuries by body part) | Medium: survival tension | Low (needs) to high (body parts) | Yes | **Needs early, body parts later** |
+| **Life support: water and waste** (drinking water, recycling, waste disposal) | High: closes the ONI-style base loop | Medium (as items) to high (as plumbing) | Yes | **Water in the MVP, waste right after** (see D14) |
+| **Radiation** (sources, shielding by material, dose) | High: gates the reactor deck | Medium (shares the grid code) | Yes (overlay, dosimeter) | **Right after the MVP** |
 | **Lighting / visibility** | High for atmosphere and dread | Low-medium | Very good, a classic roguelike strength | **Core** |
 | **Sound / noise propagation** | Medium: stealth, creature behaviour | Medium | Yes (log, indicators) | Phase 2 |
 | **Ecology / creature AI with needs** | Medium-high: a world that is alive | High | Yes | Phase 2–3 |
@@ -127,7 +129,7 @@ every point in the first hour.
 | One cell per thing, with 1–2 glyphs of visual vocabulary | The world must be readable from glyph, colour and context alone | A strict glyph and colour language; a look/inspect mode; overlays (atmosphere, power, temperature) |
 | No ambient audio or visuals for dread | Tension has to come from information | Sensor pings, warning logs, a narrowing light radius, countdowns, unreliable readouts |
 | Text is cheap and images aren't | Lore and item descriptions carry the tone | Invest in writing: item flavour text, logs, terminals in the world |
-| Menus can become tedious | Crafting and inventory UI decide whether the game is fun | Cogmind-level UI polish: filtered lists, "craft from nearby storage," batch actions, sensible defaults |
+| Menus can become tedious | Crafting and inventory UI decide whether the game is fun | Cogmind-level UI polish: filtered lists, crafting from containers within reach, batch actions, sensible defaults |
 | Turn-based input | Action games are out; tactical play is in | Make the turn system expressive: time costs, interruptions, "wait until healed or until something appears" |
 
 ---
@@ -136,7 +138,7 @@ every point in the first hour.
 
 - **Grinding for counts.** "Collect 40 copper" is boring. Make material *quality and kind* matter more than quantity.
 - **Recipe-book bloat.** Prefer fewer recipes with flexible inputs (qualities, material classes) over thousands of fixed recipes.
-- **Inventory paperwork.** Allow crafting from the base's networked storage and auto-gathering of components, and make the "go get it" step optional when it isn't interesting.
+- **Inventory paperwork.** Bad UI is the problem, not logistics itself. Logistics stays a problem the player solves (decision D12): early crafting uses what's on you and in containers within reach, and networked storage and transport are machines you build later, as in Applied Energistics 2 and Mekanism. Containers should be meaningful (a medical pouch that survives dropping your pack), with smooth UI for moving things between them.
 - **Gates with no reason.** If players can't explain why they can't go somewhere, the gate is bad.
 - **Being safe at home forever.** The base should need upkeep, and the next important resource should be out there.
 - **Hidden depth.** If a system matters, give it an overlay, a readout and a log line. Depth the player can't see doesn't count.

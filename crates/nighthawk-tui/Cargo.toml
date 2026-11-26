@@ -1,0 +1,8 @@
+[package]
+name = "nighthawk-tui"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+nighthawk-sim = { version = "0.1.0", path = "../nighthawk-sim" }
+ratatui = "0.30.2"
