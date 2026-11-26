@@ -9,7 +9,7 @@
 use std::fs;
 use std::path::PathBuf;
 
-use nighthawk_sim::{Command, Dir, Event, Pos, Tile, Vertical, World, parse_map};
+use nighthawk_sim::{Cause, Command, Dir, Event, Pos, Tile, Vertical, World, parse_map};
 
 const DOOR: Pos = Pos::new(5, 7, 1); // the breached room's door
 const IN_THE_ROOM: Pos = Pos::new(5, 10, 1);
@@ -102,5 +102,5 @@ fn leaving_it_open_eventually_blacks_you_out() {
         "still awake after {} s",
         world.seconds()
     );
-    assert!(events.contains(&Event::BlackedOut));
+    assert!(events.contains(&Event::BlackedOut(Cause::Air)));
 }

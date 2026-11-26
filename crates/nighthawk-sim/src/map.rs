@@ -1,9 +1,10 @@
-//! The tile grid, and the air in it.
+//! The tile grid, and the air and heat in it.
 
 use serde::{Deserialize, Serialize};
 
 use crate::air::{Mix, vent_ppm, vented_amount};
 use crate::hash::Fnv64;
+use crate::heat::{self, ROOM_TEMPERATURE_MK};
 use crate::pos::{Dir, Pos, Vertical};
 
 /// What a single tile is made of. This grows into material-backed terrain
@@ -159,6 +160,14 @@ pub struct Map {
     /// pascal-tiles, in [`crate::Gas::ALL`] order. Air on the ship plus air
     /// vented always equals the air the ship started with.
     vented: [u64; 3],
+    /// The heat in each tile's air, in the same order as `tiles`: its
+    /// pressure (Pa) times its temperature (mK). See [`crate::heat`].
+    /// Tiles with no air have no heat.
+    heat: Vec<u64>,
+    /// Heat lost to space so far, through the hull or with vented air.
+    /// Heat on the ship plus heat lost always equals the heat the ship
+    /// started with.
+    heat_lost: u64,
 }
 
 impl Map {
@@ -176,6 +185,8 @@ impl Map {
             tiles: vec![fill; len],
             air: vec![Mix::VACUUM; len],
             vented: [0; 3],
+            heat: vec![0; len],
+            heat_lost: 0,
         }
     }
 
@@ -184,11 +195,84 @@ impl Map {
         self.index(p).map(|i| self.air[i])
     }
 
-    /// Sets the air in the tile at `p`. Positions off the map are ignored.
+    /// Sets the air in the tile at `p`, at the temperature the tile's air
+    /// already had (or room temperature if it was vacuum). Positions off
+    /// the map are ignored.
     pub fn set_air(&mut self, p: Pos, mix: Mix) {
+        let mk = self.temperature(p).unwrap_or(ROOM_TEMPERATURE_MK);
         if let Some(i) = self.index(p) {
             self.air[i] = mix;
+            self.heat[i] = mix.total() * u64::from(mk);
         }
+    }
+
+    /// The temperature of the air at `p` in millikelvin (thousandths of a
+    /// degree above absolute zero), or `None` if it's vacuum or off the map.
+    pub fn temperature(&self, p: Pos) -> Option<u32> {
+        let i = self.index(p)?;
+        heat::temperature(self.heat[i], self.air[i].total())
+    }
+
+    /// Sets the temperature of the air at `p`, in millikelvin. Vacuum has
+    /// no temperature, so this does nothing there, or off the map.
+    pub fn set_temperature(&mut self, p: Pos, mk: u32) {
+        if let Some(i) = self.index(p) {
+            self.heat[i] = self.air[i].total() * u64::from(mk);
+        }
+    }
+
+    /// Sets the temperature of all the air on deck `z`. Used when a map is
+    /// first built, after its air is in.
+    pub(crate) fn set_deck_temperature(&mut self, z: i32, mk: u32) {
+        let on_deck: Vec<Pos> = self.positions().filter(|p| p.z == z).collect();
+        for p in on_deck {
+            self.set_temperature(p, mk);
+        }
+    }
+
+    /// All the heat on the ship. Together with [`Map::heat_lost`] it always
+    /// adds up to the heat the ship started with.
+    pub fn total_heat(&self) -> u64 {
+        self.heat.iter().sum()
+    }
+
+    /// Heat lost to space so far, through the hull or with vented air.
+    pub fn heat_lost(&self) -> u64 {
+        self.heat_lost
+    }
+
+    /// One second of heat moving (decision D34): neighbouring tiles of air
+    /// even out a little, and tiles against the outer hull lose some to
+    /// space. (Heat carried by moving air is handled by
+    /// [`Map::spread_air`], as the air moves.)
+    pub(crate) fn spread_heat(&mut self) {
+        let pressure: Vec<u64> = self.air.iter().map(|mix| mix.total()).collect();
+        // Work out the links first: `exchange` borrows `self.heat` mutably,
+        // and Rust won't let `self` be borrowed again while that's going on.
+        let links = self.air_links();
+        heat::exchange(&mut self.heat, &pressure, &links);
+        for (i, &pa) in pressure.iter().enumerate() {
+            let faces = self.hull_faces(i);
+            let lost = heat::hull_loss(self.heat[i], pa, faces);
+            self.heat[i] -= lost;
+            self.heat_lost += lost;
+        }
+    }
+
+    /// How many of tile `i`'s four sides face the outer hull: the solid
+    /// tiles around the map's border, which have deep space behind them.
+    /// Only tiles with air lose heat, so other tiles count none.
+    fn hull_faces(&self, i: usize) -> u64 {
+        if !self.tiles[i].holds_air() {
+            return 0;
+        }
+        let p = self.pos_of(i);
+        let sides = [Dir::North, Dir::East, Dir::South, Dir::West].map(|d| p.step(d));
+        let is_hull = |q: Pos| {
+            let on_border = q.x == 0 || q.y == 0 || q.x == self.width - 1 || q.y == self.height - 1;
+            on_border && self.get(q).is_some_and(|tile| !tile.holds_air())
+        };
+        sides.into_iter().filter(|&q| is_hull(q)).count() as u64
     }
 
     /// Fills every air-holding tile on deck `z` with `mix`. Used when a map
@@ -281,7 +365,10 @@ impl Map {
     /// over go one each to the first tiles in the list. So nothing is lost
     /// to rounding, tiles differ by at most 1 Pa per gas, and the same
     /// space always splits the same way.
+    ///
+    /// Heat moves with the air: see [`heat::carry`].
     fn settle(&mut self, space: &[usize], hole_cm2: u64) {
+        let before: Vec<u64> = space.iter().map(|&i| self.air[i].total()).collect();
         let mut totals = space.iter().fold([0u64; 3], |sum, &i| {
             let amounts = self.air[i].amounts();
             [
@@ -301,6 +388,8 @@ impl Map {
             let share = totals.map(|total| total / count + u64::from((k as u64) < total % count));
             self.air[i] = Mix::from_amounts(share);
         }
+        let after: Vec<u64> = space.iter().map(|&i| self.air[i].total()).collect();
+        self.heat_lost += heat::carry(&mut self.heat, space, &before, &after);
     }
 
     /// Every connected open space, as lists of indexes into `air`. Each list
@@ -407,7 +496,24 @@ impl Map {
                 self.air.len()
             ));
         }
+        if self.heat.len() != self.tiles.len() {
+            return Err(format!(
+                "map has {found} tiles but heat for {}",
+                self.heat.len()
+            ));
+        }
+        self.check_heat()?;
         self.check_stairs().map_err(|e| e.to_string())
+    }
+
+    /// Checks no tile has heat without air to hold it.
+    fn check_heat(&self) -> Result<(), String> {
+        let warm_vacuum =
+            (0..self.heat.len()).find(|&i| self.heat[i] > 0 && self.air[i].total() == 0);
+        match warm_vacuum {
+            Some(i) => Err(format!("tile at {:?} has heat but no air", self.pos_of(i))),
+            None => Ok(()),
+        }
     }
 
     /// Every position on the map, deck by deck, row by row.
@@ -444,6 +550,10 @@ impl Map {
         }
         for lost in self.vented {
             h.u64(lost);
+        }
+        h.u64(self.heat_lost);
+        for &heat in &self.heat {
+            h.u64(heat);
         }
         for mix in &self.air {
             h.u64(u64::from(mix.o2))
@@ -1038,5 +1148,151 @@ mod tests {
         let mut b = a.clone();
         b.vented = [1, 0, 0];
         assert_ne!(hash(&a), hash(&b));
+    }
+}
+
+#[cfg(test)]
+mod heat_tests {
+    use super::*;
+    use crate::heat::celsius_to_mk;
+
+    /// A 5×5 deck: hull all round a 3×3 room of normal air at 20 °C.
+    fn room() -> Map {
+        let mut map = Map::filled(5, 5, 1, Tile::Wall);
+        for y in 1..4 {
+            for x in 1..4 {
+                map.set(Pos::new(x, y, 0), Tile::Floor);
+            }
+        }
+        map.fill_deck_air(0, Mix::STANDARD);
+        map
+    }
+
+    fn total_accounted(map: &Map) -> u64 {
+        map.total_heat() + map.heat_lost()
+    }
+
+    #[test]
+    fn new_air_comes_in_at_room_temperature_and_keeps_its_temperature() {
+        let mut map = room();
+        let p = Pos::new(2, 2, 0);
+        assert_eq!(map.temperature(p), Some(ROOM_TEMPERATURE_MK));
+        map.set_temperature(p, celsius_to_mk(-5));
+        map.set_air(p, Mix::STANDARD.scaled(50));
+        assert_eq!(
+            map.temperature(p),
+            Some(celsius_to_mk(-5)),
+            "thinner, same temperature"
+        );
+    }
+
+    #[test]
+    fn vacuum_and_off_map_tiles_have_no_temperature() {
+        let mut map = room();
+        let wall = Pos::new(0, 0, 0);
+        map.set_temperature(wall, celsius_to_mk(50));
+        assert_eq!(map.temperature(wall), None, "a wall holds no air to warm");
+        assert_eq!(map.temperature(Pos::new(9, 9, 9)), None);
+        map.set_temperature(Pos::new(9, 9, 9), 1); // ignored, no panic
+    }
+
+    #[test]
+    fn only_tiles_beside_the_outer_hull_face_it() {
+        let map = room();
+        let faces = |x, y| map.hull_faces(map.index_of(Pos::new(x, y, 0)).unwrap());
+        assert_eq!(faces(1, 1), 2, "a corner touches two hull tiles");
+        assert_eq!(faces(2, 1), 1);
+        assert_eq!(faces(2, 2), 0, "the middle touches none");
+        assert_eq!(faces(0, 0), 0, "the hull itself holds no air");
+    }
+
+    #[test]
+    fn inner_bulkheads_are_not_hull() {
+        // A wall inside the map has ship on both sides, not space.
+        let mut map = Map::filled(7, 3, 1, Tile::Wall);
+        for x in 1..6 {
+            map.set(Pos::new(x, 1, 0), Tile::Floor);
+        }
+        map.set(Pos::new(3, 1, 0), Tile::Wall);
+        // (2, 1) has hull above and below, and the inner wall to its east.
+        assert_eq!(map.hull_faces(map.index_of(Pos::new(2, 1, 0)).unwrap()), 2);
+    }
+
+    #[test]
+    fn the_hull_slowly_cools_a_room_and_the_heat_is_accounted_for() {
+        let mut map = room();
+        let start = map.total_heat();
+        for _ in 0..600 {
+            map.spread_heat();
+            assert_eq!(total_accounted(&map), start);
+        }
+        let middle = map.temperature(Pos::new(2, 2, 0)).unwrap();
+        assert!(middle < ROOM_TEMPERATURE_MK, "cooler after ten minutes");
+        assert!(middle > celsius_to_mk(15), "but only a little: {middle} mK");
+        assert!(map.heat_lost() > 0);
+    }
+
+    #[test]
+    fn a_cold_spot_spreads_out_and_warms_up() {
+        let mut map = room();
+        let middle = Pos::new(2, 2, 0);
+        map.set_temperature(middle, celsius_to_mk(-50));
+        map.spread_heat();
+        let next_door = map.temperature(Pos::new(2, 1, 0)).unwrap();
+        assert!(
+            next_door < ROOM_TEMPERATURE_MK,
+            "the cold reached next door"
+        );
+        assert!(map.temperature(middle).unwrap() > celsius_to_mk(-50));
+    }
+
+    #[test]
+    fn venting_air_takes_its_heat_to_space() {
+        let mut map = room();
+        map.set(Pos::new(2, 0, 0), Tile::HullBreach);
+        let start = map.total_heat();
+        for _ in 0..120 {
+            map.spread_air();
+            assert_eq!(total_accounted(&map), start);
+        }
+        assert_eq!(map.total_heat(), 0, "vacuum holds no heat");
+        assert_eq!(map.temperature(Pos::new(2, 2, 0)), None);
+    }
+
+    #[test]
+    fn mismatched_heat_data_is_inconsistent() {
+        let mut map = room();
+        map.heat.pop();
+        assert_eq!(
+            map.check_consistent(),
+            Err("map has 25 tiles but heat for 24".to_string())
+        );
+    }
+
+    #[test]
+    fn heat_without_air_is_inconsistent() {
+        let mut map = room();
+        let wall = map.index_of(Pos::new(4, 4, 0)).unwrap();
+        map.heat[wall] = 1;
+        assert_eq!(
+            map.check_consistent(),
+            Err("tile at Pos { x: 4, y: 4, z: 0 } has heat but no air".to_string())
+        );
+    }
+
+    #[test]
+    fn heat_and_heat_lost_are_part_of_the_state_hash() {
+        let hash = |m: &Map| {
+            let mut h = Fnv64::new();
+            m.hash_into(&mut h);
+            h.finish()
+        };
+        let a = room();
+        let mut b = room();
+        b.set_temperature(Pos::new(2, 2, 0), celsius_to_mk(19));
+        let mut c = room();
+        c.heat_lost = 1;
+        assert_ne!(hash(&a), hash(&b));
+        assert_ne!(hash(&a), hash(&c));
     }
 }

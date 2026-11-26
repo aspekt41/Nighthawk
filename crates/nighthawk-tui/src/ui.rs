@@ -13,7 +13,9 @@
 //! └───────────────────────────────────────────────────────┘
 //! ```
 
-use nighthawk_sim::{BREATH_FULL, Mix, Pos, Tile, World};
+use nighthawk_sim::{
+    BREATH_FULL, Mix, Pos, Tile, WARMTH_FULL, World, celsius_to_mk, mk_to_tenths_celsius,
+};
 use ratatui::Frame;
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Constraint, Layout, Rect};
@@ -31,11 +33,31 @@ const TITLE_WIDTH: u16 = 60;
 /// inside the 80×24 minimum terminal.
 const TITLE_HEIGHT: u16 = 20;
 
+/// A way of shading the map to show one part of the simulation (design
+/// pillar 4: if a system matters, it has an overlay).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Overlay {
+    /// Floor shaded by air pressure (`a`).
+    Air,
+    /// Floor shaded by air temperature (`t`).
+    Heat,
+}
+
+impl Overlay {
+    /// The note added to the map panel's title while this overlay is on.
+    fn label(self) -> &'static str {
+        match self {
+            Overlay::Air => " [air overlay]",
+            Overlay::Heat => " [heat overlay]",
+        }
+    }
+}
+
 /// Draws whichever screen the app is on.
 pub fn render(app: &App, frame: &mut Frame) {
     match &app.screen {
         Screen::Title(menu) => render_title(menu, frame),
-        Screen::Playing(world) => render_game(world, &app.log, app.show_air, frame),
+        Screen::Playing(world) => render_game(world, &app.log, app.overlay, frame),
     }
 }
 
@@ -110,17 +132,17 @@ fn centred(area: Rect, width: u16, height: u16) -> Rect {
 }
 
 /// The game screen: map, status sidebar and message log.
-fn render_game(world: &World, log_lines: &[String], show_air: bool, frame: &mut Frame) {
+fn render_game(world: &World, log_lines: &[String], overlay: Option<Overlay>, frame: &mut Frame) {
     let [top, log_area] =
         Layout::vertical([Constraint::Min(5), Constraint::Length(LOG_HEIGHT)]).areas(frame.area());
     let [map_area, side_area] =
         Layout::horizontal([Constraint::Min(10), Constraint::Length(SIDEBAR_WIDTH)]).areas(top);
 
-    let overlay_note = if show_air { " [air overlay]" } else { "" };
+    let overlay_note = overlay.map_or("", Overlay::label);
     let map_block = Block::bordered().title(format!(" {}{overlay_note} ", world.area_name()));
     let map_inner = map_block.inner(map_area);
     frame.render_widget(map_block, map_area);
-    frame.render_widget(MapView { world, show_air }, map_inner);
+    frame.render_widget(MapView { world, overlay }, map_inner);
 
     frame.render_widget(sidebar(world), side_area);
     frame.render_widget(log(log_lines, log_area.height.saturating_sub(2)), log_area);
@@ -133,8 +155,9 @@ fn render_game(world: &World, log_lines: &[String], show_air: bool, frame: &mut 
 /// will always be drawn this way, because it's a grid, not text.
 pub struct MapView<'a> {
     pub world: &'a World,
-    /// Shade floor tiles by air pressure instead of drawing them as `.`.
-    pub show_air: bool,
+    /// Shade floor tiles by air pressure or temperature instead of drawing
+    /// them as `.`.
+    pub overlay: Option<Overlay>,
 }
 
 impl Widget for MapView<'_> {
@@ -151,7 +174,7 @@ impl Widget for MapView<'_> {
                     origin_y + i32::from(row),
                     player.z,
                 );
-                let (glyph, style) = glyph_at(self.world, pos, self.show_air);
+                let (glyph, style) = glyph_at(self.world, pos, self.overlay);
                 buf[(area.x + col, area.y + row)]
                     .set_symbol(glyph)
                     .set_style(style);
@@ -162,18 +185,49 @@ impl Widget for MapView<'_> {
 
 /// The character and colour for one map cell. The player is drawn on top of
 /// whatever tile they stand on. Off-map cells are blank.
-fn glyph_at(world: &World, pos: Pos, show_air: bool) -> (&'static str, Style) {
+fn glyph_at(world: &World, pos: Pos, overlay: Option<Overlay>) -> (&'static str, Style) {
     if pos == world.player() {
         return (
             "@",
             Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD),
         );
     }
-    match (world.map().get(pos), world.map().air(pos)) {
-        (Some(Tile::Floor), Some(mix)) if show_air => air_glyph(mix),
+    let map = world.map();
+    match (map.get(pos), overlay) {
+        (Some(Tile::Floor), Some(Overlay::Air)) => air_glyph(map.air(pos).unwrap_or(Mix::VACUUM)),
+        (Some(Tile::Floor), Some(Overlay::Heat)) => heat_glyph(map.temperature(pos)),
         (tile, _) => tile.map_or((" ", Style::new()), tile_glyph),
     }
 }
+
+/// How warm a floor tile looks on the heat overlay. The further from
+/// comfortable, the denser the block: green `░` is comfortable (10 to
+/// 30 °C), cyan `▒` chilly, light blue `▓` cold (below 0 °C), blue `█`
+/// freezing (below −15 °C), red `█` hot. Vacuum has no temperature and
+/// shows a dim `.`.
+fn heat_glyph(mk: Option<u32>) -> (&'static str, Style) {
+    let Some(mk) = mk else {
+        return (".", Style::new().fg(Color::DarkGray));
+    };
+    let (_, glyph, colour) = HEAT_BANDS
+        .iter()
+        .find(|&&(below, _, _)| mk < below)
+        .copied()
+        .unwrap_or(HOT);
+    (glyph, Style::new().fg(colour))
+}
+
+/// The heat overlay's bands, coldest first: each is (below this
+/// temperature in mK, glyph, colour). A table rather than a `match` so the
+/// bands are easy to read and change. Anything warmer than the last band
+/// is [`HOT`].
+const HEAT_BANDS: [(u32, &str, Color); 4] = [
+    (celsius_to_mk(-15), "█", Color::Blue),
+    (celsius_to_mk(0), "▓", Color::LightBlue),
+    (celsius_to_mk(10), "▒", Color::Cyan),
+    (celsius_to_mk(30), "░", Color::Green),
+];
+const HOT: (u32, &str, Color) = (u32::MAX, "█", Color::Red);
 
 /// How full of air a floor tile looks on the air overlay: solid for normal
 /// pressure, fading through lighter shades to `.` for near vacuum. The
@@ -227,30 +281,41 @@ fn sidebar_lines(world: &World) -> Vec<Line<'static>> {
     let p = world.player();
     let dim = Style::new().fg(Color::DarkGray);
     let mut lines = vec![
-        Line::raw(format!("Deck  {} of {}", p.z, world.map().depth())),
-        Line::raw(format!("Pos   {}, {}", p.x, p.y)),
+        Line::raw(format!(
+            "Deck {}/{}  Pos {}, {}",
+            p.z,
+            world.map().depth(),
+            p.x,
+            p.y
+        )),
         Line::raw(format!("Date  {}", world.now().date_text())),
         Line::raw(format!("Time  {}", world.now().time_text())),
         Line::raw(format!("Seed  {}", world.seed())),
         Line::raw(""),
+        meter_line("Breath", world.breath(), BREATH_FULL),
+        meter_line("Warmth", world.warmth(), WARMTH_FULL),
     ];
-    lines.push(breath_line(world.breath()));
     lines.extend(air_lines(world.map().air(p).unwrap_or(Mix::VACUUM)));
+    lines.push(temperature_line(world.map().temperature(p)));
     lines.extend([
         Line::raw(""),
         Line::styled("move  hjkl yubn", dim),
         Line::styled("wait .  climb < >", dim),
-        Line::styled("close c  air a", dim),
+        Line::styled("close c  air a  heat t", dim),
         Line::styled("save S  menu q/Q", dim),
     ]);
     lines
 }
 
-/// The player's breath meter: a percentage and a five-block gauge, green
-/// when it's fine, yellow when it's dropping, red when it's nearly gone.
-fn breath_line(breath: u32) -> Line<'static> {
-    let percent = breath * 100 / BREATH_FULL;
-    let blocks = (breath * 5).div_ceil(BREATH_FULL) as usize; // any breath shows a block
+/// One of the player's meters (breath, warmth): a percentage and a
+/// five-block gauge, green when it's fine, yellow when it's dropping, red
+/// when it's nearly gone.
+fn meter_line(label: &str, value: u32, full: u32) -> Line<'static> {
+    // Worked in u64: warmth counts in millionths, and five times a million
+    // is fine, but a percentage of it is safer with room to spare.
+    let (value, full) = (u64::from(value), u64::from(full));
+    let percent = value * 100 / full;
+    let blocks = (value * 5).div_ceil(full) as usize; // any amount shows a block
     let gauge = format!("{}{}", "█".repeat(blocks), "░".repeat(5 - blocks));
     let colour = match percent {
         75.. => Color::Green,
@@ -258,9 +323,27 @@ fn breath_line(breath: u32) -> Line<'static> {
         _ => Color::Red,
     };
     Line::styled(
-        format!("Breath {percent:>3}% {gauge}"),
+        format!("{label} {percent:>3}% {gauge}"),
         Style::new().fg(colour),
     )
+}
+
+/// The temperature where the player stands, in the colour the heat
+/// overlay uses for it.
+fn temperature_line(mk: Option<u32>) -> Line<'static> {
+    let Some(kelvin) = mk else {
+        return Line::raw("Temp  --");
+    };
+    let style = heat_glyph(mk).1;
+    Line::styled(format!("Temp  {}", celsius(kelvin)), style)
+}
+
+/// A temperature in mK as °C with one decimal place: 253_150 → "-20.0 °C".
+fn celsius(mk: u32) -> String {
+    let tenths = mk_to_tenths_celsius(mk);
+    let sign = if tenths < 0 { "-" } else { "" };
+    let tenths = tenths.unsigned_abs();
+    format!("{sign}{}.{} °C", tenths / 10, tenths % 10)
 }
 
 /// The air where the player stands: pressure, then each gas's share.
@@ -322,7 +405,7 @@ mod tests {
         let mut buf = Buffer::empty(area);
         MapView {
             world,
-            show_air: false,
+            overlay: None,
         }
         .render(area, &mut buf);
         (0..h)
@@ -358,7 +441,7 @@ mod tests {
     }
 
     fn game_screen(world: &World, log: &[String]) -> String {
-        draw_screen(80, 24, |frame| render_game(world, log, false, frame))
+        draw_screen(80, 24, |frame| render_game(world, log, None, frame))
     }
 
     fn title_screen(menu: &TitleMenu) -> String {
@@ -375,7 +458,9 @@ mod tests {
         assert!(screen.contains("Date  25 Nov 2631"));
         assert!(screen.contains("Time  08:42:00"));
         assert!(screen.contains("Breath 100%"));
-        assert!(screen.contains("Deck  0 of 1"));
+        assert!(screen.contains("Warmth 100%"));
+        assert!(screen.contains("Temp  20.0 °C"));
+        assert!(screen.contains("Deck 0/1  Pos 3, 2"));
         assert!(screen.contains("Seed  1"));
         assert!(screen.contains("save S  menu q/Q"));
         assert!(screen.contains("You wake in the stasis bay."));
@@ -492,7 +577,7 @@ mod tests {
             screen.contains("@>"),
             "the ladder up is right of the player"
         );
-        assert!(screen.contains("Deck  0 of 2"));
+        assert!(screen.contains("Deck 0/2  Pos 26, 2"));
     }
 
     // --- Air ------------------------------------------------------------------
@@ -536,7 +621,7 @@ mod tests {
     #[test]
     fn the_breath_gauge_shows_percent_blocks_and_colour() {
         let line = |b| {
-            let l = breath_line(b);
+            let l = meter_line("Breath", b, BREATH_FULL);
             (l.to_string(), l.style.fg)
         };
         assert_eq!(line(1000), ("Breath 100% █████".into(), Some(Color::Green)));
@@ -549,6 +634,77 @@ mod tests {
             "a sliver still shows"
         );
         assert_eq!(line(0), ("Breath   0% ░░░░░".into(), Some(Color::Red)));
+    }
+
+    #[test]
+    fn the_warmth_gauge_counts_in_millionths() {
+        let line = |w| meter_line("Warmth", w, WARMTH_FULL).to_string();
+        assert_eq!(line(WARMTH_FULL), "Warmth 100% █████");
+        assert_eq!(line(499_999), "Warmth  49% ███░░");
+        assert_eq!(line(1), "Warmth   0% █░░░░");
+    }
+
+    // --- Heat -----------------------------------------------------------------
+
+    #[test]
+    fn temperatures_show_in_celsius_with_one_decimal() {
+        assert_eq!(celsius(celsius_to_mk(20)), "20.0 °C");
+        assert_eq!(celsius(celsius_to_mk(-20)), "-20.0 °C");
+        assert_eq!(celsius(celsius_to_mk(0) - 450), "-0.5 °C");
+        assert_eq!(celsius(celsius_to_mk(0) + 40), "0.0 °C");
+    }
+
+    #[test]
+    fn the_sidebar_reads_out_the_temperature_in_the_overlay_colour() {
+        let warm = temperature_line(Some(celsius_to_mk(20)));
+        assert_eq!(warm.to_string(), "Temp  20.0 °C");
+        assert_eq!(warm.style.fg, Some(Color::Green));
+        let cold = temperature_line(Some(celsius_to_mk(-5)));
+        assert_eq!(cold.style.fg, Some(Color::LightBlue));
+        assert_eq!(temperature_line(None).to_string(), "Temp  --");
+    }
+
+    #[test]
+    fn the_heat_overlay_gets_denser_the_further_from_comfortable() {
+        let band = |c| {
+            let (glyph, style) = heat_glyph(Some(celsius_to_mk(c)));
+            (glyph, style.fg.unwrap())
+        };
+        assert_eq!(band(-60), ("█", Color::Blue));
+        assert_eq!(band(-16), ("█", Color::Blue));
+        assert_eq!(band(-15), ("▓", Color::LightBlue), "-15 is the edge");
+        assert_eq!(band(-1), ("▓", Color::LightBlue));
+        assert_eq!(band(5), ("▒", Color::Cyan));
+        assert_eq!(band(20), ("░", Color::Green));
+        assert_eq!(band(30), ("█", Color::Red), "30 is hot");
+        assert_eq!(heat_glyph(None).0, ".", "vacuum has no temperature");
+    }
+
+    #[test]
+    fn the_heat_overlay_shows_the_cold_crew_deck_and_is_labelled() {
+        let map = crate::content::load_start_map().unwrap();
+        let mut world = World::new(map, 1);
+        let heat = Some(Overlay::Heat);
+        let bay = draw_screen(80, 24, |f| render_game(&world, &[], heat, f));
+        assert!(bay.contains("[heat overlay]"));
+        assert!(bay.contains("░░░"), "the stasis bay is comfortable, just");
+
+        use nighthawk_sim::Command::{Climb, Move};
+        let route = std::iter::repeat_n(Move(Dir::North), 5)
+            .chain(std::iter::repeat_n(Move(Dir::East), 23))
+            .chain([Climb(nighthawk_sim::Vertical::Up)]);
+        for command in route {
+            world.apply(command);
+        }
+        let upstairs = draw_screen(80, 24, |f| render_game(&world, &[], heat, f));
+        assert!(
+            upstairs.contains("▓▓▓"),
+            "the corridor is cold:\n{upstairs}"
+        );
+        assert!(
+            upstairs.contains("███"),
+            "the shut cabins are freezing:\n{upstairs}"
+        );
     }
 
     #[test]
@@ -568,7 +724,7 @@ mod tests {
     fn the_air_overlay_shows_thin_air_upstairs_and_is_labelled() {
         let map = crate::content::load_start_map().unwrap();
         let mut world = World::new(map, 1);
-        let full = draw_screen(80, 24, |f| render_game(&world, &[], true, f));
+        let full = draw_screen(80, 24, |f| render_game(&world, &[], Some(Overlay::Air), f));
         assert!(full.contains("[air overlay]"));
         assert!(full.contains("███"), "the stasis bay is at full pressure");
 
@@ -580,9 +736,9 @@ mod tests {
         for command in route {
             world.apply(command);
         }
-        let upstairs = draw_screen(80, 24, |f| render_game(&world, &[], true, f));
+        let upstairs = draw_screen(80, 24, |f| render_game(&world, &[], Some(Overlay::Air), f));
         assert!(upstairs.contains("▒▒▒"), "thin air upstairs:\n{upstairs}");
-        let plain = draw_screen(80, 24, |f| render_game(&world, &[], false, f));
+        let plain = draw_screen(80, 24, |f| render_game(&world, &[], None, f));
         assert!(!plain.contains("▒") && !plain.contains("[air overlay]"));
     }
 

@@ -9,6 +9,7 @@ use nighthawk_sim::{Command, Dir, Vertical};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
 use crate::title::MenuItem;
+use crate::ui::Overlay;
 
 /// Something the player wants while playing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -24,8 +25,9 @@ pub enum GameAction {
     Exit,
     /// Ask which way to close a door; the next key answers.
     BeginClose,
-    /// Show or hide the air overlay. Only changes the view; no time passes.
-    ToggleAirOverlay,
+    /// Show or hide an overlay (`a` air, `t` heat). Only changes the view;
+    /// no time passes.
+    ToggleOverlay(Overlay),
 }
 
 /// Something the player wants on the title menu.
@@ -91,7 +93,8 @@ pub fn game_action(key: KeyEvent) -> Option<GameAction> {
         KeyCode::Char('Q') => Some(GameAction::ToTitleWithoutSaving),
         KeyCode::Char('S') => Some(GameAction::Save),
         KeyCode::Char('c') => Some(GameAction::BeginClose),
-        KeyCode::Char('a') => Some(GameAction::ToggleAirOverlay),
+        KeyCode::Char('a') => Some(GameAction::ToggleOverlay(Overlay::Air)),
+        KeyCode::Char('t') => Some(GameAction::ToggleOverlay(Overlay::Heat)),
         code => KEYMAP
             .iter()
             .find(|(bound, _)| *bound == code)
@@ -248,10 +251,14 @@ mod tests {
     }
 
     #[test]
-    fn a_toggles_the_air_overlay() {
+    fn a_and_t_toggle_the_air_and_heat_overlays() {
         assert_eq!(
             game_action(press(KeyCode::Char('a'))),
-            Some(GameAction::ToggleAirOverlay)
+            Some(GameAction::ToggleOverlay(Overlay::Air))
+        );
+        assert_eq!(
+            game_action(press(KeyCode::Char('t'))),
+            Some(GameAction::ToggleOverlay(Overlay::Heat))
         );
     }
 

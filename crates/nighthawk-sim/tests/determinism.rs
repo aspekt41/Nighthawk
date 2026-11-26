@@ -25,7 +25,7 @@ const SEED: u64 = 0x4e49_4748_5448_4157; // "NIGHTHAW" in ASCII
 const TURNS: usize = 500;
 
 /// The stored fingerprints. See "If this test fails" above.
-const EXPECTED_STATE_HASH: u64 = 0xe88b_4a55_711f_cb70;
+const EXPECTED_STATE_HASH: u64 = 0x401e_bf3d_8409_f862;
 const EXPECTED_AMBIENT_COUNT: usize = 74;
 
 fn start_world() -> World {
@@ -191,6 +191,44 @@ fn air_is_never_created_or_destroyed() {
     assert!(
         world.map().vented().iter().sum::<u64>() > 0,
         "the damaged rooms really vented"
+    );
+}
+
+#[test]
+fn heat_is_never_created_or_destroyed() {
+    // Heat moves with the air, mixes between neighbours, leaks out through
+    // the hull and leaves with vented air. The heat on board plus the heat
+    // lost must always equal what the ship started with, to the last unit.
+    let start = start_world().map().total_heat();
+    let mut world = start_world();
+    for command in script() {
+        world.apply(command);
+        let accounted = world.map().total_heat() + world.map().heat_lost();
+        assert_eq!(accounted, start, "after {} seconds", world.seconds());
+    }
+    assert!(world.map().heat_lost() > 0, "the hull and vents lost heat");
+}
+
+#[test]
+fn the_cold_crew_deck_warms_from_the_stasis_bay_below() {
+    // The crew deck starts at -20 °C. Warm air from the stasis bay rushes up
+    // the ladder in the first second, and then keeps mixing up the shaft.
+    let mut world = start_world();
+    let top_of_ladder = nighthawk_sim::Pos::new(27, 2, 1);
+    let bay = nighthawk_sim::Pos::new(10, 10, 0);
+    let start = world.map().temperature(top_of_ladder).unwrap();
+    assert_eq!(start, nighthawk_sim::celsius_to_mk(-20));
+    world.apply(Command::Wait);
+    let after_rush = world.map().temperature(top_of_ladder).unwrap();
+    assert!(after_rush > start, "the rush of warm air");
+    for _ in 0..60 {
+        world.apply(Command::Wait);
+    }
+    assert!(world.map().temperature(top_of_ladder).unwrap() > after_rush);
+    let bay_now = world.map().temperature(bay).unwrap();
+    assert!(
+        bay_now > nighthawk_sim::celsius_to_mk(13),
+        "the far side of the bay is barely touched: {bay_now} mK"
     );
 }
 

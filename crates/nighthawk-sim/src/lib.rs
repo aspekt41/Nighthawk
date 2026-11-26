@@ -18,8 +18,10 @@
 //!   produce the same game.
 
 mod air;
+mod body;
 mod calendar;
 mod hash;
+mod heat;
 mod map;
 mod map_file;
 mod pos;
@@ -28,13 +30,21 @@ mod save;
 mod world;
 
 pub use air::{Gas, Mix, TILE_VOLUME_CM3, VENT_SPEED_CM_PER_S, vent_ppm, vented_amount};
+pub use body::{
+    BREATH_FULL, BreathLevel, COMFORT_MK, Cause, SAFE_O2_PA, VACUUM_FEELS_LIKE_MK, WARMTH_FULL,
+    WarmthLevel,
+};
 pub use calendar::{DateTime, SHIP_START};
+pub use heat::{
+    HULL_LOSS_PER_BILLION, MAX_CELSIUS, MIN_CELSIUS, MIXING_PER_MILLE, ROOM_TEMPERATURE_MK,
+    SPACE_TEMPERATURE_MK, ZERO_CELSIUS_MK, celsius_to_mk, mk_to_tenths_celsius,
+};
 pub use map::{Map, StairsError, Tile};
 pub use map_file::{LoadedMap, MapError, parse_map};
 pub use pos::{Dir, Pos, Vertical};
 pub use rng::{GameRng, Stream};
 pub use save::{SAVE_FORMAT, SAVE_VERSION, SaveError, load_from_str, save_to_string};
 pub use world::{
-    BREATH_FULL, BreathLevel, CLIMB_SECONDS, Command, DIAGONAL_STEP_SECONDS, DOOR_SECONDS, Event,
-    SAFE_O2_PA, STEP_SECONDS, Sound, WAIT_SECONDS, World,
+    CLIMB_SECONDS, Command, DIAGONAL_STEP_SECONDS, DOOR_SECONDS, Event, STEP_SECONDS, Sound,
+    WAIT_SECONDS, World,
 };

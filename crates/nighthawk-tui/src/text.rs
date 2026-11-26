@@ -1,6 +1,6 @@
 //! The words the game shows the player: log lines for sim events.
 
-use nighthawk_sim::{BreathLevel, Event, Sound, Vertical};
+use nighthawk_sim::{BreathLevel, Cause, Event, Sound, Vertical, WarmthLevel};
 
 /// Turns a sim event into a log line. Ordinary steps aren't worth logging.
 ///
@@ -12,7 +12,9 @@ pub fn describe(event: Event) -> Option<String> {
         Event::Moved { .. } => return None,
         Event::Bumped { tile, .. } => format!("You bump into the {}.", tile.name()),
         Event::Ambient(sound) => sound_text(sound).into(),
-        Event::AirEscaping | Event::Breath(_) | Event::BlackedOut => survival_text(event).into(),
+        Event::AirEscaping | Event::Breath(_) | Event::Warmth(_) | Event::BlackedOut(_) => {
+            survival_text(event).into()
+        }
         _ => movement_text(event).into(),
     };
     Some(line)
@@ -30,11 +32,13 @@ fn movement_text(event: Event) -> &'static str {
     }
 }
 
-/// Log lines for air and breath.
+/// Log lines for air, breath, warmth and blacking out.
 fn survival_text(event: Event) -> &'static str {
     match event {
         Event::AirEscaping => "Air hisses out somewhere nearby.",
         Event::Breath(level) => breath_text(level),
+        Event::Warmth(level) => warmth_text(level),
+        Event::BlackedOut(Cause::Cold) => "You stop shivering. Everything goes dark.",
         _ => "Your vision goes grey. You black out.",
     }
 }
@@ -69,6 +73,16 @@ fn breath_text(level: BreathLevel) -> &'static str {
         BreathLevel::Struggling => "Your vision narrows. You need air.",
         BreathLevel::Fading => "Your chest burns. You're about to black out!",
         BreathLevel::Recovered => "You catch your breath.",
+    }
+}
+
+/// Warnings as the player gets colder, and relief when they warm up.
+fn warmth_text(level: WarmthLevel) -> &'static str {
+    match level {
+        WarmthLevel::Chilled => "You shiver. It's cold here.",
+        WarmthLevel::Numb => "Your fingers are numb. You need to get warm.",
+        WarmthLevel::Freezing => "You can't stop shaking. You're freezing!",
+        WarmthLevel::Recovered => "The warmth comes back into your hands.",
     }
 }
 
@@ -170,8 +184,12 @@ mod tests {
             Some("Air hisses out somewhere nearby.")
         );
         assert_eq!(
-            describe(Event::BlackedOut).as_deref(),
+            describe(Event::BlackedOut(Cause::Air)).as_deref(),
             Some("Your vision goes grey. You black out.")
+        );
+        assert_eq!(
+            describe(Event::BlackedOut(Cause::Cold)).as_deref(),
+            Some("You stop shivering. Everything goes dark.")
         );
         let levels = [
             BreathLevel::Short,
@@ -186,6 +204,25 @@ mod tests {
         assert!(lines[0].starts_with("You're short of breath"));
         assert!(lines[2].contains("about to black out"));
         assert_eq!(lines[3], "You catch your breath.");
+        for (i, line) in lines.iter().enumerate() {
+            assert!(!lines[i + 1..].contains(line), "{line:?} is used twice");
+        }
+    }
+
+    #[test]
+    fn warmth_has_a_line_for_each_level() {
+        let levels = [
+            WarmthLevel::Chilled,
+            WarmthLevel::Numb,
+            WarmthLevel::Freezing,
+            WarmthLevel::Recovered,
+        ];
+        let lines: Vec<String> = levels
+            .iter()
+            .map(|&l| describe(Event::Warmth(l)).unwrap())
+            .collect();
+        assert_eq!(lines[0], "You shiver. It's cold here.");
+        assert!(lines[2].contains("freezing"));
         for (i, line) in lines.iter().enumerate() {
             assert!(!lines[i + 1..].contains(line), "{line:?} is used twice");
         }

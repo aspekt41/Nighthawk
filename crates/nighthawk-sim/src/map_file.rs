@@ -26,6 +26,7 @@ use std::fmt;
 use serde::Deserialize;
 
 use crate::air::Mix;
+use crate::heat::{MAX_CELSIUS, MIN_CELSIUS, celsius_to_mk};
 use crate::map::{Map, StairsError, Tile};
 use crate::pos::Pos;
 
@@ -89,6 +90,11 @@ pub enum MapError {
         deck: usize,
         percent: u32,
     },
+    /// A deck's starting `temperature` is colder than deep space or too hot.
+    BadTemperature {
+        deck: usize,
+        celsius: i32,
+    },
 }
 
 impl fmt::Display for MapError {
@@ -99,7 +105,43 @@ impl fmt::Display for MapError {
                 f,
                 "legend key {key:?} must be exactly one character and not '{PLAYER_START}'"
             ),
-            MapError::NoDecks => write!(f, "map has no decks"),
+            // Problems with the decks' size and shape get their own function,
+            // so this `match` stays under the complexity limit.
+            MapError::NoDecks
+            | MapError::EmptyDeck { .. }
+            | MapError::RaggedRow { .. }
+            | MapError::DeckHeightMismatch { .. } => self.fmt_layout(f),
+            MapError::UnknownGlyph {
+                glyph,
+                deck,
+                row,
+                col,
+            } => write!(
+                f,
+                "deck {deck}, row {row}, column {col}: {glyph:?} is not in the legend"
+            ),
+            MapError::Stairs(e) => write!(f, "{e}"),
+            MapError::BadPressure { deck, percent } => write!(
+                f,
+                "deck {deck} has pressure {percent}%; it must be 0 to {MAX_PRESSURE_PERCENT}"
+            ),
+            MapError::BadTemperature { deck, celsius } => write!(
+                f,
+                "deck {deck} has temperature {celsius} °C; it must be {MIN_CELSIUS} to {MAX_CELSIUS}"
+            ),
+            MapError::PlayerStartCount { found } => write!(
+                f,
+                "map must have exactly one '{PLAYER_START}' (player start); found {found}"
+            ),
+        }
+    }
+}
+
+impl MapError {
+    /// Messages for decks of the wrong size or shape. `fmt` only sends
+    /// those variants here, so the last arm is the one left: no decks.
+    fn fmt_layout(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
             MapError::EmptyDeck { deck } => write!(f, "deck {deck} has no rows"),
             MapError::RaggedRow {
                 deck,
@@ -117,24 +159,7 @@ impl fmt::Display for MapError {
             } => {
                 write!(f, "deck {deck} has {found} rows; expected {expected}")
             }
-            MapError::UnknownGlyph {
-                glyph,
-                deck,
-                row,
-                col,
-            } => write!(
-                f,
-                "deck {deck}, row {row}, column {col}: {glyph:?} is not in the legend"
-            ),
-            MapError::Stairs(e) => write!(f, "{e}"),
-            MapError::BadPressure { deck, percent } => write!(
-                f,
-                "deck {deck} has pressure {percent}%; it must be 0 to {MAX_PRESSURE_PERCENT}"
-            ),
-            MapError::PlayerStartCount { found } => write!(
-                f,
-                "map must have exactly one '{PLAYER_START}' (player start); found {found}"
-            ),
+            _ => write!(f, "map has no decks"),
         }
     }
 }
@@ -164,6 +189,10 @@ struct DeckFile {
     /// mix is always normal ship air, just thinner or denser.
     #[serde(default)]
     pressure: Option<u32>,
+    /// The deck's starting air temperature in whole °C, from −270 (deep
+    /// space) to 200. Optional: 20 °C if left out.
+    #[serde(default)]
+    temperature: Option<i32>,
     rows: Vec<String>,
 }
 
@@ -220,17 +249,26 @@ fn cells(decks: &[DeckFile]) -> impl Iterator<Item = (usize, usize, usize, char)
 }
 
 /// Gives every deck its starting air: normal ship air scaled to the
-/// deck's `pressure` (100% unless the file says otherwise).
+/// deck's `pressure` (100% unless the file says otherwise), at the deck's
+/// `temperature` (20 °C unless it says otherwise).
 fn fill_air(map: &mut Map, decks: &[DeckFile]) -> Result<(), MapError> {
     for (z, deck) in decks.iter().enumerate() {
         let percent = deck.pressure.unwrap_or(100);
         if percent > MAX_PRESSURE_PERCENT {
             return Err(MapError::BadPressure { deck: z, percent });
         }
+        let celsius = deck.temperature.unwrap_or(DEFAULT_CELSIUS);
+        if !(MIN_CELSIUS..=MAX_CELSIUS).contains(&celsius) {
+            return Err(MapError::BadTemperature { deck: z, celsius });
+        }
         map.fill_deck_air(to_i32(z), Mix::STANDARD.scaled(percent));
+        map.set_deck_temperature(to_i32(z), celsius_to_mk(celsius));
     }
     Ok(())
 }
+
+/// The temperature a deck starts at if its map doesn't say: 20 °C.
+const DEFAULT_CELSIUS: i32 = 20;
 
 /// Each deck's name, or "Deck N" for decks without one.
 fn deck_names(decks: &[DeckFile]) -> Vec<String> {
@@ -621,6 +659,66 @@ mod tests {
         assert_eq!(
             err.to_string(),
             "deck 0 has pressure 201%; it must be 0 to 200"
+        );
+    }
+}
+
+#[cfg(test)]
+mod temperature_tests {
+    use super::*;
+
+    /// A one-row, one-deck map with `deck` as extra fields on the deck.
+    fn map_with(deck: &str) -> Result<LoadedMap, MapError> {
+        let rows = ["@.#"];
+        let json = format!(
+            r##"{{ "id": "t", "name": "T", "legend": {{ ".": "floor", "#": "wall" }},
+                 "decks": [ {{ {deck} "rows": {rows:?} }} ] }}"##
+        );
+        parse_map(&json)
+    }
+
+    #[test]
+    fn decks_start_at_20_degrees_unless_the_file_says_otherwise() {
+        let warm = map_with("").unwrap().map;
+        assert_eq!(warm.temperature(Pos::new(1, 0, 0)), Some(celsius_to_mk(20)));
+        let cold = map_with(r#""temperature": -20,"#).unwrap().map;
+        assert_eq!(
+            cold.temperature(Pos::new(1, 0, 0)),
+            Some(celsius_to_mk(-20))
+        );
+        assert_eq!(
+            cold.temperature(Pos::new(2, 0, 0)),
+            None,
+            "walls hold no air"
+        );
+    }
+
+    #[test]
+    fn a_vacuum_deck_has_no_temperature() {
+        let map = map_with(r#""pressure": 0, "temperature": 5,"#).unwrap().map;
+        assert_eq!(map.temperature(Pos::new(1, 0, 0)), None);
+        assert_eq!(map.total_heat(), 0);
+    }
+
+    #[test]
+    fn the_coldest_and_hottest_allowed_temperatures_load() {
+        assert!(map_with(r#""temperature": -270,"#).is_ok());
+        assert!(map_with(r#""temperature": 200,"#).is_ok());
+    }
+
+    #[test]
+    fn temperatures_out_of_range_are_rejected_with_the_deck_named() {
+        for celsius in [-271, 201] {
+            let err = map_with(&format!(r#""temperature": {celsius},"#)).unwrap_err();
+            assert!(
+                matches!(err, MapError::BadTemperature { deck: 0, celsius: c } if c == celsius),
+                "{err:?}"
+            );
+        }
+        let err = map_with(r#""temperature": 201,"#).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "deck 0 has temperature 201 °C; it must be -270 to 200"
         );
     }
 }

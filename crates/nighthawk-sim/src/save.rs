@@ -6,7 +6,7 @@
 //! ```json
 //! {
 //!   "format": "nighthawk-save",
-//!   "version": 5,
+//!   "version": 6,
 //!   "world": { "deck_names": ["Stasis bay"], "seconds": 36, ... }
 //! }
 //! ```
@@ -33,7 +33,7 @@ pub const SAVE_FORMAT: &str = "nighthawk-save";
 
 /// The save layout this build reads and writes. Bump it when `World` (or
 /// anything inside it) changes shape, and update the save-format test.
-pub const SAVE_VERSION: u32 = 5;
+pub const SAVE_VERSION: u32 = 6;
 
 /// Everything that can be wrong with a save file.
 #[derive(Debug)]
@@ -189,7 +189,7 @@ mod tests {
     fn save_text_is_tagged_and_versioned() {
         let text = save_to_string(&small_world());
         assert!(text.contains(r#""format": "nighthawk-save""#));
-        assert!(text.contains(r#""version": 5"#));
+        assert!(text.contains(r#""version": 6"#));
     }
 
     #[test]
@@ -204,7 +204,7 @@ mod tests {
         let world = World::new(parse_map(&json).unwrap(), 7);
         let expected = r#"{
   "format": "nighthawk-save",
-  "version": 5,
+  "version": 6,
   "world": {
     "deck_names": [
       "Deck 0"
@@ -233,7 +233,12 @@ mod tests {
         0,
         0,
         0
-      ]
+      ],
+      "heat": [
+        29703423750,
+        29703423750
+      ],
+      "heat_lost": 0
     },
     "player": {
       "x": 0,
@@ -246,7 +251,8 @@ mod tests {
       "state": 8301130017339275205,
       "increment": 3
     },
-    "breath": 1000
+    "breath": 1000,
+    "warmth": 1000000
   }
 }"#;
         assert_eq!(save_to_string(&world), expected);
@@ -275,20 +281,20 @@ mod tests {
 
     #[test]
     fn a_save_without_a_version_is_not_a_save() {
-        let text = save_with("\"version\": 5,", "");
+        let text = save_with("\"version\": 6,", "");
         assert!(matches!(load_from_str(&text), Err(SaveError::NotASave)));
     }
 
     #[test]
     fn saves_from_other_versions_are_rejected_clearly() {
-        // A save from before breath and breaches: exactly what an old save file
+        // A save from before heat and warmth: exactly what an old save file
         // on disk looks like after this build is installed.
-        let text = save_with(r#""version": 5"#, r#""version": 4"#);
+        let text = save_with(r#""version": 6"#, r#""version": 5"#);
         let err = load_from_str(&text).unwrap_err();
-        assert!(matches!(err, SaveError::UnsupportedVersion { found: 4 }));
+        assert!(matches!(err, SaveError::UnsupportedVersion { found: 5 }));
         assert_eq!(
             err.to_string(),
-            "save file is version 4, but this build only reads version 5"
+            "save file is version 5, but this build only reads version 6"
         );
     }
 

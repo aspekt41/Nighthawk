@@ -2,6 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::body::{self, BREATH_FULL, BreathLevel, Cause, WARMTH_FULL, WarmthLevel};
 use crate::calendar::{DateTime, SHIP_START};
 use crate::hash::Fnv64;
 use crate::map::{Map, Tile};
@@ -63,23 +64,12 @@ pub enum Event {
     /// The player's breath fell to, or recovered past, a level worth a
     /// warning.
     Breath(BreathLevel),
-    /// The player's breath ran out: they've blacked out, and the world
-    /// takes no more commands.
-    BlackedOut,
-}
-
-/// Breath levels the player is warned about as their breath runs down,
-/// plus recovering from being short of breath.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BreathLevel {
-    /// Fell to 75%.
-    Short,
-    /// Fell to 50%.
-    Struggling,
-    /// Fell to 25%.
-    Fading,
-    /// Climbed back above 75%.
-    Recovered,
+    /// The player's warmth fell to, or recovered past, a level worth a
+    /// warning.
+    Warmth(WarmthLevel),
+    /// The player's breath or warmth ran out: they've blacked out, and the
+    /// world takes no more commands.
+    BlackedOut(Cause),
 }
 
 /// Noises the dead ship makes. Pure atmosphere for now. Later, sounds will
@@ -120,28 +110,6 @@ pub const WAIT_SECONDS: u64 = 5;
 /// one sound every 25 seconds.
 const AMBIENT_ONE_IN: u32 = 25;
 
-// The breath meter (decision D33): how much oxygen the player's body has
-// left, from 0 (blacked out) to 1000 (full), shown as 0 to 100%.
-
-/// A full breath meter.
-pub const BREATH_FULL: u32 = 1000;
-/// Oxygen partial pressure (Pa) below which breath runs down. Normal air
-/// has about 21,300 Pa; 14,000 Pa is like being 3 km up a mountain, where
-/// people get breathless but don't pass out.
-pub const SAFE_O2_PA: u32 = 14_000;
-/// How fast breath runs down: each second it falls by the oxygen shortfall
-/// (Pa) divided by this. In vacuum that's 28 a second, so a full meter
-/// lasts about 36 seconds; in thin air it lasts minutes.
-const BREATH_LOSS_DIVISOR: u32 = 500;
-/// How much breath comes back each second in good air: full in 20 seconds.
-const BREATH_RECOVERY: u32 = 50;
-/// The warning levels as the meter falls, highest first.
-const BREATH_WARNINGS: [(u32, BreathLevel); 3] = [
-    (750, BreathLevel::Short),
-    (500, BreathLevel::Struggling),
-    (250, BreathLevel::Fading),
-];
-
 /// Everything about the game at one moment.
 ///
 /// This struct *is* the save game: everything in it is written to the save
@@ -162,6 +130,8 @@ pub struct World {
     ambient_rng: GameRng,
     /// The player's breath meter, 0 to [`BREATH_FULL`].
     breath: u32,
+    /// The player's warmth meter, 0 to [`WARMTH_FULL`].
+    warmth: u32,
 }
 
 impl World {
@@ -176,6 +146,7 @@ impl World {
             seed,
             ambient_rng: GameRng::new(seed, Stream::Ambient),
             breath: BREATH_FULL,
+            warmth: WARMTH_FULL,
         }
     }
 
@@ -311,6 +282,7 @@ impl World {
         for _ in 0..seconds {
             self.seconds += 1;
             let venting = self.map.spread_air();
+            self.map.spread_heat();
             if !heard_escaping
                 && self
                     .map
@@ -321,6 +293,7 @@ impl World {
                 events.push(Event::AirEscaping);
             }
             self.breathe(events);
+            self.keep_warm(events);
             if !self.is_conscious() {
                 return;
             }
@@ -336,13 +309,28 @@ impl World {
     fn breathe(&mut self, events: &mut Vec<Event>) {
         let o2 = self.map.air(self.player).map_or(0, |mix| mix.o2);
         let before = self.breath;
-        self.breath = if o2 >= SAFE_O2_PA {
-            (self.breath + BREATH_RECOVERY).min(BREATH_FULL)
-        } else {
-            self.breath
-                .saturating_sub(((SAFE_O2_PA - o2) / BREATH_LOSS_DIVISOR).max(1))
-        };
-        events.extend(breath_events(before, self.breath));
+        self.breath = body::breath_after(before, o2);
+        let levels = body::breath_levels(before, self.breath);
+        events.extend(levels.into_iter().map(Event::Breath));
+        if before > 0 && self.breath == 0 {
+            events.push(Event::BlackedOut(Cause::Air));
+        }
+    }
+
+    /// One second of keeping warm (or not) in the air on the player's tile.
+    /// If breath has just run out, the player is already out cold, so this
+    /// does nothing: there's only ever one cause of blacking out.
+    fn keep_warm(&mut self, events: &mut Vec<Event>) {
+        if !self.is_conscious() {
+            return;
+        }
+        let before = self.warmth;
+        self.warmth = body::warmth_after(before, self.map.temperature(self.player));
+        let levels = body::warmth_levels(before, self.warmth);
+        events.extend(levels.into_iter().map(Event::Warmth));
+        if self.warmth == 0 {
+            events.push(Event::BlackedOut(Cause::Cold));
+        }
     }
 
     /// The player's breath meter, 0 (blacked out) to [`BREATH_FULL`].
@@ -350,10 +338,26 @@ impl World {
         self.breath
     }
 
-    /// Whether the player is still awake. Once breath runs out they black
-    /// out, and [`World::apply`] does nothing more.
+    /// The player's warmth meter, 0 (blacked out) to [`WARMTH_FULL`].
+    pub fn warmth(&self) -> u32 {
+        self.warmth
+    }
+
+    /// Whether the player is still awake. Once breath or warmth runs out
+    /// they black out, and [`World::apply`] does nothing more.
     pub fn is_conscious(&self) -> bool {
-        self.breath > 0
+        self.blackout_cause().is_none()
+    }
+
+    /// Why the player blacked out, or `None` while they're awake.
+    pub fn blackout_cause(&self) -> Option<Cause> {
+        if self.breath == 0 {
+            Some(Cause::Air)
+        } else if self.warmth == 0 {
+            Some(Cause::Cold)
+        } else {
+            None
+        }
     }
 
     /// Checks rules that a world built by [`World::new`] always follows, for
@@ -369,6 +373,12 @@ impl World {
             return Err(format!(
                 "breath {} is over the full {BREATH_FULL}",
                 self.breath
+            ));
+        }
+        if self.warmth > WARMTH_FULL {
+            return Err(format!(
+                "warmth {} is over the full {WARMTH_FULL}",
+                self.warmth
             ));
         }
         match self.map.get(self.player) {
@@ -401,28 +411,10 @@ impl World {
         h.u64(self.seconds)
             .u64(self.seed)
             .u64(self.ambient_rng.fingerprint())
-            .u64(u64::from(self.breath));
+            .u64(u64::from(self.breath))
+            .u64(u64::from(self.warmth));
         h.finish()
     }
-}
-
-/// The events for a breath meter going from `before` to `after` in one
-/// second: a warning for each level it fell to, "recovered" if it climbed
-/// back past the first level, and blacking out at zero.
-fn breath_events(before: u32, after: u32) -> Vec<Event> {
-    let mut events: Vec<Event> = BREATH_WARNINGS
-        .iter()
-        .filter(|&&(level, _)| before > level && after <= level)
-        .map(|&(_, warning)| Event::Breath(warning))
-        .collect();
-    let (first_level, _) = BREATH_WARNINGS[0];
-    if before <= first_level && after > first_level {
-        events.push(Event::Breath(BreathLevel::Recovered));
-    }
-    if before > 0 && after == 0 {
-        events.push(Event::BlackedOut);
-    }
-    events
 }
 
 #[cfg(test)]
@@ -963,7 +955,7 @@ mod tests {
         events
             .iter()
             .copied()
-            .filter(|e| matches!(e, Event::Breath(_) | Event::BlackedOut))
+            .filter(|e| matches!(e, Event::Breath(_) | Event::BlackedOut(_)))
             .collect()
     }
 
@@ -996,7 +988,7 @@ mod tests {
                 Event::Breath(BreathLevel::Short),
                 Event::Breath(BreathLevel::Struggling),
                 Event::Breath(BreathLevel::Fading),
-                Event::BlackedOut,
+                Event::BlackedOut(Cause::Air),
             ]
         );
     }
@@ -1043,36 +1035,10 @@ mod tests {
             }
         }
         world.apply(Command::Wait);
-        assert_eq!(world.breath(), low + 5 * BREATH_RECOVERY);
+        assert_eq!(world.breath(), low + 5 * body::BREATH_RECOVERY);
         world.apply(Command::Wait);
         world.apply(Command::Wait);
         assert_eq!(world.breath(), BREATH_FULL);
-    }
-
-    #[test]
-    fn breath_events_mark_each_level_once() {
-        assert_eq!(breath_events(1000, 760), vec![]);
-        assert_eq!(
-            breath_events(760, 750),
-            vec![Event::Breath(BreathLevel::Short)]
-        );
-        assert_eq!(
-            breath_events(800, 400),
-            vec![
-                Event::Breath(BreathLevel::Short),
-                Event::Breath(BreathLevel::Struggling)
-            ]
-        );
-        assert_eq!(breath_events(10, 0), vec![Event::BlackedOut]);
-        assert_eq!(
-            breath_events(740, 790),
-            vec![Event::Breath(BreathLevel::Recovered)]
-        );
-        assert_eq!(
-            breath_events(800, 1000),
-            vec![],
-            "already above: nothing to say"
-        );
     }
 
     #[test]
@@ -1113,5 +1079,119 @@ mod tests {
             ..test_world()
         };
         assert_ne!(a.state_hash(), b.state_hash());
+    }
+
+    // --- Warmth --------------------------------------------------------------
+
+    /// The test room with all its air at `celsius`.
+    fn world_at(celsius: i32) -> World {
+        let mut world = test_world();
+        let all: Vec<Pos> = world.map.positions().collect();
+        for p in all {
+            world
+                .map
+                .set_temperature(p, crate::heat::celsius_to_mk(celsius));
+        }
+        world
+    }
+
+    #[test]
+    fn warmth_starts_full_and_stays_full_at_room_temperature() {
+        let mut world = test_world();
+        assert_eq!(world.warmth(), WARMTH_FULL);
+        for _ in 0..20 {
+            world.apply(Command::Wait);
+        }
+        assert_eq!(world.warmth(), WARMTH_FULL);
+    }
+
+    #[test]
+    fn bitter_cold_chills_you_then_knocks_you_out() {
+        let mut world = world_at(-80);
+        let mut events = Vec::new();
+        while world.is_conscious() {
+            events.extend(world.apply(Command::Wait));
+        }
+        let warmth_events: Vec<Event> = events
+            .into_iter()
+            .filter(|e| matches!(e, Event::Warmth(_) | Event::BlackedOut(_)))
+            .collect();
+        assert_eq!(
+            warmth_events,
+            vec![
+                Event::Warmth(WarmthLevel::Chilled),
+                Event::Warmth(WarmthLevel::Numb),
+                Event::Warmth(WarmthLevel::Freezing),
+                Event::BlackedOut(Cause::Cold),
+            ]
+        );
+        assert_eq!(world.blackout_cause(), Some(Cause::Cold));
+        assert_eq!(world.breath(), BREATH_FULL, "the air was fine");
+        // About 20 minutes at -80 °C (the room's hull makes it colder still).
+        assert!(
+            (900..=1300).contains(&world.seconds()),
+            "{} s",
+            world.seconds()
+        );
+        assert_eq!(world.apply(Command::Wait), vec![], "out cold");
+    }
+
+    #[test]
+    fn running_out_of_air_and_warmth_at_once_blames_the_air() {
+        let mut world = world_in(crate::air::Mix::VACUUM);
+        world.breath = 1;
+        world.warmth = 1;
+        let events = world.apply(Command::Wait);
+        assert_eq!(world.blackout_cause(), Some(Cause::Air));
+        assert_eq!(world.warmth(), 1, "warmth stops once you're out");
+        let blackouts = events
+            .iter()
+            .filter(|e| matches!(e, Event::BlackedOut(_)))
+            .count();
+        assert_eq!(blackouts, 1);
+    }
+
+    #[test]
+    fn an_awake_player_has_no_blackout_cause() {
+        assert_eq!(test_world().blackout_cause(), None);
+        assert!(test_world().is_conscious());
+    }
+
+    #[test]
+    fn heat_moves_only_when_time_passes() {
+        let mut world = test_world();
+        let cold = Pos::new(4, 2, 0);
+        world
+            .map
+            .set_temperature(cold, crate::heat::celsius_to_mk(-50));
+        world.apply(Command::Move(Dir::North)); // bump: no time
+        assert_eq!(
+            world.map.temperature(cold),
+            Some(crate::heat::celsius_to_mk(-50))
+        );
+        world.apply(Command::Wait);
+        let warmer = world.map.temperature(cold).unwrap();
+        assert!(warmer > crate::heat::celsius_to_mk(-50), "{warmer}");
+    }
+
+    #[test]
+    fn a_world_with_too_much_warmth_is_inconsistent() {
+        let mut world = test_world();
+        world.warmth = WARMTH_FULL + 1;
+        assert!(
+            world
+                .check_consistent()
+                .unwrap_err()
+                .contains("warmth 1000001 is over")
+        );
+    }
+
+    #[test]
+    fn warmth_is_part_of_the_state_hash() {
+        let b = World {
+            warmth: 7,
+            ..test_world()
+        };
+        assert_ne!(test_world().state_hash(), b.state_hash());
     }
 }

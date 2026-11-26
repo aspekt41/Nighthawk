@@ -5,13 +5,14 @@
 //! action means on the current screen. There's no terminal code here, so all
 //! of it can be tested directly.
 
-use nighthawk_sim::{Command, LoadedMap, World};
+use nighthawk_sim::{Cause, Command, DateTime, LoadedMap, World};
 use ratatui::crossterm::event::KeyEvent;
 
 use crate::keys::{self, GameAction, TitleAction};
 use crate::saves::SaveSlot;
 use crate::text;
 use crate::title::{MenuItem, TitleMenu};
+use crate::ui::Overlay;
 
 /// How many log lines to keep. The log panel shows as many as fit.
 pub const LOG_LIMIT: usize = 100;
@@ -39,9 +40,9 @@ pub struct App {
     new_seed: fn() -> u64,
     /// True after `c`, while the game waits for the direction to close.
     asking_close_direction: bool,
-    /// Whether the map shows the air overlay. A view setting, not part of
+    /// Which overlay the map shows, if any. A view setting, not part of
     /// the game, so it isn't saved.
-    pub show_air: bool,
+    pub overlay: Option<Overlay>,
 }
 
 impl App {
@@ -61,7 +62,7 @@ impl App {
             start_map,
             new_seed,
             asking_close_direction: false,
-            show_air: false,
+            overlay: None,
         };
         match seed {
             Some(seed) => app.start_new_game(seed),
@@ -125,12 +126,22 @@ impl App {
             }
             GameAction::ToTitleWithoutSaving => self.show_title(None),
             GameAction::Exit => self.quit = self.save_game(),
-            GameAction::ToggleAirOverlay => self.show_air = !self.show_air,
+            GameAction::ToggleOverlay(overlay) => self.toggle_overlay(overlay),
             GameAction::BeginClose => {
                 self.asking_close_direction = true;
                 self.push_log("Close which way? (a direction key; anything else cancels)".into());
             }
         }
+    }
+
+    /// Shows `overlay`, or hides it if it's already showing. Asking for a
+    /// different overlay swaps to it.
+    fn toggle_overlay(&mut self, overlay: Overlay) {
+        self.overlay = if self.overlay == Some(overlay) {
+            None
+        } else {
+            Some(overlay)
+        };
     }
 
     /// The key after `c`: a direction closes the door that way; any other
@@ -219,13 +230,10 @@ impl App {
         let Screen::Playing(world) = &self.screen else {
             return;
         };
-        if world.is_conscious() {
+        let Some(cause) = world.blackout_cause() else {
             return;
-        }
-        let message = format!(
-            "You blacked out from lack of air at {}. The game was not saved; Continue loads your last save.",
-            world.now()
-        );
+        };
+        let message = blackout_message(cause, world.now());
         self.show_title(Some(message));
     }
 
@@ -261,6 +269,18 @@ impl App {
             self.log.remove(0);
         }
     }
+}
+
+/// The title menu's message after blacking out: why, when, and that the
+/// game wasn't saved.
+fn blackout_message(cause: Cause, when: DateTime) -> String {
+    let why = match cause {
+        Cause::Air => "from lack of air",
+        Cause::Cold => "from the cold",
+    };
+    format!(
+        "You blacked out {why} at {when}. The game was not saved; Continue loads your last save."
+    )
 }
 
 #[cfg(test)]
@@ -659,15 +679,39 @@ mod tests {
     #[test]
     fn a_toggles_the_air_overlay_without_spending_any_time() {
         let (mut app, _dir) = new_app(Some(7));
-        assert!(!app.show_air);
+        assert_eq!(app.overlay, None);
         app.handle_key(key(KeyCode::Char('a')));
-        assert!(app.show_air);
+        assert_eq!(app.overlay, Some(Overlay::Air));
         app.handle_key(key(KeyCode::Char('a')));
-        assert!(!app.show_air);
+        assert_eq!(app.overlay, None);
+        assert_eq!(world(&app).seconds(), 0);
+    }
+
+    #[test]
+    fn t_shows_the_heat_overlay_and_swaps_with_air() {
+        let (mut app, _dir) = new_app(Some(7));
+        app.handle_key(key(KeyCode::Char('t')));
+        assert_eq!(app.overlay, Some(Overlay::Heat));
+        app.handle_key(key(KeyCode::Char('a')));
+        assert_eq!(app.overlay, Some(Overlay::Air), "swapped, not stacked");
+        app.handle_key(key(KeyCode::Char('t')));
+        app.handle_key(key(KeyCode::Char('t')));
+        assert_eq!(app.overlay, None);
         assert_eq!(world(&app).seconds(), 0);
     }
 
     // --- Blacking out ---------------------------------------------------------
+
+    #[test]
+    fn the_blackout_message_names_the_cause() {
+        let when = nighthawk_sim::SHIP_START;
+        assert!(
+            blackout_message(Cause::Air, when).starts_with("You blacked out from lack of air at")
+        );
+        assert!(
+            blackout_message(Cause::Cold, when).starts_with("You blacked out from the cold at")
+        );
+    }
 
     #[test]
     fn blacking_out_returns_to_the_title_without_saving() {

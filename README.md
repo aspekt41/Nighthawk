@@ -4,7 +4,7 @@ A terminal-native survival and base-building game where the systems run deep. It
 the Dwarf Fortress / Cataclysm: DDA tradition and is built around the explore → find →
 craft → build loop of Subnautica, Abiotic Factor and Minecraft.
 
-**Status:** M1.3. A title menu, save and load, a clock in real seconds, air (O2, N2 and CO2) that evens out across every connected space each second, hull breaches that vent it to space, a breath meter that runs down in thin air, and two decks to explore, the Stasis bay and the Crew quarters above it (with doors to open and close), joined by a ladder (loaded from [`data/maps/aft_ring.json`](data/maps/aft_ring.json)), while the ship creaks around you. Every game comes from a seed, so the same seed and moves replay exactly. See [Running it](#running-it).
+**Status:** M1.4. A title menu, save and load, a clock in real seconds, air (O2, N2 and CO2) that evens out across every connected space each second, hull breaches that vent it to space, heat that moves with the air and leaks out through the hull, breath and warmth meters that run down in thin or cold air, and two decks to explore, the Stasis bay and the Crew quarters above it (with doors to open and close), joined by a ladder (loaded from [`data/maps/aft_ring.json`](data/maps/aft_ring.json)), while the ship creaks around you. Every game comes from a seed, so the same seed and moves replay exactly. See [Running it](#running-it).
 
 ## Documents
 
@@ -44,14 +44,18 @@ cargo test                                  # run all tests
 **In a game:** arrows, `hjkl` + `yubn` (vi keys) or the numpad to move; `.` or `5`
 to wait; `>` to climb a ladder up and `<` to climb down (ladders are drawn with
 the same characters); walk into a door to open it,
-`c` then a direction to close one; `a` to show or hide the air overlay; `S` to save; `q` to save and return to the menu; `Q` to return without
+`c` then a direction to close one; `a` to show or hide the air overlay and `t` the
+heat overlay; `S` to save; `q` to save and return to the menu; `Q` to return without
 saving; Ctrl-C to save and exit.
 
 **Staying alive:** the sidebar's **Breath** meter refills in good air and
 runs down when oxygen is thin (in vacuum it lasts about 36 seconds). Hull
 damage (`x` cracks, `X` breaches) vents air to space; a closed door keeps a
-leak to its own room. If your breath runs out you black out, and for now the
-game returns to the title without saving.
+leak to its own room. The **Warmth** meter refills in air of 10 °C or more
+and runs down in colder air (at −20 °C it lasts about an hour). The crew
+quarters are far below freezing, and cold air spreads out of a room you
+open, so close doors behind you. If either meter runs out you black out,
+and for now the game returns to the title without saving.
 
 The game saves to one slot: `~/.local/share/nighthawk/save.json` on Linux,
 `~/Library/Application Support/nighthawk/save.json` on macOS, or the folder in
