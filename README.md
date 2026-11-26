@@ -22,3 +22,7 @@ craft → build loop of Subnautica, Abiotic Factor and Minecraft.
 - **Concept:** *Nighthawk*. You wake alone on a drifting, dead starship and take it back one sealed, powered and pressurised room at a time. Base expansion and world progression are the same mechanic.
 - **Stack:** Rust, with ratatui + crossterm for the terminal UI. The simulation core is a deterministic library crate with no I/O, and it can also target the browser (Ratzilla/WASM) and SSH later.
 - **Play model:** a single avatar, turn-based with action costs. Air, heat and power are simulated per tile.
+
+## Reviewing
+
+The same documents are also published as a commentable Claude doc, *Nighthawk: Research & Scoping*, with one tab per file. Feedback can be left there as comments. The markdown files in this repo stay the source of truth, and any changes made through review are copied back here.

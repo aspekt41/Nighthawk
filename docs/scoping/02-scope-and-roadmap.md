@@ -127,11 +127,13 @@ calendar estimates yet. Re-estimate after M0.
 
 ## Open questions
 
-These need a decision from the project owner:
+These need a decision from the project owner. The last column is the current lean, which the owner can overrule.
 
-1. **Concept confirmation.** Is Concept C (*Nighthawk*, derelict ship) the direction, or the crash-landed variant (wreck as base plus a planet to explore), or another concept?
-2. **SSH and multiplayer ambition.** Is "SSH into a shared world" a core goal or a nice-to-have? If it's core, Go + Bubble Tea + Wish deserves a serious second look before M0. If it's a nice-to-have, stay with Rust.
-3. **Tone.** Grim survival horror (Dead Space and Barotrauma) or wry and absurd (Abiotic Factor's office-junk humour)? It affects writing, item design and hostile design.
-4. **Content format.** RON (fastest for us) or JSON with a schema (friendliest to modders)? It's cheap to change early and expensive later.
-5. **Permadeath.** Roguelike permadeath, survival-game respawn at the base, or a difficulty setting?
-6. **Crew layer.** Should the long-term vision include DF-style management of woken crew, or stay a solo avatar game for good?
+| # | Question | Options | Lean |
+|---|---|---|---|
+| 1 | Concept | Derelict ship (C); crash-landed wreck plus a planet; another concept | Derelict ship |
+| 2 | SSH / multiplayer ambition | Core goal (look hard at Go + Bubble Tea + Wish before M0) or nice-to-have (stay with Rust) | Nice-to-have, so Rust |
+| 3 | Tone | Grim survival horror (Dead Space, Barotrauma) or wry and absurd (Abiotic Factor) | Grim, with dry humour in crew logs |
+| 4 | Content format | RON (fastest for us) or JSON + schema (friendliest to modders) | RON now; revisit before modding |
+| 5 | Death | Permadeath, respawn at base, or a difficulty setting | Difficulty setting, respawn by default |
+| 6 | Crew layer | DF-style management of woken crew later, or solo forever | Optional late-game layer |
