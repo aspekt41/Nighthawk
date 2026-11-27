@@ -13,7 +13,7 @@
 //! the tiles right around you ([`crate::sight`]).
 
 use crate::fov::field_of_view;
-use crate::map::{Map, Tile};
+use crate::map::Map;
 use crate::pos::Pos;
 
 /// The furthest any light reaches, in tiles. Content is checked against
@@ -28,14 +28,14 @@ pub(crate) struct Light {
     pub(crate) reach: u8,
 }
 
-/// Which tiles any of `lights` lights up: one flag per tile, in the map's
-/// own order (see [`Map::index_of`]).
-pub(crate) fn lit_tiles(map: &Map, lights: &[Light]) -> Vec<bool> {
+/// Which tiles any of `lights` lights up on `map`, where `blocks` says
+/// what stops light: one flag per tile, in the map's own order (see
+/// [`Map::index_of`]).
+pub(crate) fn lit_tiles(map: &Map, blocks: &dyn Fn(Pos) -> bool, lights: &[Light]) -> Vec<bool> {
     let mut lit = vec![false; map.tile_count()];
-    let blocks = |p: Pos| map.get(p).is_none_or(Tile::blocks_sight);
     for light in lights {
         let reach = i32::from(light.reach);
-        field_of_view(light.at, reach, &blocks, &mut |p| {
+        field_of_view(light.at, reach, blocks, &mut |p| {
             let (dx, dy) = (p.x - light.at.x, p.y - light.at.y);
             if dx * dx + dy * dy <= reach * reach
                 && let Some(i) = map.index_of(p)
@@ -50,6 +50,7 @@ pub(crate) fn lit_tiles(map: &Map, lights: &[Light]) -> Vec<bool> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::map::Tile;
 
     /// An 11 × 5 room of floor with walls all round, and a wall across it
     /// at x = 7 (rows 1 to 3).
@@ -63,6 +64,11 @@ mod tests {
         map
     }
 
+    /// What stops light in these tests: walls, and anything off the map.
+    fn walls(map: &Map) -> impl Fn(Pos) -> bool + '_ {
+        |p| map.get(p).is_none_or(Tile::blocks_sight)
+    }
+
     fn is_lit(map: &Map, lit: &[bool], x: i32, y: i32) -> bool {
         map.index_of(Pos::new(x, y, 0)).is_some_and(|i| lit[i])
     }
@@ -72,6 +78,7 @@ mod tests {
         let map = room();
         let lit = lit_tiles(
             &map,
+            &walls(&map),
             &[Light {
                 at: Pos::new(3, 2, 0),
                 reach: 2,
@@ -92,6 +99,7 @@ mod tests {
         let map = room();
         let lit = lit_tiles(
             &map,
+            &walls(&map),
             &[Light {
                 at: Pos::new(5, 2, 0),
                 reach: 9,
@@ -104,7 +112,10 @@ mod tests {
     #[test]
     fn several_lights_add_up_and_no_lights_is_dark() {
         let map = room();
-        assert!(lit_tiles(&map, &[]).iter().all(|&l| !l), "dark");
+        assert!(
+            lit_tiles(&map, &walls(&map), &[]).iter().all(|&l| !l),
+            "dark"
+        );
         let both = [
             Light {
                 at: Pos::new(1, 2, 0),
@@ -115,7 +126,7 @@ mod tests {
                 reach: 1,
             },
         ];
-        let lit = lit_tiles(&map, &both);
+        let lit = lit_tiles(&map, &walls(&map), &both);
         assert!(is_lit(&map, &lit, 2, 2) && is_lit(&map, &lit, 8, 2));
         assert!(!is_lit(&map, &lit, 5, 2), "dark in between");
     }
@@ -126,6 +137,7 @@ mod tests {
         // In the dividing wall: it lights both sides.
         let lit = lit_tiles(
             &map,
+            &walls(&map),
             &[Light {
                 at: Pos::new(7, 2, 0),
                 reach: 2,

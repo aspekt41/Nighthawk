@@ -16,7 +16,15 @@
     "L": { "structure": "deck_plating", "items": [ { "item": "basic_laser_cutter" } ] },
     "s": { "structure": "deck_plating", "items": [ { "item": "scrap", "count": 4 } ] },
     "f": { "structure": "deck_plating", "items": [ { "item": "hand_lamp" } ] },
-    "E": "emergency_light"
+    "E": "emergency_light",
+    "C": { "structure": "deck_plating", "furniture": "stasis_chamber" },
+    "c": { "structure": "deck_plating", "furniture": "stasis_chamber", "turned": true },
+    "K": { "structure": "deck_plating", "furniture": "locker" },
+    "=": { "structure": "deck_plating", "furniture": "bunk" },
+    "T": { "structure": "deck_plating", "furniture": "mess_table" },
+    "h": { "structure": "deck_plating", "furniture": "chair" },
+    "b": { "structure": "deck_plating", "items": [ { "item": "scrap", "material": "bone", "count": 2 } ] },
+    "y": { "structure": "deck_plating", "items": [ { "item": "scrap", "material": "polyester", "count": 2 } ] }
   },
   "player_wears": [ { "item": "jumpsuit" } ],
   "decks": [
@@ -25,18 +33,18 @@
       "temperature": 14,
       "rows": [
         "HHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHH",
+        "H######......CC.CC.CC.CC.............H",
+        "H######.......b...y..............>...H",
         "H######..............................H",
-        "H######..........................>...H",
-        "H######..............................H",
-        "H######..............................H",
+        "H######K.............................H",
         "H.....#........##....................H",
-        "H.....#........E#....................H",
+        "H.....#....CC..E#....................H",
         "H.....+...@.L..............#E........H",
         "H.....#....f...............##........H",
         "H.....#..s...........................H",
         "H######..............................H",
-        "H######..............................H",
-        "H######..............................H",
+        "H######.............c.bc.............H",
+        "H######.............c..c.............H",
         "HHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHH"
       ]
     },
@@ -46,18 +54,18 @@
       "temperature": -20,
       "rows": [
         "HHHHHHHHHHHHHHHHHHHHHHHxHHHHHHHHHHHHHH",
-        "H######..........#...........#.......H",
+        "H######==.....==K#==......==.#.......H",
         "H######..........#...........#...<...H",
-        "H######..........#...........#.......H",
+        "H######..h.......#..........K#.......H",
         "H##########+##########+#######.......H",
         "H#####E..............................H",
         "H######..............................H",
         "H##########+##########+##########+###H",
+        "H######..........#...........#.....==H",
         "H######..........#...........#.......H",
+        "H######hTTh......#.hTTh.hTTh.#.......H",
         "H######..........#...........#.......H",
-        "H######..........#...........#.......H",
-        "H######..........#...........#.......H",
-        "H######..........#...........#.......H",
+        "H######..........#...........#KKK....H",
         "HHHHHHHHHHHXHHHHHHHHHHHHHHHHHHHHHHHHHH"
       ]
     }

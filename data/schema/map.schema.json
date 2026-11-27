@@ -128,6 +128,14 @@
     "Placed": {
       "type": "object",
       "properties": {
+        "furniture": {
+          "description": "Furniture standing on it, by id. Draw every tile the furniture\ncovers with this entry's character. Optional.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
         "items": {
           "description": "Items lying on it.",
           "type": "array",
@@ -144,6 +152,11 @@
         },
         "structure": {
           "type": "string"
+        },
+        "turned": {
+          "description": "The furniture is turned a quarter, swapping its width and height:\na bed two tiles across becomes two tiles down. Optional.",
+          "type": "boolean",
+          "default": false
         }
       },
       "additionalProperties": false,

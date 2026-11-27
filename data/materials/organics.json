@@ -1,0 +1,15 @@
+{
+  "$schema": "../schema/materials.schema.json",
+  "materials": [
+    {
+      "id": "bone",
+      "name": "Bone",
+      "description": "Old bone, dry and brittle. Whoever it belonged to didn't make it.",
+      "colour": "white",
+      "density": 1900,
+      "specific_heat": 1300,
+      "thermal_conductivity": 320,
+      "hardness": 40
+    }
+  ]
+}

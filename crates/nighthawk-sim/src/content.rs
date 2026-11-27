@@ -1,8 +1,7 @@
 //! Content: the JSON in `data/` (decisions D17 and D43).
 //!
-//! Each kind of content (qualities, actions, materials, structures, items,
-//! recipes) has a
-//! folder, and every `.json` file in it is read, so content can be grouped
+//! Each kind of content (qualities, actions, materials, structures,
+//! furniture, items, recipes) has a folder, and every `.json` file in it is read, so content can be grouped
 //! into as many files as reads best (`metals.json`, `fabrics.json`…). The
 //! sim never touches the disk (decision D18): the front-end reads the files
 //! and passes in each one's name and text, and the name is used to say
@@ -21,6 +20,7 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
 use crate::action::{self, Action, ActionError, Actions, parse_actions};
+use crate::furniture::{FurnitureError, FurnitureType, FurnitureTypes, parse_furniture};
 use crate::hash::Fnv64;
 use crate::item::{self, ItemError, ItemType, ItemTypes, parse_items};
 use crate::material::{Material, MaterialError, Materials, parse_materials};
@@ -30,13 +30,14 @@ use crate::structure::{Structure, StructureError, Structures, parse_structures};
 
 /// The content folders, in the order they're loaded. A kind may refer to
 /// the kinds before it (materials name actions and qualities; structures
-/// name materials; items name materials and qualities; recipes name all of
-/// those), which is why the order matters.
-pub const CONTENT_FOLDERS: [&str; 6] = [
+/// and furniture name materials; items name materials and qualities;
+/// recipes name all of those), which is why the order matters.
+pub const CONTENT_FOLDERS: [&str; 7] = [
     "qualities",
     "actions",
     "materials",
     "structures",
+    "furniture",
     "items",
     "recipes",
 ];
@@ -100,7 +101,8 @@ pub(crate) fn first_duplicate<'a>(ids: impl Iterator<Item = &'a str>) -> Option<
 }
 
 /// Everything a game is made of: every tool quality, action, material,
-/// structure, item type and recipe, checked against each other.
+/// structure, kind of furniture, item type and recipe, checked against
+/// each other.
 ///
 /// The world keeps its own copy, saved with the game, so editing the data
 /// files never changes a game already in progress (decision D35). Tiles,
@@ -112,6 +114,7 @@ pub struct Content {
     pub(crate) actions: Actions,
     pub(crate) materials: Materials,
     pub(crate) structures: Structures,
+    pub(crate) furniture: FurnitureTypes,
     pub(crate) item_types: ItemTypes,
     pub(crate) recipes: Recipes,
 }
@@ -140,15 +143,24 @@ impl Content {
     /// [`CONTENT_FOLDERS`] order.
     fn parse(files: [Vec<ContentFile>; CONTENT_FOLDERS.len()]) -> Result<Self, ContentError> {
         // Taking the array apart like this ties each step to its place in
-        // CONTENT_FOLDERS: a sixth folder there won't compile until it's
+        // CONTENT_FOLDERS: another folder there won't compile until it's
         // parsed here too.
-        let [qualities, actions, materials, structures, items, recipes] = files;
+        let [
+            qualities,
+            actions,
+            materials,
+            structures,
+            furniture,
+            items,
+            recipes,
+        ] = files;
         let qualities = parse_qualities(&qualities).map_err(ContentError::Qualities)?;
         let actions = parse_actions(&actions).map_err(ContentError::Actions)?;
         let materials =
             parse_materials(&materials, &qualities, &actions).map_err(ContentError::Materials)?;
         let structures =
             parse_structures(&structures, &materials).map_err(ContentError::Structures)?;
+        let furniture = parse_furniture(&furniture, &materials).map_err(ContentError::Furniture)?;
         let item_types =
             parse_items(&items, &materials, &qualities).map_err(ContentError::Items)?;
         let refs = RecipeRefs {
@@ -163,6 +175,7 @@ impl Content {
             actions,
             materials,
             structures,
+            furniture,
             item_types,
             recipes,
         })
@@ -197,6 +210,16 @@ impl Content {
     /// Every structure, in the order tiles refer to them.
     pub fn structures(&self) -> &[Structure] {
         self.structures.list()
+    }
+
+    /// Every kind of furniture, in the order pieces refer to them.
+    pub fn furniture(&self) -> &[FurnitureType] {
+        self.furniture.list()
+    }
+
+    /// The number of the kind of furniture with this id, if there is one.
+    pub fn furniture_index(&self, id: &str) -> Option<u16> {
+        self.furniture.index_of(id)
     }
 
     /// Every kind of item, in the order items refer to them.
@@ -242,6 +265,7 @@ impl Content {
         for structure in self.structures() {
             structure.hash_into(h);
         }
+        self.furniture.hash_into(h);
         item::hash_types(self.item_types(), h);
         recipe::hash_recipes(self.recipes(), h);
     }
@@ -261,6 +285,7 @@ impl Content {
             actions: crate::action::tests::test_actions(),
             materials: crate::material::tests::test_materials(),
             structures: crate::structure::tests::test_structures(),
+            furniture: crate::furniture::tests::test_furniture(),
             item_types: crate::item::tests::test_items(),
             recipes: crate::recipe::tests::test_recipes(),
         }
@@ -274,6 +299,7 @@ pub enum ContentError {
     Actions(ActionError),
     Materials(MaterialError),
     Structures(StructureError),
+    Furniture(FurnitureError),
     Items(ItemError),
     Recipes(RecipeError),
 }
@@ -281,12 +307,21 @@ pub enum ContentError {
 impl ContentError {
     /// The folder the mistake is in, like `"materials"`.
     pub fn folder(&self) -> &'static str {
-        let [qualities, actions, materials, structures, items, recipes] = CONTENT_FOLDERS;
+        let [
+            qualities,
+            actions,
+            materials,
+            structures,
+            furniture,
+            items,
+            recipes,
+        ] = CONTENT_FOLDERS;
         match self {
             ContentError::Qualities(_) => qualities,
             ContentError::Actions(_) => actions,
             ContentError::Materials(_) => materials,
             ContentError::Structures(_) => structures,
+            ContentError::Furniture(_) => furniture,
             ContentError::Items(_) => items,
             ContentError::Recipes(_) => recipes,
         }
@@ -300,6 +335,7 @@ impl fmt::Display for ContentError {
             ContentError::Actions(e) => write!(f, "{e}"),
             ContentError::Materials(e) => write!(f, "{e}"),
             ContentError::Structures(e) => write!(f, "{e}"),
+            ContentError::Furniture(e) => write!(f, "{e}"),
             ContentError::Items(e) => write!(f, "{e}"),
             ContentError::Recipes(e) => write!(f, "{e}"),
         }
@@ -348,7 +384,7 @@ mod tests {
     }
 
     /// The smallest valid contents of each folder: one steel material, one
-    /// structure, one item, no recipes.
+    /// structure, one piece of furniture, one item, no recipes.
     fn minimal(folder: &str) -> Vec<ContentFile> {
         let text = match folder {
             "qualities" => {
@@ -363,6 +399,10 @@ mod tests {
             "structures" => {
                 r#"{ "structures": [ { "id": "deck", "name": "deck", "description": "D.",
                      "glyph": ".", "walkable": true, "material": "steel" } ] }"#
+            }
+            "furniture" => {
+                r#"{ "furniture": [ { "id": "crate", "name": "crate", "description": "C.",
+                     "glyph": "&", "material": "steel" } ] }"#
             }
             "items" => {
                 r#"{ "items": [ { "id": "bolt", "name": "bolt", "description": "B.",

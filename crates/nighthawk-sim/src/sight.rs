@@ -2,8 +2,8 @@
 //! D49).
 //!
 //! After every command the world works out which tiles the player can see
-//! and remembers each one as it is now: which structure it is, and the
-//! kind of the top item lying there. A tile can be seen if it's in the
+//! and remembers each one as it is now: which structure it is, the kind of
+//! furniture standing there, and the kind of the top item lying there. A tile can be seen if it's in the
 //! player's field of view ([`crate::fov::field_of_view`]) and either lit
 //! ([`crate::light`], decision D50) or right beside the player: in the
 //! dark you can still make out what's within arm's reach.
@@ -18,11 +18,11 @@ use serde::{Deserialize, Serialize};
 use crate::fov::field_of_view;
 use crate::hash::Fnv64;
 use crate::light::{Light, lit_tiles};
-use crate::map::{Map, Tile};
+use crate::map::Map;
 use crate::pos::Pos;
 
-/// Marks "nothing" in the memory lists: a tile never seen, or no item
-/// seen lying there. `u16::MAX` is never a real index (content lists are
+/// Marks "nothing" in the memory lists: a tile never seen, or no
+/// furniture or item seen there. `u16::MAX` is never a real index (content lists are
 /// checked to be shorter).
 const NOTHING: u16 = u16::MAX;
 
@@ -31,8 +31,23 @@ const NOTHING: u16 = u16::MAX;
 pub struct Remembered {
     /// The structure it was, by number in the world's content.
     pub structure: u16,
+    /// The kind of furniture standing there, by number, if there was any.
+    pub furniture: Option<u16>,
     /// The kind of the top item lying there, by number, if there was one.
     pub item: Option<u16>,
+}
+
+/// What there is to see, for [`View::refresh`].
+pub(crate) struct Scene<'a> {
+    pub(crate) map: &'a Map,
+    /// Whether something at a position stops sight (and light): its
+    /// structure, or furniture standing there.
+    pub(crate) blocks: &'a dyn Fn(Pos) -> bool,
+    pub(crate) lights: &'a [Light],
+    /// The kind of furniture standing at a position, if any.
+    pub(crate) furniture: &'a dyn Fn(Pos) -> Option<u16>,
+    /// The kind of the top item lying at a position, if any.
+    pub(crate) top_item: &'a dyn Fn(Pos) -> Option<u16>,
 }
 
 /// What the player has seen, and can see.
@@ -42,6 +57,9 @@ pub(crate) struct View {
     /// For each tile (in map order), the structure last seen there, or
     /// [`NOTHING`] if never seen.
     seen_structure: Vec<u16>,
+    /// For each tile, the kind of furniture last seen there, or
+    /// [`NOTHING`].
+    seen_furniture: Vec<u16>,
     /// For each tile, the kind of the top item last seen lying there, or
     /// [`NOTHING`].
     seen_item: Vec<u16>,
@@ -60,27 +78,21 @@ impl View {
     pub(crate) fn new(tiles: usize) -> View {
         View {
             seen_structure: vec![NOTHING; tiles],
+            seen_furniture: vec![NOTHING; tiles],
             seen_item: vec![NOTHING; tiles],
             visible: vec![false; tiles],
             lit: vec![false; tiles],
         }
     }
 
-    /// Works out what can be seen from `eye` on `map` by `lights`, and
-    /// remembers it as it is now. `top_item` gives the kind of the first
-    /// item lying at a position, if any.
-    pub(crate) fn refresh(
-        &mut self,
-        map: &Map,
-        eye: Pos,
-        lights: &[Light],
-        top_item: &dyn Fn(Pos) -> Option<u16>,
-    ) {
+    /// Works out what can be seen of `scene` from `eye`, and remembers it
+    /// as it is now.
+    pub(crate) fn refresh(&mut self, scene: &Scene, eye: Pos) {
+        let map = scene.map;
         let mut in_view = Vec::new();
         let range = map.width().max(map.height());
-        let blocks = |p: Pos| map.get(p).is_none_or(Tile::blocks_sight);
-        field_of_view(eye, range, &blocks, &mut |p| in_view.push(p));
-        self.lit = lit_tiles(map, lights);
+        field_of_view(eye, range, scene.blocks, &mut |p| in_view.push(p));
+        self.lit = lit_tiles(map, scene.blocks, scene.lights);
         self.visible = vec![false; self.seen_structure.len()];
         for p in in_view {
             let (Some(i), Some(structure)) = (map.index_of(p), map.structure_index(p)) else {
@@ -92,7 +104,8 @@ impl View {
             }
             self.visible[i] = true;
             self.seen_structure[i] = structure;
-            self.seen_item[i] = top_item(p).unwrap_or(NOTHING);
+            self.seen_furniture[i] = (scene.furniture)(p).unwrap_or(NOTHING);
+            self.seen_item[i] = (scene.top_item)(p).unwrap_or(NOTHING);
         }
     }
 
@@ -118,38 +131,37 @@ impl View {
     pub(crate) fn remembered(&self, map: &Map, p: Pos) -> Option<Remembered> {
         let i = map.index_of(p)?;
         let structure = *self.seen_structure.get(i)?;
-        let item = self.seen_item.get(i).copied().unwrap_or(NOTHING);
+        // `NOTHING` becomes `None`; anything else, `Some` of it.
+        let known = |list: &[u16]| list.get(i).copied().filter(|&n| n != NOTHING);
         (structure != NOTHING).then_some(Remembered {
             structure,
-            item: (item != NOTHING).then_some(item),
+            furniture: known(&self.seen_furniture),
+            item: known(&self.seen_item),
         })
     }
 
     /// Checks a loaded view fits its world: one entry per tile, and every
-    /// structure and item kind remembered is one that exists.
-    pub(crate) fn check(
-        &self,
-        tiles: usize,
-        structures: usize,
-        kinds: usize,
-    ) -> Result<(), String> {
-        for (name, list) in [
+    /// structure, kind of furniture and kind of item remembered is one
+    /// that exists. `counts` is how many of each there are, in that order.
+    pub(crate) fn check(&self, tiles: usize, counts: [usize; 3]) -> Result<(), String> {
+        let lists = [
             ("structures", &self.seen_structure),
+            ("furniture", &self.seen_furniture),
             ("items", &self.seen_item),
-        ] {
+        ];
+        for ((name, list), count) in lists.into_iter().zip(counts) {
             if list.len() != tiles {
                 return Err(format!(
                     "the map has {tiles} tiles but remembered {name} for {}",
                     list.len()
                 ));
             }
-        }
-        let unknown = |list: &[u16], count: usize| {
-            list.iter()
+            if list
+                .iter()
                 .any(|&n| n != NOTHING && usize::from(n) >= count)
-        };
-        if unknown(&self.seen_structure, structures) || unknown(&self.seen_item, kinds) {
-            return Err("a remembered tile names a structure or item that doesn't exist".into());
+            {
+                return Err(format!("a remembered tile names {name} that doesn't exist"));
+            }
         }
         Ok(())
     }
@@ -157,8 +169,12 @@ impl View {
     /// Feeds what's remembered into a state hash.
     pub(crate) fn hash_into(&self, h: &mut Fnv64) {
         h.u64(self.seen_structure.len() as u64);
-        for (&structure, &item) in self.seen_structure.iter().zip(&self.seen_item) {
-            h.u64(u64::from(structure)).u64(u64::from(item));
+        let furniture_and_items = self.seen_furniture.iter().zip(&self.seen_item);
+        for (&structure, (&furniture, &item)) in self.seen_structure.iter().zip(furniture_and_items)
+        {
+            h.u64(u64::from(structure))
+                .u64(u64::from(furniture))
+                .u64(u64::from(item));
         }
     }
 }
@@ -166,6 +182,7 @@ impl View {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::map::Tile;
 
     /// A 7 × 3 room split by a wall at x = 3: `#.@#..#`, with walls all
     /// round.
@@ -181,6 +198,20 @@ mod tests {
         Pos::new(x, y, 0)
     }
 
+    /// Looks at `map` from (2, 1) by `lights`, with only walls in the way,
+    /// no furniture, and `top_item` lying about.
+    fn look(view: &mut View, map: &Map, lights: &[Light], top_item: &dyn Fn(Pos) -> Option<u16>) {
+        let blocks = |p: Pos| map.get(p).is_none_or(Tile::blocks_sight);
+        let scene = Scene {
+            map,
+            blocks: &blocks,
+            lights,
+            furniture: &|_| None,
+            top_item,
+        };
+        view.refresh(&scene, at(2, 1));
+    }
+
     /// A light where the player stands at (2, 1), bright enough for any
     /// room here.
     const BRIGHT: [Light; 1] = [Light {
@@ -192,13 +223,14 @@ mod tests {
     fn what_can_be_seen_is_remembered_and_the_rest_is_not() {
         let map = room();
         let mut view = View::new(21);
-        view.refresh(&map, at(2, 1), &BRIGHT, &|p| (p == at(1, 1)).then_some(7));
+        look(&mut view, &map, &BRIGHT, &|p| (p == at(1, 1)).then_some(7));
         assert!(view.is_visible(&map, at(1, 1)) && view.is_visible(&map, at(3, 1)));
         assert!(!view.is_visible(&map, at(4, 1)), "behind the wall");
         assert_eq!(
             view.remembered(&map, at(1, 1)),
             Some(Remembered {
                 structure: 1,
+                furniture: None,
                 item: Some(7)
             })
         );
@@ -206,6 +238,7 @@ mod tests {
             view.remembered(&map, at(3, 1)),
             Some(Remembered {
                 structure: 0,
+                furniture: None,
                 item: None
             })
         );
@@ -218,7 +251,7 @@ mod tests {
     fn in_the_dark_you_see_only_what_is_beside_you() {
         let map = room();
         let mut view = View::new(21);
-        view.refresh(&map, at(2, 1), &[], &|_| None);
+        look(&mut view, &map, &[], &|_| None);
         assert!(view.is_visible(&map, at(2, 1)), "where you stand");
         assert!(view.is_visible(&map, at(1, 1)) && view.is_visible(&map, at(3, 0)));
         assert!(
@@ -246,7 +279,7 @@ mod tests {
                 reach: 1,
             },
         ];
-        view.refresh(&map, at(2, 1), &lights, &|_| None);
+        look(&mut view, &map, &lights, &|_| None);
         assert!(view.is_lit(&map, at(0, 1)) && view.is_visible(&map, at(0, 1)));
         assert!(!view.is_lit(&map, at(0, 0)) && !view.is_visible(&map, at(0, 0)));
         assert!(view.is_lit(&map, at(4, 1)));
@@ -259,7 +292,7 @@ mod tests {
         let mut map = room();
         map.place(at(3, 1), 6, Tile::WINDOW);
         let mut view = View::new(21);
-        view.refresh(&map, at(2, 1), &BRIGHT, &|_| None);
+        look(&mut view, &map, &BRIGHT, &|_| None);
         assert!(view.is_visible(&map, at(4, 1)) && view.is_visible(&map, at(5, 1)));
         assert_eq!(view.remembered(&map, at(3, 1)).unwrap().structure, 6);
     }
@@ -268,36 +301,72 @@ mod tests {
     fn memory_keeps_what_was_seen_after_it_changes_out_of_sight() {
         let mut map = room();
         let mut view = View::new(21);
-        view.refresh(&map, at(2, 1), &BRIGHT, &|_| None);
+        look(&mut view, &map, &BRIGHT, &|_| None);
         // Seen as floor; then it changes while the player looks away.
         map.place(at(1, 1), 5, Tile::WALL);
         view.visible = vec![false; 21];
         assert_eq!(view.remembered(&map, at(1, 1)).unwrap().structure, 1);
         // Looking again updates it.
-        view.refresh(&map, at(2, 1), &BRIGHT, &|_| None);
+        look(&mut view, &map, &BRIGHT, &|_| None);
         assert_eq!(view.remembered(&map, at(1, 1)).unwrap().structure, 5);
     }
 
     #[test]
     fn a_loaded_view_must_fit_its_world() {
+        // 2 structures, 1 kind of furniture, 3 kinds of item.
+        let counts = [2, 1, 3];
         let mut view = View::new(21);
-        assert_eq!(view.check(21, 2, 3), Ok(()));
+        assert_eq!(view.check(21, counts), Ok(()));
         assert_eq!(
-            view.check(20, 2, 3),
+            view.check(20, counts),
             Err("the map has 20 tiles but remembered structures for 21".into())
         );
         view.seen_item.pop();
-        assert!(
-            view.check(21, 2, 3)
-                .unwrap_err()
-                .contains("remembered items for 20")
+        assert_eq!(
+            view.check(21, counts),
+            Err("the map has 21 tiles but remembered items for 20".into())
         );
+        let known = |change: fn(&mut View)| {
+            let mut view = View::new(21);
+            change(&mut view);
+            view.check(21, counts)
+        };
+        assert_eq!(known(|v| v.seen_structure[0] = 1), Ok(()));
+        let doesnt_exist =
+            |what: &str| Err(format!("a remembered tile names {what} that doesn't exist"));
+        assert_eq!(
+            known(|v| v.seen_structure[0] = 2),
+            doesnt_exist("structures")
+        );
+        assert_eq!(
+            known(|v| v.seen_furniture[0] = 1),
+            doesnt_exist("furniture")
+        );
+        assert_eq!(known(|v| v.seen_item[0] = 3), doesnt_exist("items"));
+    }
+
+    #[test]
+    fn furniture_seen_is_remembered_and_can_hide_what_is_behind_it() {
+        // A cabinet (kind 4) at (4, 1) in a room 7 tiles long, seen from
+        // (2, 1): it's seen, and remembered; the tile behind it isn't.
+        let mut map = Map::filled(7, 3, 1, Tile::WALL);
+        for x in 1..6 {
+            map.place(Pos::new(x, 1, 0), 1, Tile::FLOOR);
+        }
+        let cabinet = at(4, 1);
+        let blocks = |p: Pos| p == cabinet || map.get(p).is_none_or(Tile::blocks_sight);
+        let scene = Scene {
+            map: &map,
+            blocks: &blocks,
+            lights: &BRIGHT,
+            furniture: &|p| (p == cabinet).then_some(4),
+            top_item: &|_| None,
+        };
         let mut view = View::new(21);
-        view.seen_structure[0] = 2;
-        assert!(view.check(21, 2, 3).unwrap_err().contains("doesn't exist"));
-        view.seen_structure[0] = 1;
-        view.seen_item[0] = 3;
-        assert!(view.check(21, 2, 3).is_err());
+        view.refresh(&scene, at(2, 1));
+        assert_eq!(view.remembered(&map, cabinet).unwrap().furniture, Some(4));
+        assert_eq!(view.remembered(&map, at(3, 1)).unwrap().furniture, None);
+        assert!(!view.is_visible(&map, at(5, 1)), "hidden behind it");
     }
 
     #[test]
@@ -308,8 +377,11 @@ mod tests {
             h.finish()
         };
         let blank = View::new(21);
+        let mut furnished = View::new(21);
+        furnished.seen_furniture[0] = 0;
+        assert_ne!(hash(&blank), hash(&furnished), "furniture remembered");
         let mut seen = View::new(21);
-        seen.refresh(&room(), at(2, 1), &BRIGHT, &|_| None);
+        look(&mut seen, &room(), &BRIGHT, &|_| None);
         assert_ne!(hash(&blank), hash(&seen));
         let mut only_visible = View::new(21);
         only_visible.visible[0] = true;

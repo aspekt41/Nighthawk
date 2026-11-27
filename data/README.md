@@ -16,13 +16,16 @@ the files in its folder. Mistakes name the folder and the file, for example
 `data/structures: invalid structures file doors.json: missing field "name"`.
 
 The folders load in this order, and each may refer to the ones before it:
-`qualities`, `actions`, `materials`, `structures`, `items`, `recipes`.
+`qualities`, `actions`, `materials`, `structures`, `furniture`, `items`,
+`recipes`.
 
 Every tile on a map is a **structure** (what it is: a bulkhead, a door)
-made of a **material** (what it's made of: steel, Nanocarbon Alloy).
+made of a **material** (what it's made of: steel, Nanocarbon Alloy). A tile
+can also have a piece of **furniture** standing on it (a bunk, a stasis
+chamber), which may cover several tiles.
 
 **Everything about a thing is here, not in Rust** (decision D43): which
-structures, materials, items, tool qualities, actions and recipes exist,
+structures, furniture, materials, items, tool qualities, actions and recipes exist,
 what they're called, what keys do what, how long things take and what the
 log says. The game's code only knows what each *field* means. See [How to
 add things](#how-to-add-things) for worked examples.
@@ -169,6 +172,33 @@ other change.
 | `material` | The material it's made of, unless a map legend says otherwise. |
 | `colour` | Optional. Draw it in this colour (same names as materials). Otherwise ladders are cyan, leaks red (bold from 100 cm²), floor dark grey, and solid structures their material's colour. Doors are `light_red`; a damaged door is `red`. |
 
+## Furniture (`furniture/*.json`)
+
+Things that stand on the floor: stasis chambers, bunks, tables, chairs,
+lockers. Furniture is its own layer on top of a tile's structure, so the
+deck plating is still there underneath. A piece can cover more than one
+tile, and it's still one thing: a stasis chamber is two tiles long.
+
+```json
+{ "furniture": [
+  { "id": "stasis_chamber", "name": "stasis chamber",
+    "description": "A coffin-sized pod of steel and scratched glass...",
+    "glyph": "0", "material": "steel", "colour": "cyan", "size": [2, 1] } ] }
+```
+
+| Field | Meaning |
+|---|---|
+| `id` | How map legends refer to it. |
+| `name`, `description` | Shown in look mode and in messages ("You bump into the stasis chamber."). |
+| `glyph` | The character drawn on every tile it covers. |
+| `material` | What it's mostly made of. |
+| `colour` | Optional. Draw it in this colour (same names as materials) instead of its material's. |
+| `size` | Optional. Its width and height in tiles, 1 to 4 each, as it stands unturned: `[2, 1]` is two across and one down. Default `[1, 1]`. A map can turn a piece a quarter (see `turned` under [Maps](#maps-mapsjson)), which swaps them. |
+| `walkable` | Optional. You can walk through it, like a chair. Left out, it's in the way: walking into it bumps it. Air always flows past furniture. |
+| `blocks_sight` | Optional. It's tall enough to hide what's behind it (and to cast a shadow), like a locker. Left out, you can see over it. |
+
+A game may have no furniture at all; the folder must still exist.
+
 ## Recipes (`recipes/*.json`)
 
 How one structure becomes another. The interact menu offers an action on a
@@ -259,7 +289,9 @@ once, and the legend says what it stands on (something walkable).
 | `id` | Must match the file name (`closet.json` → `"closet"`) |
 | `name` | Shown as the map panel's title |
 | `legend` | One character → a structure's id, made of the structure's own material: `"#": "bulkhead"`. Or an object, to give it another material or lay items on it: `"H": { "structure": "bulkhead", "material": "nanocarbon_alloy" }`. An open door is its own structure: `"'": "door_open"`. Mistakes name the character: an unknown structure or material, or `@` standing on something solid. |
-| `legend[].items` | Optional, in the object form: items lying on that tile, like `"s": { "structure": "deck_plating", "items": [ { "item": "scrap", "count": 4 } ] }`. Each entry is an `item`, optionally a `material` other than its own, and a `count` (default 1). Items need a walkable tile. |
+| `legend[].items` | Optional, in the object form: items lying on that tile, like `"s": { "structure": "deck_plating", "items": [ { "item": "scrap", "count": 4 } ] }`. Each entry is an `item`, optionally a `material` other than its own (`"material": "bone"` makes Scrap (Bone)), and a `count` (default 1). Items need a walkable tile. |
+| `legend[].furniture` | Optional, in the object form: furniture standing on that tile, like `"C": { "structure": "deck_plating", "furniture": "stasis_chamber" }`. Draw **every tile the furniture covers** with that character: `CC` is one chamber two tiles long, and `CCCC` is two side by side. The loader cuts the drawing into pieces in reading order (the first tile of a piece it meets is its top-left), and a drawing that doesn't fit says where, like `deck 0, row 1, column 22: the stasis_chamber 'C' starting here also needs row 1, column 23 drawn as 'C'`. Furniture needs a walkable structure under it, and `@` can only stand on furniture you can walk through. |
+| `legend[].turned` | Optional, with `furniture`: turns it a quarter, swapping its width and height, so a chamber two tiles across runs two tiles down: `"c": { "structure": "deck_plating", "furniture": "stasis_chamber", "turned": true }`. |
 | `player_wears` | Optional. What the player starts out wearing, as a list of items like `[ { "item": "jumpsuit" } ]`. Everything in it must be wearable. |
 | `decks` | Listed bottom to top: the first is deck 0. All decks must be the same size. |
 | `decks[].name` | Optional. Shown as the map panel's title on that deck. Without it the deck is "Deck 0", "Deck 1" and so on. |

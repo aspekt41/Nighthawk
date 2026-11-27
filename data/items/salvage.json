@@ -4,7 +4,7 @@
     {
       "id": "scrap",
       "name": "scrap",
-      "description": "A torn-off piece of plate, about a hand across. Useful for patching things.",
+      "description": "A broken-off piece of something, about a hand across. Useful for patching and making things.",
       "glyph": "*",
       "material": "steel",
       "volume_ml": 100,

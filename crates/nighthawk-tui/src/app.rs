@@ -993,11 +993,12 @@ mod tests {
     /// just south, and another door at (22, 4) two tiles north.
     fn by_a_door() -> (App, tempfile::TempDir) {
         let (mut app, dir) = new_app(Some(7));
-        // Pick up the lamp at (11, 8) first: step onto it, then `e` `g`.
-        let route = ['n', 'e', 'g']
+        // Pick up the lamp at (11, 8) first: step onto it, then `e` `g`;
+        // then a step west, to go north past the stasis chamber at (11, 6).
+        let route = ['n', 'e', 'g', 'h']
             .into_iter()
             .chain(std::iter::repeat_n('k', 6))
-            .chain(std::iter::repeat_n('l', 22))
+            .chain(std::iter::repeat_n('l', 23))
             .chain(['>'])
             .chain(std::iter::repeat_n('j', 4))
             .chain(std::iter::repeat_n('h', 11));

@@ -1,0 +1,126 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "FurnitureFile",
+  "description": "The JSON shape of one file in `data/furniture/`.",
+  "type": "object",
+  "properties": {
+    "$schema": {
+      "description": "Optional: the JSON Schema this file follows, so editors can check\nit as you type (`\"$schema\": \"../schema/furniture.schema.json\"`).",
+      "type": [
+        "string",
+        "null"
+      ],
+      "default": null
+    },
+    "furniture": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/FurnitureType"
+      }
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "furniture"
+  ],
+  "$defs": {
+    "Colour": {
+      "description": "The colours a material can be drawn in. A short fixed list rather than\nany colour at all, so every terminal can show them (decision D16).",
+      "oneOf": [
+        {
+          "type": "string",
+          "enum": [
+            "white",
+            "grey",
+            "dark_grey",
+            "red",
+            "yellow",
+            "green",
+            "cyan",
+            "blue",
+            "magenta"
+          ]
+        },
+        {
+          "description": "Doors, so they stand out from the walls around them.",
+          "type": "string",
+          "const": "light_red"
+        }
+      ]
+    },
+    "FurnitureType": {
+      "description": "One kind of furniture.",
+      "type": "object",
+      "properties": {
+        "blocks_sight": {
+          "description": "It's tall enough to hide what's behind it, like a locker.\nOptional: you can see over it.",
+          "type": "boolean",
+          "default": false
+        },
+        "colour": {
+          "description": "Optional: the colour to draw it in, instead of its material's.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Colour"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "description": {
+          "description": "A sentence or two for look mode.",
+          "type": "string"
+        },
+        "glyph": {
+          "description": "The character the map draws on every tile it covers.",
+          "type": "string",
+          "maxLength": 1,
+          "minLength": 1
+        },
+        "id": {
+          "description": "How maps refer to it, like `\"stasis_chamber\"`.",
+          "type": "string"
+        },
+        "material": {
+          "description": "The id of the material it's mostly made of.",
+          "type": "string"
+        },
+        "name": {
+          "description": "How it's shown to the player, like \"stasis chamber\".",
+          "type": "string"
+        },
+        "size": {
+          "description": "Its width and height in tiles, from 1 to 4, as it stands unturned:\n`[2, 1]` is two tiles across and one down. Optional: `[1, 1]`.",
+          "type": "array",
+          "default": [
+            1,
+            1
+          ],
+          "items": {
+            "type": "integer",
+            "format": "uint8",
+            "maximum": 255,
+            "minimum": 0
+          },
+          "maxItems": 2,
+          "minItems": 2
+        },
+        "walkable": {
+          "description": "You can walk through it, like a chair. Optional: it's in the way.",
+          "type": "boolean",
+          "default": false
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "name",
+        "description",
+        "glyph",
+        "material"
+      ]
+    }
+  }
+}

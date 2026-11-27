@@ -10,7 +10,9 @@ use std::collections::{HashSet, VecDeque};
 use std::fs;
 use std::path::PathBuf;
 
-use nighthawk_sim::{Command, Dir, LoadedMap, MapError, Pos, Tile, Vertical, World, parse_map};
+use nighthawk_sim::{
+    Command, Dir, LoadedMap, MapError, Piece, Pos, Tile, Vertical, World, parse_map,
+};
 
 /// The number of the shipped action with this id, like `"cut"`.
 fn action(world: &nighthawk_sim::World, id: &str) -> u16 {
@@ -84,11 +86,15 @@ fn the_starting_map_has_no_way_off_its_edges() {
     }
 }
 
-/// Whether the player can get through the tile at `p`: it's walkable, or
-/// walking into it does something that makes it walkable (a shut door has
-/// an `on_bump` action, open, whose recipe makes an open door).
+/// Whether the player can get through the tile at `p`: no furniture is in
+/// the way, and it's walkable, or walking into it does something that
+/// makes it walkable (a shut door has an `on_bump` action, open, whose
+/// recipe makes an open door).
 fn passable(loaded: &LoadedMap, p: Pos) -> bool {
     let (map, content) = (&loaded.map, &loaded.content);
+    if furniture_in_the_way(loaded, p) {
+        return false;
+    }
     if map.get(p).is_some_and(Tile::is_walkable) {
         return true;
     }
@@ -104,6 +110,14 @@ fn passable(loaded: &LoadedMap, p: Pos) -> bool {
     };
     content.recipes().iter().any(|r| {
         &r.from == id && content.action(&r.action).is_some_and(|a| a.on_bump) && walkable(&r.to)
+    })
+}
+
+/// Whether a piece of furniture you can't walk through covers `p`.
+fn furniture_in_the_way(loaded: &LoadedMap, p: Pos) -> bool {
+    loaded.furniture.iter().any(|piece| {
+        let kind = &loaded.content.furniture()[usize::from(piece.kind)];
+        !kind.walkable && piece.tiles(kind).any(|t| t == p)
     })
 }
 
@@ -297,10 +311,61 @@ fn a_laser_cutter_a_hand_lamp_and_four_steel_scraps_lie_near_the_start() {
             ("scrap", "steel", 785),
         ]
     );
-    let laser = &world.item_types()[usize::from(world.floor_items()[0].item.kind)];
-    assert_eq!(laser.qualities.get("LASER"), Some(&1));
-    let lamp = &world.item_types()[usize::from(world.floor_items()[1].item.kind)];
-    assert_eq!(lamp.light, 4);
+    let kind = |id: &str| &world.item_types()[usize::from(world.item_type_index(id).unwrap())];
+    assert_eq!(kind("basic_laser_cutter").qualities.get("LASER"), Some(&1));
+    assert_eq!(kind("hand_lamp").light, 4);
+}
+
+#[test]
+fn you_wake_beside_your_own_empty_stasis_chamber_among_others() {
+    let world = common::start_world(1);
+    let chamber = world.content().furniture_index("stasis_chamber").unwrap();
+    let chambers: Vec<&Piece> = world
+        .furniture()
+        .iter()
+        .filter(|p| p.kind == chamber)
+        .collect();
+    assert_eq!(
+        chambers.len(),
+        7,
+        "yours, four on the north wall, two on the south"
+    );
+    let yours = world.furniture_at(Pos::new(11, 6, 0)).unwrap();
+    assert_eq!((yours.kind, yours.turned), (chamber, false));
+    assert_eq!(
+        world.player().steps_to(yours.at),
+        Some(1),
+        "right beside you"
+    );
+    let turned = chambers.iter().filter(|p| p.turned).count();
+    assert_eq!(turned, 2);
+    assert!(
+        world.is_visible(Pos::new(7, 4, 0)),
+        "the locker, in view from the start"
+    );
+}
+
+#[test]
+fn bones_and_torn_padding_lie_about_the_stasis_bay() {
+    let world = common::start_world(1);
+    let lying = |material: &str| {
+        let m = world.content().material_index(material).unwrap();
+        let on_deck_0 = world.floor_items().iter().filter(|f| f.at.z == 0);
+        on_deck_0.filter(|f| f.item.material == m).count()
+    };
+    assert_eq!(lying("bone"), 4, "Scrap (Bone)");
+    assert_eq!(lying("polyester"), 2, "Scrap (Polyester)");
+}
+
+#[test]
+fn every_kind_of_furniture_is_somewhere_in_the_ship() {
+    let world = common::start_world(1);
+    for (kind, furniture) in (0..).zip(world.content().furniture()) {
+        let placed = world.furniture().iter().any(|p| p.kind == kind);
+        assert!(placed, "no {} anywhere", furniture.id);
+    }
+    let crew = world.furniture().iter().filter(|p| p.at.z == 1).count();
+    assert!(crew >= 20, "the crew deck is furnished: {crew} pieces");
 }
 
 #[test]

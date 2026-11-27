@@ -150,10 +150,11 @@ fn in_the_way(world: &World, at: Pos) -> Option<Blocked> {
 }
 
 /// `Cluttered` for an action that needs the tile clear, if items lie
-/// there.
+/// there or furniture stands there.
 fn cluttered(world: &World, at: Pos, action: &Action) -> Option<Blocked> {
     let lying = world.items_at(at).next().is_some();
-    (action.clear_of_items && lying).then_some(Blocked::Cluttered)
+    let standing = world.furniture_at(at).is_some();
+    (action.clear_of_items && (lying || standing)).then_some(Blocked::Cluttered)
 }
 
 /// `Needs` for the first tool level the player is short of: what the

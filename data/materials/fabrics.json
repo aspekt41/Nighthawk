@@ -10,6 +10,17 @@
       "specific_heat": 1300,
       "thermal_conductivity": 40,
       "hardness": 0
+    },
+    {
+      "id": "polyester",
+      "name": "Polyester",
+      "description": "Synthetic fibre and foam: padding, bedding and seat covers. It melts long before it burns.",
+      "colour": "blue",
+      "density": 1380,
+      "melting_point": 250,
+      "specific_heat": 1200,
+      "thermal_conductivity": 150,
+      "hardness": 10
     }
   ]
 }

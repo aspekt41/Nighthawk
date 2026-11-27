@@ -14,7 +14,7 @@
 //! ```
 
 use nighthawk_sim::{
-    ActionOption, BREATH_FULL, Colour, Item, ItemRef, Material, Mix, PocketType, Pos, Tile,
+    ActionOption, BREATH_FULL, Colour, Item, ItemRef, Material, Mix, Piece, PocketType, Pos, Tile,
     WARMTH_FULL, World, celsius_to_mk, mk_to_tenths_celsius, options_at,
 };
 use ratatui::Frame;
@@ -286,7 +286,7 @@ fn glyph_at(world: &World, pos: Pos, overlay: Option<Overlay>) -> (String, Style
 }
 
 /// How a tile in sight looks: the top item lying on it, an overlay's
-/// shading, or the structure.
+/// shading, or what stands there.
 fn visible_glyph(world: &World, pos: Pos, tile: Tile, overlay: Option<Overlay>) -> (String, Style) {
     let map = world.map();
     // Items lying on the floor show on top, unless an overlay is shading it.
@@ -295,20 +295,40 @@ fn visible_glyph(world: &World, pos: Pos, tile: Tile, overlay: Option<Overlay>) 
     {
         return item_glyph(world, item);
     }
-    // Overlays shade the open spaces: walkable tiles, except ladders, which
-    // stay visible so you can find your way.
-    let open_space = tile.walkable && tile.climb.is_none();
+    // Overlays shade the open spaces: walkable tiles with nothing in the
+    // way, except ladders, which stay visible so you can find your way.
+    let in_the_way = world.furniture_kind_at(pos).is_some_and(|k| !k.walkable);
+    let open_space = tile.walkable && tile.climb.is_none() && !in_the_way;
     let shaded = match overlay {
         Some(Overlay::Air) if open_space => air_glyph(map.air(pos).unwrap_or(Mix::VACUUM)),
         Some(Overlay::Heat) if open_space => heat_glyph(map.temperature(pos)),
-        _ => return structure_glyph(world, pos, tile),
+        _ => return standing_glyph(world, pos, tile),
     };
     (shaded.0.to_string(), shaded.1)
 }
 
+/// How what stands on a tile looks: furniture if there is any, else the
+/// structure.
+fn standing_glyph(world: &World, pos: Pos, tile: Tile) -> (String, Style) {
+    match world.furniture_at(pos) {
+        Some(piece) => furniture_glyph(world, piece),
+        None => structure_glyph(world, pos, tile),
+    }
+}
+
+/// How a piece of furniture looks: its kind's glyph on every tile it
+/// covers, in its kind's own colour if it has one, else its material's.
+fn furniture_glyph(world: &World, piece: &Piece) -> (String, Style) {
+    let kind = world.content().furniture().get(usize::from(piece.kind));
+    let made_of = world.materials().get(usize::from(piece.material));
+    let shade = kind.and_then(|k| k.colour).or(made_of.map(|m| m.colour));
+    let style = shade.map_or(Style::new(), |c| Style::new().fg(colour(c)));
+    (kind.map_or('?', |k| k.glyph).to_string(), style)
+}
+
 /// How a tile out of sight looks: what was last seen there (the top item
-/// if there was one, else the structure), all in one dim colour so it's
-/// clearly memory, not sight. Never seen: blank.
+/// if there was one, else the furniture, else the structure), all in one
+/// dim colour so it's clearly memory, not sight. Never seen: blank.
 fn remembered_glyph(world: &World, pos: Pos) -> (String, Style) {
     let Some(seen) = world.remembered(pos) else {
         return (" ".into(), Style::new());
@@ -317,8 +337,15 @@ fn remembered_glyph(world: &World, pos: Pos) -> (String, Style) {
         .item
         .and_then(|kind| world.item_types().get(usize::from(kind)))
         .map(|t| t.glyph);
+    let furniture = seen
+        .furniture
+        .and_then(|kind| world.content().furniture().get(usize::from(kind)))
+        .map(|f| f.glyph);
     let structure = world.structures().get(usize::from(seen.structure));
-    let glyph = item.or(structure.map(|s| s.glyph)).unwrap_or('?');
+    let glyph = item
+        .or(furniture)
+        .or(structure.map(|s| s.glyph))
+        .unwrap_or('?');
     (glyph.to_string(), REMEMBERED)
 }
 
@@ -595,7 +622,7 @@ fn look_lines(world: &World, at: Pos) -> Vec<Line<'static>> {
 fn seen_lines(world: &World, at: Pos) -> Vec<Line<'static>> {
     let tile = world.map().get(at).unwrap_or_default();
     let mut lines = vec![Line::raw(tile_name(world, at, tile))];
-    if let Some(material) = world.material_at(at) {
+    if let Some(material) = material_here(world, at) {
         lines.extend(material_lines(world, material));
     }
     lines.push(Line::raw(""));
@@ -611,10 +638,17 @@ fn memory_lines(world: &World, at: Pos) -> Vec<Line<'static>> {
     let Some(seen) = world.remembered(at) else {
         return vec![Line::styled("You haven't seen this.", dim)];
     };
-    let name = world
+    let furniture = seen
+        .furniture
+        .and_then(|k| world.content().furniture().get(usize::from(k)))
+        .map(|f| f.name.as_str());
+    let structure = world
         .structures()
         .get(usize::from(seen.structure))
-        .map_or_else(|| "Something".into(), |s| capitalised(&s.name));
+        .map(|s| s.name.as_str());
+    let name = furniture
+        .or(structure)
+        .map_or_else(|| "Something".into(), capitalised);
     let mut lines = vec![Line::raw(name)];
     if let Some(t) = seen
         .item
@@ -697,12 +731,24 @@ fn air_here(world: &World, at: Pos, tile: Tile) -> Vec<Line<'static>> {
     vec![pressure, temperature_line(world.map().temperature(at))]
 }
 
-/// What to call the tile at `at`: its structure's name ("Open door" is a
-/// structure of its own).
+/// What to call the tile at `at`: the furniture standing there, or its
+/// structure's name ("Open door" is a structure of its own).
 fn tile_name(world: &World, at: Pos, tile: Tile) -> String {
+    if let Some(kind) = world.furniture_kind_at(at) {
+        return capitalised(&kind.name);
+    }
     world
         .structure_at(at)
         .map_or_else(|| solid_or_open(tile).into(), |s| capitalised(&s.name))
+}
+
+/// What the thing at `at` is made of: the furniture standing there, or
+/// else the tile itself.
+fn material_here(world: &World, at: Pos) -> Option<&Material> {
+    let piece = world.furniture_at(at);
+    piece
+        .and_then(|p| world.materials().get(usize::from(p.material)))
+        .or_else(|| world.material_at(at))
 }
 
 /// What to call a tile with no structure to name it (which a map never
@@ -755,7 +801,7 @@ fn interact_lines(world: &World, at: Pos) -> Vec<Line<'static>> {
 fn option_list(world: &World, at: Pos) -> Vec<Line<'static>> {
     let tile = world.map().get(at).unwrap_or_default();
     let mut lines = vec![Line::raw(tile_name(world, at, tile))];
-    if let Some(material) = world.material_at(at) {
+    if let Some(material) = material_here(world, at) {
         lines.push(Line::styled(
             material.name.clone(),
             Style::new().fg(colour(material.colour)),
@@ -843,25 +889,33 @@ fn description(world: &World, at: Pos) -> Paragraph<'static> {
         .block(Block::bordered().title(" About "))
 }
 
-/// The About text for a tile in sight.
+/// The About text for a tile in sight: what lies there, then what stands
+/// there (furniture, or else the structure) and what that's made of.
 fn seen_description(world: &World, at: Pos) -> String {
-    let structure = world
-        .structure_at(at)
-        .map_or("", |s| s.description.as_str());
-    let material = world
-        .material_at(at)
+    let furniture = world.furniture_kind_at(at).map(|k| k.description.as_str());
+    let structure = world.structure_at(at).map(|s| s.description.as_str());
+    let standing = furniture.or(structure).unwrap_or("");
+    let material = material_here(world, at)
         .map_or(String::new(), |m| format!("{}: {}", m.name, m.description));
     let items = items_here(world, at);
-    format!("{items}{structure} {material}")
+    format!("{items}{standing} {material}")
 }
 
-/// The About text for a tile out of sight: the remembered structure's
-/// description, or nothing.
+/// The About text for a tile out of sight: the description of the
+/// furniture or structure remembered there, or nothing.
 fn remembered_description(world: &World, at: Pos) -> String {
-    world
-        .remembered(at)
-        .and_then(|seen| world.structures().get(usize::from(seen.structure)))
-        .map_or_else(String::new, |s| s.description.clone())
+    let Some(seen) = world.remembered(at) else {
+        return String::new();
+    };
+    let furniture = seen
+        .furniture
+        .and_then(|k| world.content().furniture().get(usize::from(k)))
+        .map(|f| f.description.as_str());
+    let structure = world
+        .structures()
+        .get(usize::from(seen.structure))
+        .map(|s| s.description.as_str());
+    furniture.or(structure).unwrap_or("").to_string()
 }
 
 /// "On the floor: basic laser cutter (Aluminium Alloy), 4 × scrap
@@ -1230,6 +1284,42 @@ mod tests {
     }
 
     #[test]
+    fn furniture_draws_on_every_tile_it_covers_and_look_mode_names_it() {
+        let world = real_world();
+        let chamber = Pos::new(11, 6, 0);
+        let cyan = Style::new().fg(Color::Cyan);
+        assert_eq!(glyph_at(&world, chamber, None), ("0".into(), cyan));
+        assert_eq!(glyph_at(&world, Pos::new(12, 6, 0), None).0, "0");
+        assert_eq!(
+            glyph_at(&world, chamber, Some(Overlay::Air)).0,
+            "0",
+            "overlays shade the floor around it, not it"
+        );
+        let lines = look_texts(&world, chamber);
+        assert_eq!(
+            (lines[2].as_str(), lines[3].as_str()),
+            ("Stasis chamber", "Steel")
+        );
+        assert!(seen_description(&world, chamber).starts_with("A coffin-sized pod"));
+        let options = interact_texts(&world, chamber);
+        assert_eq!(options[1], "Stasis chamber");
+        let locker = Pos::new(7, 4, 0);
+        assert_eq!(
+            glyph_at(&world, locker, None),
+            ("{".into(), Style::new().fg(Color::Gray))
+        );
+    }
+
+    #[test]
+    fn remembered_furniture_is_drawn_and_described_from_memory() {
+        let world = upstairs_world();
+        let chamber = Pos::new(11, 6, 0);
+        assert_eq!(glyph_at(&world, chamber, None), ("0".into(), REMEMBERED));
+        assert_eq!(look_texts(&world, chamber)[2], "Stasis chamber");
+        assert!(remembered_description(&world, chamber).starts_with("A coffin-sized pod"));
+    }
+
+    #[test]
     fn remembered_items_show_where_they_were_last_seen() {
         let world = upstairs_world();
         let cutter = Pos::new(12, 7, 0);
@@ -1497,9 +1587,12 @@ mod tests {
         // Climb to the crew deck, which starts at 60% pressure.
         use nighthawk_sim::Command::{Climb, Move};
         // The corridor soon fills from the shaft, so go along it and open
-        // a cabin door to look in by the lamp's light.
-        let route = std::iter::repeat_n(Move(Dir::North), 6)
-            .chain(std::iter::repeat_n(Move(Dir::East), 22))
+        // a cabin door to look in by the lamp's light. (A step west first,
+        // to go north past the stasis chamber.)
+        let route = [Move(Dir::West)]
+            .into_iter()
+            .chain(std::iter::repeat_n(Move(Dir::North), 6))
+            .chain(std::iter::repeat_n(Move(Dir::East), 23))
             .chain([Climb(nighthawk_sim::Vertical::Up)])
             .chain(std::iter::repeat_n(Move(Dir::South), 3))
             .chain(std::iter::repeat_n(Move(Dir::West), 11))

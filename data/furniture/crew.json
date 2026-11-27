@@ -1,0 +1,37 @@
+{
+  "$schema": "../schema/furniture.schema.json",
+  "furniture": [
+    {
+      "id": "bunk",
+      "name": "bunk",
+      "description": "A narrow crew bunk: a steel frame and a thin polyester mattress, the blanket kicked off in a hurry.",
+      "glyph": "=",
+      "material": "steel",
+      "size": [2, 1]
+    },
+    {
+      "id": "mess_table",
+      "name": "mess table",
+      "description": "A bolted-down aluminium table, scratched by years of meals and card games.",
+      "glyph": "π",
+      "material": "aluminium_alloy",
+      "size": [2, 1]
+    },
+    {
+      "id": "chair",
+      "name": "chair",
+      "description": "A light aluminium chair with a cracked seat. Easy enough to step past.",
+      "glyph": "h",
+      "material": "aluminium_alloy",
+      "walkable": true
+    },
+    {
+      "id": "locker",
+      "name": "locker",
+      "description": "A tall steel locker with a vented door, taller than you are.",
+      "glyph": "{",
+      "material": "steel",
+      "blocks_sight": true
+    }
+  ]
+}

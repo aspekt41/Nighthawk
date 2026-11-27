@@ -4,12 +4,19 @@ use nighthawk_sim::{
     Action, Blocked, BreathLevel, Cause, Event, ItemRef, Pos, Sound, Vertical, WarmthLevel, World,
 };
 
-/// Like [`describe`], but with the world to hand, so a bump names the
-/// structure you walked into ("the hull plating", not just "the wall").
+/// What you'd bump into at `at`: the furniture there, or else the
+/// structure ("the stasis chamber", "the hull plating").
+fn solid_name(world: &World, at: Pos) -> Option<&str> {
+    let furniture = world.furniture_kind_at(at).map(|k| k.name.as_str());
+    furniture.or_else(|| world.structure_at(at).map(|s| s.name.as_str()))
+}
+
+/// Like [`describe`], but with the world to hand, so a bump names what
+/// you walked into ("the hull plating", not just "the wall").
 pub fn describe_in(world: &World, event: Event) -> Option<String> {
     match event {
-        Event::Bumped { at, .. } if let Some(structure) = world.structure_at(at) => {
-            Some(format!("You bump into the {}.", structure.name))
+        Event::Bumped { at, .. } if let Some(name) = solid_name(world, at) => {
+            Some(format!("You bump into the {name}."))
         }
         Event::PickedUp(id) | Event::NoRoom(id) | Event::Dropped(id) => {
             Some(item_text(event, &item_name(world, id)))
@@ -557,6 +564,15 @@ mod tests {
             describe_in(&world, bump).as_deref(),
             Some("You bump into the hull plating.")
         );
+        let chamber = Event::Bumped {
+            at: Pos::new(12, 6, 0),
+            tile: Tile::default(),
+        };
+        assert_eq!(
+            describe_in(&world, chamber).as_deref(),
+            Some("You bump into the stasis chamber."),
+            "furniture is named before the floor under it"
+        );
         assert_eq!(
             describe_in(&world, Event::Waited).as_deref(),
             Some("You wait."),
@@ -567,7 +583,12 @@ mod tests {
     #[test]
     fn item_events_name_the_item_and_its_material() {
         let world = nighthawk_sim::World::new(crate::content::load_start_map().unwrap(), 1);
-        let laser = world.floor_items()[0].item.id();
+        let cutter = world.item_type_index("basic_laser_cutter").unwrap();
+        let lying = world.floor_items().iter();
+        let laser = lying
+            .map(|f| f.item.id())
+            .find(|id| id.kind == cutter)
+            .unwrap();
         let lines: Vec<String> = [
             Event::PickedUp(laser),
             Event::NoRoom(laser),

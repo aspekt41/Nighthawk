@@ -206,7 +206,9 @@ precise error and exits with code 1 before entering raw mode.
   in 20 s; welding a `"hull_crack"` with WELD 2 makes a `"wall"`, in 40 s;
   opening a `"door"` makes an `"open_door"` and closing turns it back, 2 s),
   and puts the player on
-  `"floor"` if the legend doesn't say what `@` is. Test rooms are dark
+  `"floor"` if the legend doesn't say what `@` is. Test furniture: a
+  `"crate"` in the way, a `"bench"` two tiles across, a walkable `"stool"`
+  and a `"cabinet"` that blocks sight. Test rooms are dark
   (you see only the tiles beside you) unless their map has a light: put a
   `*` in a wall with `"*": "lamp"` in the legend. Integration tests share
   `crates/nighthawk-sim/tests/common/mod.rs`, which loads the real `data/`;

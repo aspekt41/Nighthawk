@@ -6,6 +6,7 @@ use crate::action::Effect;
 use crate::body::{self, BREATH_FULL, BreathLevel, Cause, WARMTH_FULL, WarmthLevel};
 use crate::calendar::{DateTime, SHIP_START};
 use crate::content::Content;
+use crate::furniture::{Furnishings, FurnitureType, Piece};
 use crate::hash::Fnv64;
 use crate::interact::{self, Blocked};
 use crate::item::{self, FloorItem, Item, ItemContext, ItemPath, ItemRef, ItemType};
@@ -16,7 +17,7 @@ use crate::material::Material;
 use crate::pos::{Dir, Pos, Vertical};
 use crate::recipe::{Recipe, RecipeMaterial};
 use crate::rng::{GameRng, Stream};
-use crate::sight::{Remembered, View};
+use crate::sight::{Remembered, Scene, View};
 use crate::structure::Structure;
 
 /// Something the player wants to do. Front-ends turn key presses into these.
@@ -166,6 +167,8 @@ pub struct World {
     content: Content,
     /// The items lying on the floor around the ship.
     floor_items: Vec<FloorItem>,
+    /// Every piece of furniture standing in the ship (D53).
+    furniture: Furnishings,
     /// What the player is wearing; carried items are in its pockets.
     worn: Vec<Item>,
     /// What the player has seen of the ship, and can see now (D49).
@@ -178,6 +181,8 @@ impl World {
     /// player starts out seeing what's around them.
     pub fn new(loaded: LoadedMap, seed: u64) -> Self {
         let view = View::new(loaded.map.tile_count());
+        let kinds = loaded.content.furniture();
+        let furniture = Furnishings::new(loaded.furniture, &loaded.map, kinds);
         let mut world = Self {
             deck_names: loaded.deck_names,
             map: loaded.map,
@@ -189,6 +194,7 @@ impl World {
             warmth: WARMTH_FULL,
             content: loaded.content,
             floor_items: loaded.floor_items,
+            furniture,
             worn: loaded.worn,
             view,
         };
@@ -201,12 +207,23 @@ impl World {
     /// (where you are, a door, an item) changes what you see.
     fn refresh_view(&mut self) {
         let lights = self.lights();
-        // `items` and `self.view` are different fields of `self`, so one
-        // can be read while the other changes.
-        let items = &self.floor_items;
-        let top_item = |p: Pos| items.iter().find(|f| f.at == p).map(|f| f.item.kind);
-        self.view
-            .refresh(&self.map, self.player, &lights, &top_item);
+        // These are all different fields of `self` from `self.view`, so
+        // they can be read while the view changes.
+        let (map, furniture, items) = (&self.map, &self.furniture, &self.floor_items);
+        let kinds = self.content.furniture();
+        let kind_at = |p: Pos| furniture.at(map, p).map(|piece| piece.kind);
+        let blocks = |p: Pos| {
+            let tall = kind_at(p).and_then(|k| kinds.get(usize::from(k)));
+            map.get(p).is_none_or(Tile::blocks_sight) || tall.is_some_and(|k| k.blocks_sight)
+        };
+        let scene = Scene {
+            map,
+            blocks: &blocks,
+            lights: &lights,
+            furniture: &kind_at,
+            top_item: &|p| items.iter().find(|f| f.at == p).map(|f| f.item.kind),
+        };
+        self.view.refresh(&scene, self.player);
     }
 
     /// Every light on the player's deck (only those can light what the
@@ -251,6 +268,27 @@ impl World {
     /// ever lit: light elsewhere can't be seen.
     pub fn is_lit(&self, p: Pos) -> bool {
         self.view.is_lit(&self.map, p)
+    }
+
+    /// Every piece of furniture in the ship.
+    pub fn furniture(&self) -> &[Piece] {
+        self.furniture.pieces()
+    }
+
+    /// The piece of furniture covering the tile at `p`, if any.
+    pub fn furniture_at(&self, p: Pos) -> Option<&Piece> {
+        self.furniture.at(&self.map, p)
+    }
+
+    /// The kind of furniture covering the tile at `p`, if any.
+    pub fn furniture_kind_at(&self, p: Pos) -> Option<&FurnitureType> {
+        let piece = self.furniture_at(p)?;
+        self.content.furniture().get(usize::from(piece.kind))
+    }
+
+    /// Whether furniture at `p` is in the way of walking there.
+    fn furniture_in_the_way(&self, p: Pos) -> bool {
+        self.furniture_kind_at(p).is_some_and(|k| !k.walkable)
     }
 
     /// Whether the player can see the tile at `p` right now.
@@ -419,7 +457,9 @@ impl World {
         let target = self.player.step(dir);
         match self.map.get(target) {
             None => vec![Event::BlockedByEdge],
-            Some(tile) if !tile.is_walkable() => self.bump(target, tile),
+            Some(tile) if !tile.is_walkable() || self.furniture_in_the_way(target) => {
+                self.bump(target, tile)
+            }
             Some(_) => {
                 self.player = target;
                 let mut events = vec![Event::Moved { to: target }];
@@ -719,15 +759,25 @@ impl World {
                 self.materials().len()
             ));
         }
+        let kinds = self.content.furniture();
+        self.furniture
+            .check(&self.map, kinds, self.materials().len())?;
+        self.check_player()
+    }
+
+    /// Checks the player stands somewhere they could have walked to.
+    fn check_player(&self) -> Result<(), String> {
+        let inside = |name: &str| format!("player at {:?} is inside a {name}", self.player);
         match self.map.get(self.player) {
             None => Err(format!("player at {:?} is outside the map", self.player)),
-            Some(tile) if !tile.is_walkable() => Err(format!(
-                "player at {:?} is inside a {}",
-                self.player,
+            Some(tile) if !tile.is_walkable() => Err(inside(
                 self.structure_at(self.player)
-                    .map_or("?", |s| s.name.as_str())
+                    .map_or("?", |s| s.name.as_str()),
             )),
-            Some(_) => Ok(()),
+            Some(_) => match self.furniture_kind_at(self.player) {
+                Some(kind) if !kind.walkable => Err(inside(&kind.name)),
+                _ => Ok(()),
+            },
         }
     }
 
@@ -740,9 +790,14 @@ impl World {
         let structures = self.content.structures();
         self.map
             .rebuild_tiles(|i| structures.get(usize::from(i)).map(Structure::tile))?;
+        self.furniture.rebuild(&self.map, self.content.furniture());
         self.check_consistent()?;
-        let (tiles, kinds) = (self.map.tile_count(), self.item_types().len());
-        self.view.check(tiles, self.structures().len(), kinds)?;
+        let counts = [
+            self.structures().len(),
+            self.content.furniture().len(),
+            self.item_types().len(),
+        ];
+        self.view.check(self.map.tile_count(), counts)?;
         self.refresh_view();
         Ok(())
     }
@@ -818,6 +873,7 @@ impl World {
         for worn in &self.worn {
             worn.hash_into(&mut h);
         }
+        self.furniture.hash_into(&mut h);
         self.view.hash_into(&mut h);
         h.finish()
     }
@@ -1742,6 +1798,133 @@ mod tests {
         assert_eq!(world.seconds(), 0);
     }
 
+    // --- Furniture -------------------------------------------------------------
+
+    /// A lit room with a bench at (2, 1)–(3, 1), a cabinet (which hides
+    /// what's behind it) at (5, 1) and a stool at (1, 2):
+    ///
+    /// ```text
+    /// ###*####
+    /// #@bb.c.#
+    /// #s.....#
+    /// ########
+    /// ```
+    fn furnished_world() -> World {
+        let rows = ["###*####", "#@bb.c.#", "#s.....#", "########"];
+        let json = format!(
+            r##"{{ "id": "t", "name": "T", "legend": {{ "#": "wall", ".": "floor", "*": "lamp",
+                     "b": {{ "structure": "floor", "furniture": "bench" }},
+                     "c": {{ "structure": "floor", "furniture": "cabinet" }},
+                     "s": {{ "structure": "floor", "furniture": "stool" }} }},
+                  "decks": [ {{ "rows": {rows:?} }} ] }}"##
+        );
+        World::new(parse_map(&json).expect("test map is valid"), TEST_SEED)
+    }
+
+    #[test]
+    fn a_piece_of_furniture_is_one_thing_on_every_tile_it_covers() {
+        let world = furnished_world();
+        assert_eq!(world.furniture().len(), 3);
+        let left = world.furniture_at(Pos::new(2, 1, 0)).unwrap();
+        assert_eq!(world.furniture_at(Pos::new(3, 1, 0)), Some(left));
+        assert_eq!(
+            world.furniture_kind_at(Pos::new(3, 1, 0)).unwrap().name,
+            "bench"
+        );
+        assert_eq!(world.furniture_at(Pos::new(4, 1, 0)), None);
+        assert_eq!(world.furniture_kind_at(Pos::new(-1, 0, 0)), None);
+    }
+
+    #[test]
+    fn walking_into_furniture_bumps_it_and_costs_no_time() {
+        let mut world = furnished_world();
+        let events = world.apply(Command::Move(Dir::East));
+        assert_eq!(
+            events,
+            vec![Event::Bumped {
+                at: Pos::new(2, 1, 0),
+                tile: Tile::FLOOR
+            }]
+        );
+        assert_eq!((world.player(), world.seconds()), (Pos::new(1, 1, 0), 0));
+    }
+
+    #[test]
+    fn you_can_walk_through_a_stool() {
+        let mut world = furnished_world();
+        world.apply(Command::Move(Dir::South));
+        assert_eq!(world.player(), Pos::new(1, 2, 0));
+        assert_eq!(world.seconds(), STEP_SECONDS);
+    }
+
+    #[test]
+    fn tall_furniture_hides_what_is_behind_it_and_furniture_is_remembered() {
+        let world = furnished_world();
+        assert!(world.is_visible(Pos::new(5, 1, 0)), "the cabinet itself");
+        assert!(!world.is_visible(Pos::new(6, 1, 0)), "behind it");
+        assert!(world.is_visible(Pos::new(4, 1, 0)), "past the low bench");
+        let bench = world.content().furniture_index("bench");
+        assert_eq!(
+            world.remembered(Pos::new(3, 1, 0)).unwrap().furniture,
+            bench
+        );
+    }
+
+    #[test]
+    fn furniture_counts_as_clutter_for_work_that_needs_the_tile_clear() {
+        // A crate stands on a doorframe beside you: the frame can't be
+        // repaired into a door with it there.
+        let rows = ["#*##", "#@f#", "####"];
+        let json = format!(
+            r##"{{ "id": "t", "name": "T", "legend": {{ "#": "wall", "*": "lamp",
+                     "f": {{ "structure": "frame", "furniture": "crate" }} }},
+                  "decks": [ {{ "rows": {rows:?} }} ] }}"##
+        );
+        let world = World::new(parse_map(&json).unwrap(), TEST_SEED);
+        assert_eq!(
+            interact::blocked(&world, Pos::new(2, 1, 0), REPAIR),
+            Some(Blocked::Cluttered)
+        );
+    }
+
+    #[test]
+    fn furniture_survives_saving_and_is_part_of_the_state_hash() {
+        let world = furnished_world();
+        let loaded = crate::save::load_from_str(&crate::save::save_to_string(&world)).unwrap();
+        assert_eq!(loaded, world);
+        assert!(
+            loaded.furniture_at(Pos::new(3, 1, 0)).is_some(),
+            "found again"
+        );
+        let mut bare = world.clone();
+        bare.furniture = Furnishings::default();
+        assert_ne!(bare.state_hash(), world.state_hash());
+    }
+
+    #[test]
+    fn a_loaded_world_must_not_put_the_player_or_furniture_anywhere_odd() {
+        let mut inside = furnished_world();
+        inside.player = Pos::new(2, 1, 0);
+        assert_eq!(
+            inside.check_consistent(),
+            Err("player at Pos { x: 2, y: 1, z: 0 } is inside a bench".into())
+        );
+        let mut on_the_stool = furnished_world();
+        on_the_stool.player = Pos::new(1, 2, 0);
+        assert_eq!(on_the_stool.check_consistent(), Ok(()));
+        let mut in_the_wall = furnished_world();
+        let mut pieces = in_the_wall.furniture().to_vec();
+        pieces[0].at = Pos::new(0, 0, 0);
+        let kinds = in_the_wall.content.furniture().to_vec();
+        in_the_wall.furniture = Furnishings::new(pieces, &in_the_wall.map, &kinds);
+        assert!(
+            in_the_wall
+                .check_consistent()
+                .unwrap_err()
+                .contains("isn't on the floor")
+        );
+    }
+
     // --- Sight -----------------------------------------------------------------
 
     #[test]
@@ -1779,7 +1962,14 @@ mod tests {
         world.view = {
             // ...as if the player had looked away: keep memory, see nothing
             let mut blind = world.view.clone();
-            blind.refresh(&world.map, Pos::new(99, 99, 0), &[], &|_| None);
+            let scene = Scene {
+                map: &world.map,
+                blocks: &|_| true,
+                lights: &[],
+                furniture: &|_| None,
+                top_item: &|_| None,
+            };
+            blind.refresh(&scene, Pos::new(99, 99, 0));
             blind
         };
         assert_eq!(world.remembered(DOOR).unwrap().structure, OPENED);

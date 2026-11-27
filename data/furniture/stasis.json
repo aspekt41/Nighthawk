@@ -1,0 +1,14 @@
+{
+  "$schema": "../schema/furniture.schema.json",
+  "furniture": [
+    {
+      "id": "stasis_chamber",
+      "name": "stasis chamber",
+      "description": "A coffin-sized pod of steel and scratched glass, its lid hinged open. The padding inside still holds the shape of whoever slept in it. It's empty.",
+      "glyph": "0",
+      "material": "steel",
+      "colour": "cyan",
+      "size": [2, 1]
+    }
+  ]
+}

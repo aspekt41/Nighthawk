@@ -16,11 +16,16 @@
 //! Decks are listed bottom to top: the first deck is `z = 0`. Every deck must
 //! be the same size, because the [`Map`] is one 3D box.
 //!
+//! Furniture is drawn where it stands, with every tile it covers: if `"C"`
+//! is a stasis chamber two tiles long, `CC` is one chamber and `CCCC` two.
+//! The loader cuts the drawing into pieces in reading order, so the first
+//! tile of a piece it meets is its top-left (see [`cut_into_pieces`]).
+//!
 //! This module does no file I/O. It turns JSON *text* into a map, so the sim
 //! stays pure and the tests don't need files. Reading the file from disk is
 //! the front-end's job.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 
 use schemars::JsonSchema;
@@ -28,6 +33,7 @@ use serde::Deserialize;
 
 use crate::air::Mix;
 use crate::content::Content;
+use crate::furniture::Piece;
 use crate::heat::{MAX_CELSIUS, MIN_CELSIUS, celsius_to_mk};
 use crate::item::{FloorItem, Item};
 use crate::map::{Map, StairsError, Tile};
@@ -52,6 +58,8 @@ pub struct LoadedMap {
     pub floor_items: Vec<FloorItem>,
     /// What the player starts out wearing.
     pub worn: Vec<Item>,
+    /// Every piece of furniture, in reading order of their top-left tiles.
+    pub furniture: Vec<Piece>,
 }
 
 /// A mistake in a list of items in a map (on the floor, or worn).
@@ -105,6 +113,12 @@ pub enum LegendError {
     Item { glyph: char, error: ItemSpecError },
     /// Items placed on something solid.
     ItemsInSolid { glyph: char },
+    /// An entry naming furniture that isn't defined.
+    UnknownFurniture { glyph: char, furniture: String },
+    /// Furniture standing on something solid.
+    FurnitureInSolid { glyph: char },
+    /// `"turned": true` on an entry with no furniture to turn.
+    NothingToTurn { glyph: char },
 }
 
 impl fmt::Display for LegendError {
@@ -126,6 +140,18 @@ impl fmt::Display for LegendError {
             LegendError::ItemsInSolid { glyph } => write!(
                 f,
                 "legend entry {glyph:?} puts items on something solid; they need a floor"
+            ),
+            LegendError::UnknownFurniture { glyph, furniture } => write!(
+                f,
+                "legend entry {glyph:?} has furniture {furniture:?}, which isn't furniture"
+            ),
+            LegendError::FurnitureInSolid { glyph } => write!(
+                f,
+                "legend entry {glyph:?} stands furniture on something solid; it needs a floor"
+            ),
+            LegendError::NothingToTurn { glyph } => write!(
+                f,
+                "legend entry {glyph:?} is turned, but has no furniture to turn"
             ),
             LegendError::StartInsideSomething { structure } => write!(
                 f,
@@ -186,6 +212,15 @@ pub enum MapError {
         deck: usize,
         celsius: i32,
     },
+    /// A piece of furniture drawn the wrong shape: starting at `at`, it
+    /// also needs `needs` drawn with the same character (and not part of
+    /// another piece).
+    FurnitureShape {
+        glyph: char,
+        furniture: String,
+        at: Pos,
+        needs: Pos,
+    },
 }
 
 impl fmt::Display for MapError {
@@ -221,6 +256,16 @@ impl fmt::Display for MapError {
             MapError::PlayerStartCount { found } => write!(
                 f,
                 "map must have exactly one '{PLAYER_START}' (player start); found {found}"
+            ),
+            MapError::FurnitureShape {
+                glyph,
+                furniture,
+                at,
+                needs,
+            } => write!(
+                f,
+                "deck {}, row {}, column {}: the {furniture} {glyph:?} starting here also needs row {}, column {} drawn as {glyph:?}",
+                at.z, at.y, at.x, needs.y, needs.x
             ),
         }
     }
@@ -314,6 +359,14 @@ struct Placed {
     /// Items lying on it.
     #[serde(default)]
     items: Vec<ItemSpec>,
+    /// Furniture standing on it, by id. Draw every tile the furniture
+    /// covers with this entry's character. Optional.
+    #[serde(default)]
+    furniture: Option<String>,
+    /// The furniture is turned a quarter, swapping its width and height:
+    /// a bed two tiles across becomes two tiles down. Optional.
+    #[serde(default)]
+    turned: bool,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -349,7 +402,9 @@ pub fn parse_map(json: &str, content: &Content) -> Result<LoadedMap, MapError> {
         mut map,
         starts,
         floor_items,
+        furnished,
     } = build(&file.decks, &legend, (width, height))?;
+    let furniture = cut_into_pieces(&furnished, content)?;
 
     map.check_stairs().map_err(MapError::Stairs)?;
     fill_air(&mut map, &file.decks)?;
@@ -366,6 +421,7 @@ pub fn parse_map(json: &str, content: &Content) -> Result<LoadedMap, MapError> {
             content: content.clone(),
             floor_items,
             worn,
+            furniture,
         }),
         _ => Err(MapError::PlayerStartCount {
             found: starts.len(),
@@ -379,6 +435,9 @@ struct Built {
     map: Map,
     starts: Vec<Pos>,
     floor_items: Vec<FloorItem>,
+    /// Every tile drawn with furniture, in reading order, with the
+    /// character it's drawn with and what it stands there.
+    furnished: Vec<(Pos, char, Furnish)>,
 }
 
 /// Places every glyph of every deck on a new `width` × `height` map.
@@ -392,6 +451,7 @@ fn build(
         map: Map::filled(to_i32(width), to_i32(height), depth, Tile::default()),
         starts: Vec::new(),
         floor_items: Vec::new(),
+        furnished: Vec::new(),
     };
     for (z, y, x, glyph) in cells(decks) {
         let at = Pos::new(to_i32(x), to_i32(y), to_i32(z));
@@ -405,8 +465,51 @@ fn build(
         if glyph == PLAYER_START {
             built.starts.push(at);
         }
+        built
+            .furnished
+            .extend(placed.furniture.map(|f| (at, glyph, f)));
     }
     Ok(built)
+}
+
+/// Cuts the tiles drawn with furniture into pieces. They're visited in
+/// reading order, so the first tile of a piece met is its top-left. A
+/// piece then claims every tile its size covers from there, and each must
+/// be drawn with the same character and not be part of a piece already;
+/// otherwise the drawing is the wrong shape, and the error says where.
+fn cut_into_pieces(
+    furnished: &[(Pos, char, Furnish)],
+    content: &Content,
+) -> Result<Vec<Piece>, MapError> {
+    let drawn: HashMap<Pos, char> = furnished.iter().map(|&(p, c, _)| (p, c)).collect();
+    let mut claimed = HashSet::new();
+    let mut pieces = Vec::new();
+    for &(at, glyph, furnish) in furnished {
+        if claimed.contains(&at) {
+            continue;
+        }
+        let kind = &content.furniture.list()[usize::from(furnish.kind)];
+        let piece = Piece {
+            kind: furnish.kind,
+            material: furnish.material,
+            at,
+            turned: furnish.turned,
+        };
+        // `HashSet::insert` returns false if the tile was already there.
+        if let Some(needs) = piece
+            .tiles(kind)
+            .find(|p| drawn.get(p) != Some(&glyph) || !claimed.insert(*p))
+        {
+            return Err(MapError::FurnitureShape {
+                glyph,
+                furniture: kind.id.clone(),
+                at,
+                needs,
+            });
+        }
+        pieces.push(piece);
+    }
+    Ok(pieces)
 }
 
 /// Every glyph in every deck, as `(deck, row, column, glyph)`, in reading
@@ -461,6 +564,16 @@ struct Placement {
     structure: u16,
     material: u16,
     items: Vec<Item>,
+    /// The furniture standing there, if any.
+    furniture: Option<Furnish>,
+}
+
+/// The furniture a legend entry stands on its tiles.
+#[derive(Debug, Clone, Copy)]
+struct Furnish {
+    kind: u16,
+    material: u16,
+    turned: bool,
 }
 
 /// The items an item list in a map stands for: `count` new items each.
@@ -576,12 +689,59 @@ fn place(glyph: char, entry: &LegendEntry, content: &Content) -> Result<Placemen
                 material: material_id.clone(),
             })?;
     let items = floor_items(glyph, specs, tile, content)?;
+    let furniture = match entry {
+        LegendEntry::Placed(p) => furnish(glyph, p, tile, content)?,
+        LegendEntry::Id(_) => None,
+    };
     Ok(Placement {
         tile,
         structure,
         material,
         items,
+        furniture,
     })
+}
+
+/// The furniture a legend entry stands on its tiles, if it names any. It
+/// needs `tile` to be walkable, and the player can't start inside
+/// furniture that's in the way.
+fn furnish(
+    glyph: char,
+    placed: &Placed,
+    tile: Tile,
+    content: &Content,
+) -> Result<Option<Furnish>, LegendError> {
+    let Some(id) = &placed.furniture else {
+        return match placed.turned {
+            true => Err(LegendError::NothingToTurn { glyph }),
+            false => Ok(None),
+        };
+    };
+    let kind = content
+        .furniture
+        .index_of(id)
+        .ok_or_else(|| LegendError::UnknownFurniture {
+            glyph,
+            furniture: id.clone(),
+        })?;
+    let made = &content.furniture.list()[usize::from(kind)];
+    if !tile.is_walkable() {
+        return Err(LegendError::FurnitureInSolid { glyph });
+    }
+    if glyph == PLAYER_START && !made.walkable {
+        return Err(LegendError::StartInsideSomething {
+            structure: id.clone(),
+        });
+    }
+    let material = content
+        .materials
+        .index_of(&made.material)
+        .expect("furniture materials were checked on load");
+    Ok(Some(Furnish {
+        kind,
+        material,
+        turned: placed.turned,
+    }))
 }
 
 /// Checks every deck is the same rectangle and returns its `(width, height)`.
@@ -1217,6 +1377,123 @@ mod item_tests {
         assert_eq!(
             error("[]", r#""player_wears": [ { "item": "toga" } ],"#),
             r#"player_wears: "toga" isn't an item"#
+        );
+    }
+}
+
+#[cfg(test)]
+mod furniture_tests {
+    use super::parse_map_for_tests as parse_map;
+    use super::*;
+
+    /// A one-deck map drawn with `rows`, with floor `.`, wall `#`, and the
+    /// test furniture: `b` a bench (two tiles across), `B` a bench turned
+    /// to run down, `s` a stool you can walk through, `c` a crate in the
+    /// way.
+    fn map(rows: &[&str]) -> Result<LoadedMap, MapError> {
+        let json = format!(
+            r##"{{ "id": "t", "name": "T",
+                 "legend": {{ ".": "floor", "#": "wall",
+                     "b": {{ "structure": "floor", "furniture": "bench" }},
+                     "B": {{ "structure": "floor", "furniture": "bench", "turned": true }},
+                     "s": {{ "structure": "floor", "furniture": "stool" }},
+                     "c": {{ "structure": "floor", "furniture": "crate" }} }},
+                 "decks": [ {{ "rows": {rows:?} }} ] }}"##
+        );
+        parse_map(&json)
+    }
+
+    fn error(rows: &[&str]) -> String {
+        map(rows).unwrap_err().to_string()
+    }
+
+    /// Where each piece's top-left is, and whether it's turned.
+    fn placed(loaded: &LoadedMap) -> Vec<(i32, i32, bool)> {
+        let pieces = loaded.furniture.iter();
+        pieces.map(|p| (p.at.x, p.at.y, p.turned)).collect()
+    }
+
+    #[test]
+    fn furniture_is_drawn_where_it_stands_and_cut_into_pieces() {
+        let loaded = map(&["@bbbb.", "c.B..s", "..B..."]).unwrap();
+        assert_eq!(
+            placed(&loaded),
+            [
+                (1, 0, false),
+                (3, 0, false),
+                (0, 1, false),
+                (2, 1, true),
+                (5, 1, false)
+            ],
+            "two benches side by side, a crate, a turned bench and a stool"
+        );
+        let bench = loaded.content.furniture_index("bench").unwrap();
+        assert_eq!(loaded.furniture[0].kind, bench);
+        let steel = loaded.content.material_index("steel").unwrap();
+        assert_eq!(loaded.furniture[0].material, steel, "its own material");
+        let floor = loaded.content.structure_index("floor").unwrap();
+        assert_eq!(
+            loaded.map.structure_index(Pos::new(1, 0, 0)),
+            Some(floor),
+            "standing on the floor"
+        );
+    }
+
+    #[test]
+    fn furniture_drawn_the_wrong_shape_says_where() {
+        assert_eq!(
+            error(&["@b."]),
+            "deck 0, row 0, column 1: the bench 'b' starting here also needs row 0, column 2 drawn as 'b'"
+        );
+        assert_eq!(
+            error(&["@bbb"]),
+            "deck 0, row 0, column 3: the bench 'b' starting here also needs row 0, column 4 drawn as 'b'",
+            "an odd one out at the end of the row (off the map)"
+        );
+        assert_eq!(
+            error(&["@B.", "..."]),
+            "deck 0, row 0, column 1: the bench 'B' starting here also needs row 1, column 1 drawn as 'B'"
+        );
+        assert!(map(&["@bb", "BB.", "BB."]).is_ok(), "pieces may touch");
+    }
+
+    #[test]
+    fn legend_mistakes_with_furniture_are_errors() {
+        let one = |entry: &str| {
+            let json = format!(
+                r##"{{ "id": "t", "name": "T", "legend": {{ ".": "floor", "#": "wall", "x": {entry} }},
+                     "decks": [ {{ "rows": ["@x"] }} ] }}"##
+            );
+            parse_map(&json).unwrap_err().to_string()
+        };
+        assert_eq!(
+            one(r#"{ "structure": "floor", "furniture": "sofa" }"#),
+            r#"legend entry 'x' has furniture "sofa", which isn't furniture"#
+        );
+        assert_eq!(
+            one(r#"{ "structure": "wall", "furniture": "crate" }"#),
+            "legend entry 'x' stands furniture on something solid; it needs a floor"
+        );
+        assert_eq!(
+            one(r#"{ "structure": "floor", "turned": true }"#),
+            "legend entry 'x' is turned, but has no furniture to turn"
+        );
+    }
+
+    #[test]
+    fn the_player_can_start_on_a_stool_but_not_inside_a_crate() {
+        let on = |furniture: &str| {
+            let json = format!(
+                r##"{{ "id": "t", "name": "T", "legend": {{ ".": "floor",
+                     "@": {{ "structure": "floor", "furniture": "{furniture}" }} }},
+                     "decks": [ {{ "rows": ["@."] }} ] }}"##
+            );
+            parse_map(&json)
+        };
+        assert_eq!(on("stool").unwrap().furniture.len(), 1);
+        assert_eq!(
+            on("crate").unwrap_err().to_string(),
+            "'@' marks where the player starts, so it must stand for something walkable, not \"crate\""
         );
     }
 }
