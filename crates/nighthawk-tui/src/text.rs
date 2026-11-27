@@ -19,6 +19,7 @@ pub fn describe_in(world: &World, event: Event) -> Option<String> {
             Some(format!("You bump into the {name}."))
         }
         Event::CannotCraft { blocked, .. } => Some(blocked_text(blocked, u16::MAX, Some(world))),
+        Event::Stored { item, into } => Some(stored_text(world, item, into)),
         Event::Transformed { at, action, was } => Some(done_text(world, at, action, was)),
         Event::Removed { action, was, .. } => Some(removed_text(world, action, was)),
         Event::Unable { action, blocked } => Some(blocked_text(blocked, action, Some(world))),
@@ -49,6 +50,21 @@ fn item_event_text(world: &World, event: Event) -> Option<String> {
 fn a_or_an(name: &str) -> String {
     let vowel = name.starts_with(['a', 'e', 'i', 'o', 'u']);
     format!("{} {name}", if vowel { "an" } else { "a" })
+}
+
+/// "You put the shiv (Bone) in the locker."
+fn stored_text(world: &World, item: ItemRef, into: u16) -> String {
+    let furniture = world.content().furniture().get(usize::from(into));
+    let container = furniture.map_or("container", |f| f.name.as_str());
+    format!("You put the {} in the {container}.", item_name(world, item))
+}
+
+/// Why you couldn't put something away.
+fn cannot_store_text(blocked: Blocked) -> String {
+    match blocked {
+        Blocked::NotPossible => "There's nothing there to put things in.".into(),
+        _ => blocked_text_fixed(blocked),
+    }
 }
 
 /// "You take the hand lamp (Aluminium Alloy) out of the locker."
@@ -132,9 +148,19 @@ pub fn describe(event: Event) -> Option<String> {
         Event::AirEscaping | Event::Breath(_) | Event::Warmth(_) | Event::BlackedOut(_) => {
             survival_text(event).into()
         }
-        _ => movement_text(event).into(),
+        _ => storing_text(event),
     };
     Some(line)
+}
+
+/// Log lines for putting things away, without the world to name them,
+/// and else for getting about.
+fn storing_text(event: Event) -> String {
+    match event {
+        Event::Stored { .. } => "You put it away.".into(),
+        Event::CannotStore(blocked) => cannot_store_text(blocked),
+        _ => movement_text(event).into(),
+    }
 }
 
 /// Log lines for getting about: edges, waiting and ladders. (Opening and
@@ -269,6 +295,7 @@ fn blocked_short_fixed(blocked: Blocked) -> String {
         Blocked::StandingInIt => "step out first".into(),
         Blocked::CantSee => "can't see it".into(),
         Blocked::NotKnown => "not known yet".into(),
+        Blocked::Full => "full".into(),
         _ => "not possible".into(),
     }
 }
@@ -313,6 +340,7 @@ fn blocked_text_fixed(blocked: Blocked) -> String {
         Blocked::StandingInIt => "You're standing in it. Step out first.".into(),
         Blocked::CantSee => "You can't see there.".into(),
         Blocked::NotKnown => "You don't know how to make that yet.".into(),
+        Blocked::Full => "There's no room left in there.".into(),
         _ => "You can't do that there.".into(),
     }
 }
@@ -484,10 +512,11 @@ mod tests {
     }
 
     /// One of each kind of blocked reason.
-    fn every_blocked() -> [Blocked; 11] {
+    fn every_blocked() -> [Blocked; 12] {
         [
             Blocked::CantSee,
             Blocked::NotKnown,
+            Blocked::Full,
             Blocked::TooFar { reach: 1 },
             Blocked::TooFar { reach: 2 },
             Blocked::InTheWay {
@@ -760,6 +789,42 @@ mod tests {
             Some("You take the basic laser cutter (Aluminium Alloy) out of the container.")
         );
         assert_eq!(describe(took).as_deref(), Some("You take out the item."));
+    }
+
+    #[test]
+    fn putting_things_away_says_what_went_where_or_why_not() {
+        let world = real_world();
+        let shiv = ItemRef {
+            kind: world.item_type_index("shiv").unwrap(),
+            material: world.content().material_index("bone").unwrap(),
+        };
+        let locker = world.content().furniture_index("locker").unwrap();
+        let stored = |into| describe_in(&world, Event::Stored { item: shiv, into });
+        assert_eq!(
+            stored(locker).as_deref(),
+            Some("You put the shiv (Bone) in the locker.")
+        );
+        assert_eq!(
+            stored(999).as_deref(),
+            Some("You put the shiv (Bone) in the container.")
+        );
+        let stored = Event::Stored {
+            item: shiv,
+            into: locker,
+        };
+        assert_eq!(describe(stored).as_deref(), Some("You put it away."));
+        let cannot = |blocked| describe(Event::CannotStore(blocked)).unwrap_or_default();
+        assert_eq!(cannot(Blocked::Full), "There's no room left in there.");
+        assert_eq!(
+            cannot(Blocked::NotPossible),
+            "There's nothing there to put things in."
+        );
+        assert_eq!(cannot(Blocked::CantSee), "You can't see there.");
+        assert_eq!(
+            describe_in(&world, Event::CannotStore(Blocked::Full)).as_deref(),
+            Some("There's no room left in there.")
+        );
+        assert_eq!(blocked_short(Blocked::Full, 0, None), "full");
     }
 
     #[test]

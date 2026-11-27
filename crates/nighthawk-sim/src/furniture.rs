@@ -365,9 +365,15 @@ impl Furnishings {
     }
 
     /// The place in `pieces` of the piece covering the tile at `p`.
-    fn number_at(&self, map: &Map, p: Pos) -> Option<usize> {
+    pub(crate) fn number_at(&self, map: &Map, p: Pos) -> Option<usize> {
         let i = *self.cover.get(map.index_of(p)?)?;
-        usize::try_from(i).ok()
+        usize::try_from(i).ok().filter(|_| i != NO_PIECE)
+    }
+
+    /// Piece number `number` (its place in the order they were placed),
+    /// to change.
+    pub(crate) fn number_mut(&mut self, number: usize) -> Option<&mut Piece> {
+        self.pieces.get_mut(number)
     }
 
     /// Checks loaded furniture makes sense: every piece is a known kind
@@ -568,6 +574,11 @@ pub(crate) mod tests {
         assert_eq!((at(3, 1), at(1, 2)), (None, None));
         assert_eq!(at(-1, 0), None, "off the map");
         assert_eq!(furnishings.pieces().len(), 2);
+        let number = |x, y| furnishings.number_at(&map, Pos::new(x, y, 0));
+        assert_eq!(
+            (number(2, 1), number(4, 2), number(3, 1)),
+            (Some(0), Some(1), None)
+        );
     }
 
     #[test]

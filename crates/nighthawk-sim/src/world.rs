@@ -79,8 +79,15 @@ pub enum Command {
     /// Drop a carried item onto the floor where you stand.
     Drop(ItemPath),
     /// Make something by craft number `craft` (its place in the world's
-    /// list of crafts), from what's in your pockets (D56).
+    /// list of crafts), from what's in your pockets or in furniture within
+    /// reach (D56, D57).
     Craft(u16),
+    /// Put the carried item at `item` into the furniture (a locker, say)
+    /// covering the tile at `into`, which must be within [`REACH`] (D57).
+    Store {
+        item: ItemPath,
+        into: Pos,
+    },
 }
 
 /// Something that happened, for the front-end to show or log.
@@ -139,6 +146,15 @@ pub enum Event {
     Dropped(ItemRef),
     /// There's no item where a drop asked for one. No time passes.
     NothingToDrop,
+    /// The player put this item into a piece of furniture of kind number
+    /// `into` (a locker, say).
+    Stored {
+        item: ItemRef,
+        into: u16,
+    },
+    /// The player couldn't put an item away, and `blocked` says why. No
+    /// time passes.
+    CannotStore(Blocked),
     /// The player followed a recipe for action number `action` on the tile
     /// at `at`, which was structure number `was` and is now what the
     /// recipe makes (it cut through a door, patched a crack…).
@@ -207,6 +223,14 @@ pub const WAIT_SECONDS: u64 = 5;
 /// something up, say how long they take in `data/actions/` and
 /// `data/recipes/`.)
 pub const DROP_SECONDS: u64 = 1;
+/// Putting an item into a locker or another container.
+pub const STORE_SECONDS: u64 = 2;
+
+/// How far you can reach into furniture, in steps: the tiles right around
+/// you (and your own). You can put things in furniture that close, and
+/// what's inside counts for crafts and recipes as if it were in your
+/// pockets (decision D57).
+pub const REACH: u32 = 1;
 
 /// Each second has a 1 in this many chance of an ambient sound, so about
 /// one sound every 25 seconds.
@@ -534,6 +558,7 @@ impl World {
             Command::Interact { at, action } => self.interact(at, action),
             Command::Drop(path) => self.drop_item(path),
             Command::Craft(craft) => self.craft(craft),
+            Command::Store { item, into } => self.store(item, into),
             Command::Wait => {
                 let mut events = vec![Event::Waited];
                 self.pass_time(WAIT_SECONDS, &mut events);
@@ -587,7 +612,8 @@ impl World {
 
     /// Why craft number `craft` can't be made now, if it can't: there's no
     /// such craft, the player doesn't know it, a tool falls short, or they
-    /// don't carry enough of something it uses, in that order.
+    /// don't have enough of something it uses at hand (in their pockets or
+    /// furniture within reach), in that order.
     pub fn craft_blocked(&self, craft: u16) -> Option<Blocked> {
         let Some(craft) = self.content.crafts().get(usize::from(craft)) else {
             return Some(Blocked::NotPossible);
@@ -800,9 +826,11 @@ impl World {
         events
     }
 
-    /// Takes the items `uses` lists out of the player's pockets: of each
-    /// kind it names, only those of a material with the tag it asks for.
+    /// Takes the items `uses` lists from the player's pockets first, then
+    /// from furniture within reach: of each kind it names, only those of a
+    /// material with the tag it asks for.
     fn use_items(&mut self, uses: &[Use]) -> Vec<Item> {
+        let nearby: Vec<usize> = self.pieces_in_reach().iter().map(|&(n, _)| n).collect();
         let mut used = Vec::new();
         for needed in uses {
             let kind = self
@@ -810,9 +838,122 @@ impl World {
                 .expect("recipes name real items");
             let count = usize::try_from(needed.count).unwrap_or(usize::MAX);
             let wanted = wanted_items(self.content.materials(), kind, needed.tag.as_deref());
-            used.extend(item::take_matching(&mut self.worn, count, wanted));
+            // `&wanted` lends the test out, so it can be used again below.
+            let mut taken = item::take_matching(&mut self.worn, count, &wanted);
+            for &number in &nearby {
+                let piece = self.furniture.number_mut(number);
+                let pile = piece
+                    .map(|p| &mut p.contents)
+                    .expect("pieces in reach exist");
+                taken.extend(item::take_from_pile(pile, count - taken.len(), &wanted));
+            }
+            used.extend(taken);
         }
         used
+    }
+
+    /// The tiles you can reach into: your own, and those right around it
+    /// that you can see (see [`REACH`]).
+    fn tiles_in_reach(&self) -> Vec<Pos> {
+        let around = Dir::ALL.map(|dir| self.player.step(dir));
+        std::iter::once(self.player)
+            .chain(around)
+            .filter(|&p| self.is_visible(p))
+            .collect()
+    }
+
+    /// The furniture you can reach into: each piece's number (its place in
+    /// the world's list) and the first of its tiles in reach, in the order
+    /// [`World::tiles_in_reach`] finds them. A piece two tiles long beside
+    /// you is found once.
+    fn pieces_in_reach(&self) -> Vec<(usize, Pos)> {
+        let mut found: Vec<(usize, Pos)> = Vec::new();
+        for p in self.tiles_in_reach() {
+            if let Some(number) = self.furniture.number_at(&self.map, p)
+                && found.iter().all(|&(seen, _)| seen != number)
+            {
+                found.push((number, p));
+            }
+        }
+        found
+    }
+
+    /// Where to reach into each container (furniture that holds things,
+    /// like a locker) within reach: one tile of each, nearest first.
+    pub fn containers_in_reach(&self) -> Vec<Pos> {
+        let kinds = self.content.furniture();
+        let pieces = self.furniture.pieces();
+        self.pieces_in_reach()
+            .into_iter()
+            .filter(|&(number, _)| kinds[usize::from(pieces[number].kind)].holds_ml > 0)
+            .map(|(_, p)| p)
+            .collect()
+    }
+
+    /// Everything inside the furniture within reach.
+    fn items_in_reach(&self) -> Vec<&Item> {
+        let pieces = self.furniture.pieces();
+        self.pieces_in_reach()
+            .into_iter()
+            .flat_map(|(number, _)| &pieces[number].contents)
+            .collect()
+    }
+
+    /// How many items of type number `kind` the player has at hand: in
+    /// their pockets or in furniture within reach. With a `tag`, only those
+    /// made of a material with that tag count.
+    pub fn count_at_hand(&self, kind: u16, tag: Option<&str>) -> u32 {
+        let wanted = wanted_items(self.content.materials(), kind, tag);
+        let carried = self.carried().into_iter().map(|(_, item)| item);
+        let n = carried
+            .chain(self.items_in_reach())
+            .filter(|item| wanted(item))
+            .count();
+        u32::try_from(n).unwrap_or(u32::MAX)
+    }
+
+    /// Why the carried item at `path` can't go into the furniture at
+    /// `into`, if it can't: you can't see it, it's out of reach, there's no
+    /// such item or nothing there that holds things, or there's no room
+    /// left inside, in that order.
+    pub fn store_blocked(&self, path: ItemPath, into: Pos) -> Option<Blocked> {
+        if !self.is_visible(into) {
+            return Some(Blocked::CantSee);
+        }
+        if !self.player.steps_to(into).is_some_and(|d| d <= REACH) {
+            return Some(Blocked::TooFar { reach: REACH });
+        }
+        let item = item::get(&self.worn, path);
+        let piece = self.furniture_at(into);
+        let kind = self.furniture_kind_at(into);
+        match (item, piece, kind) {
+            (Some(item), Some(piece), Some(kind)) if kind.holds_ml > 0 => {
+                let ctx = self.item_context();
+                let inside: u64 = piece.contents.iter().map(|i| ctx.volume_ml(i)).sum();
+                let room = inside + ctx.volume_ml(item) <= u64::from(kind.holds_ml);
+                (!room).then_some(Blocked::Full)
+            }
+            _ => Some(Blocked::NotPossible),
+        }
+    }
+
+    /// Puts the carried item at `path` into the furniture at `into`, if
+    /// nothing blocks it.
+    fn store(&mut self, path: ItemPath, into: Pos) -> Vec<Event> {
+        if let Some(blocked) = self.store_blocked(path, into) {
+            return vec![Event::CannotStore(blocked)];
+        }
+        // `store_blocked` checked both are there. The two borrows are of
+        // different fields of `self`, so Rust allows them together.
+        let piece = self.furniture.at_mut(&self.map, into).expect("checked");
+        let item = item::take(&mut self.worn, path).expect("checked");
+        let mut events = vec![Event::Stored {
+            item: item.id(),
+            into: piece.kind,
+        }];
+        piece.contents.push(item);
+        self.pass_time(STORE_SECONDS, &mut events);
+        events
     }
 
     /// The index of the structure with this id. Recipes are checked on load
@@ -840,13 +981,15 @@ impl World {
     }
 
     /// The best level of `quality` among everything the player wears or
-    /// carries, or 0 with nothing that has it. A tool works from any
-    /// pocket (decision D38).
+    /// carries, or that's in furniture within reach, or 0 with nothing that
+    /// has it. A tool works from any pocket (decision D38), or from a
+    /// locker beside you (D57).
     pub fn tool_level(&self, quality: &str) -> u8 {
         let carried = self.carried().into_iter().map(|(_, item)| item);
         self.worn
             .iter()
             .chain(carried)
+            .chain(self.items_in_reach())
             .filter_map(|item| self.item_types().get(usize::from(item.kind)))
             .filter_map(|kind| kind.qualities.get(quality).copied())
             .max()
@@ -2251,10 +2394,16 @@ mod tests {
     /// #####
     /// ```
     fn cabinet_world(contents: &str) -> World {
-        let rows = ["#*###", "#@c.#", "#####"];
+        cabinet_room(&["#*###", "#@c.#", "#####"], contents)
+    }
+
+    /// A room drawn by `rows`, with a cabinet `c` holding `contents`, a
+    /// lamp `*`, maybe cracked hull `x`, and the player wearing the test
+    /// suit.
+    fn cabinet_room(rows: &[&str], contents: &str) -> World {
         let json = format!(
             r##"{{ "id": "t", "name": "T", "player_wears": [ {{ "item": "suit" }} ],
-                  "legend": {{ "#": "wall", ".": "floor", "*": "lamp",
+                  "legend": {{ "#": "wall", ".": "floor", "*": "lamp", "x": "hull_crack",
                      "c": {{ "structure": "floor", "furniture": "cabinet",
                              "contents": {contents} }} }},
                   "decks": [ {{ "rows": {rows:?} }} ] }}"##
@@ -2346,6 +2495,220 @@ mod tests {
         let mut odd = cutter();
         odd.kind = 99;
         assert!(with(vec![odd]).is_err(), "an item that doesn't exist");
+    }
+
+    // --- Putting things away ---------------------------------------------------
+
+    /// The test item type numbers: the cutter (800 ml, LASER 1) and scrap
+    /// (100 ml). Steel is material 0 and the hard alloy 1.
+    const CUTTER: u16 = 1;
+    const SCRAP: u16 = 2;
+
+    /// Puts an item of type number `kind` and material number `material`
+    /// in the first pocket, and remembers having carried it.
+    fn pocket(world: &mut World, kind: u16, material: u16) {
+        let item = Item::new(kind, material, world.item_types());
+        world.worn[0].pockets[0].push(item);
+        world.remember_carried();
+    }
+
+    /// Where the first thing in the first pocket is.
+    const FIRST: ItemPath = ItemPath {
+        worn: 0,
+        pocket: 0,
+        index: 0,
+    };
+
+    /// Puts the first thing in the first pocket into the furniture at
+    /// `into`, and returns the events but the ambient sounds.
+    fn store(world: &mut World, into: Pos) -> Vec<Event> {
+        without_ambient(world.apply(Command::Store { item: FIRST, into }))
+    }
+
+    #[test]
+    fn putting_an_item_away_moves_it_into_the_cabinet_in_two_seconds() {
+        let mut world = cabinet_world("[]");
+        pocket(&mut world, SCRAP, 1);
+        let cabinet = world.content().furniture_index("cabinet").unwrap();
+        let scrap = ItemRef {
+            kind: SCRAP,
+            material: 1,
+        };
+        assert_eq!(
+            store(&mut world, CABINET),
+            [Event::Stored {
+                item: scrap,
+                into: cabinet
+            }]
+        );
+        assert_eq!(world.seconds(), STORE_SECONDS);
+        assert_eq!(carried(&world), 0);
+        let inside = &world.furniture_at(CABINET).unwrap().contents;
+        assert_eq!(inside.iter().map(Item::id).collect::<Vec<_>>(), [scrap]);
+    }
+
+    #[test]
+    fn a_container_takes_items_until_its_volume_is_used_up() {
+        // The cutter inside takes 800 ml of the cabinet's 1000; each scrap
+        // takes 100, so two more fit exactly and a third doesn't.
+        let mut world = cabinet_world(r#"[ { "item": "cutter" } ]"#);
+        for _ in 0..3 {
+            pocket(&mut world, SCRAP, 0);
+        }
+        assert!(matches!(
+            store(&mut world, CABINET)[..],
+            [Event::Stored { .. }]
+        ));
+        assert!(matches!(
+            store(&mut world, CABINET)[..],
+            [Event::Stored { .. }]
+        ));
+        let before = world.seconds();
+        assert_eq!(
+            store(&mut world, CABINET),
+            [Event::CannotStore(Blocked::Full)]
+        );
+        assert_eq!(world.seconds(), before, "no time passes");
+        assert_eq!(carried(&world), 1, "the last scrap is still carried");
+    }
+
+    #[test]
+    fn you_can_only_put_things_in_a_container_you_can_see_and_reach() {
+        let mut world = cabinet_world("[]");
+        pocket(&mut world, SCRAP, 0);
+        let blocked = |world: &World, into: Pos| world.store_blocked(FIRST, into);
+        let behind = Pos::new(3, 1, 0);
+        assert_eq!(
+            blocked(&world, behind),
+            Some(Blocked::CantSee),
+            "behind the cabinet"
+        );
+        let own = world.player();
+        assert_eq!(
+            blocked(&world, own),
+            Some(Blocked::NotPossible),
+            "bare floor"
+        );
+        let missing = ItemPath { index: 1, ..FIRST };
+        assert_eq!(
+            world.store_blocked(missing, CABINET),
+            Some(Blocked::NotPossible),
+            "no such item"
+        );
+        assert_eq!(
+            store(&mut world, own),
+            [Event::CannotStore(Blocked::NotPossible)]
+        );
+        assert_eq!(world.seconds(), 0);
+
+        // Across an open room, the cabinet is in sight but two steps away.
+        let mut far = cabinet_room(&["#*###", "#@.c#", "#####"], "[]");
+        pocket(&mut far, SCRAP, 0);
+        let cabinet = Pos::new(3, 1, 0);
+        assert_eq!(
+            blocked(&far, cabinet),
+            Some(Blocked::TooFar { reach: REACH })
+        );
+        let below = Pos::new(3, 1, 1);
+        assert_eq!(blocked(&far, below), Some(Blocked::CantSee), "off the map");
+        far.apply(Command::Move(Dir::East));
+        assert_eq!(blocked(&far, cabinet), None);
+    }
+
+    #[test]
+    fn furniture_in_reach_is_found_once_each_and_containers_are_those_that_hold_things() {
+        let mut world = furnished_world();
+        let numbers = |world: &World| -> Vec<usize> {
+            world.pieces_in_reach().iter().map(|&(n, _)| n).collect()
+        };
+        assert_eq!(numbers(&world), [0, 2], "the bench east, the stool south");
+        // Below the bench, both its tiles are in reach: it's found once.
+        world.player = Pos::new(2, 2, 0);
+        world.refresh_view();
+        assert_eq!(
+            world.pieces_in_reach(),
+            [(0, Pos::new(2, 1, 0)), (2, Pos::new(1, 2, 0))]
+        );
+        assert!(
+            world.containers_in_reach().is_empty(),
+            "a bench and a stool"
+        );
+        world.player = Pos::new(4, 2, 0);
+        world.refresh_view();
+        assert_eq!(numbers(&world), [1, 0]);
+        assert_eq!(
+            world.containers_in_reach(),
+            [Pos::new(5, 1, 0)],
+            "the cabinet"
+        );
+    }
+
+    #[test]
+    fn tools_and_items_in_a_container_within_reach_count_as_at_hand() {
+        let mut far = cabinet_room(
+            &["#*###", "#@.c#", "#####"],
+            r#"[ { "item": "cutter" }, { "item": "scrap" } ]"#,
+        );
+        assert_eq!(
+            (far.tool_level("LASER"), far.count_at_hand(SCRAP, None)),
+            (0, 0)
+        );
+        far.apply(Command::Move(Dir::East));
+        assert_eq!(far.tool_level("LASER"), 1, "the cutter in the cabinet");
+        assert_eq!(far.count_at_hand(SCRAP, None), 1);
+        assert_eq!(far.count_at_hand(SCRAP, Some("organic")), 0, "steel isn't");
+        assert_eq!(far.carried_count(SCRAP), 0, "but none is carried");
+    }
+
+    #[test]
+    fn a_craft_uses_your_pockets_first_then_a_container_within_reach() {
+        // One hard-alloy scrap carried and one steel scrap in the cabinet:
+        // the cutter craft needs two, so only beside the cabinet.
+        let mut world = cabinet_room(&["#*###", "#@.c#", "#####"], r#"[ { "item": "scrap" } ]"#);
+        pocket(&mut world, SCRAP, 1);
+        let missing = Blocked::Missing {
+            item: SCRAP,
+            need: 2,
+            have: 1,
+            tag: Some(0),
+        };
+        assert_eq!(world.craft_blocked(CRAFT_CUTTER), Some(missing));
+        world.apply(Command::Move(Dir::East));
+        assert_eq!(world.craft_blocked(CRAFT_CUTTER), None);
+        let events = craft(&mut world, CRAFT_CUTTER);
+        let made = ItemRef {
+            kind: CUTTER,
+            material: 1,
+        };
+        assert_eq!(
+            events,
+            [Event::Crafted {
+                craft: CRAFT_CUTTER,
+                item: made
+            }],
+            "made of the first scrap used: the carried one"
+        );
+        let cabinet = world.furniture_at(Pos::new(3, 1, 0)).unwrap();
+        assert!(cabinet.contents.is_empty(), "the cabinet's scrap was used");
+        assert_eq!(world.carried_count(SCRAP), 0);
+    }
+
+    #[test]
+    fn a_repair_can_use_scrap_from_a_container_within_reach() {
+        // A crack above you, and two steel scraps in the cabinet beside you.
+        let mut world = cabinet_room(
+            &["#x*##", "#@c.#", "#####"],
+            r#"[ { "item": "scrap", "count": 2 } ]"#,
+        );
+        let crack = Pos::new(1, 0, 0);
+        let blocked = interact::blocked(&world, crack, REPAIR);
+        assert_eq!(blocked, None);
+        world.apply(Command::Interact {
+            at: crack,
+            action: REPAIR,
+        });
+        assert_eq!(world.map().get(crack), Some(Tile::WALL));
+        assert!(world.furniture_at(CABINET).unwrap().contents.is_empty());
     }
 
     // --- Smashing and dismantling ----------------------------------------------

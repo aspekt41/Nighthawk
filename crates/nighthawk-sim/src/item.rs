@@ -268,6 +268,14 @@ pub(crate) fn stow(worn: &mut [Item], item: Item, ctx: ItemContext) -> Result<()
     Err(item)
 }
 
+/// The item at `path`, if there is one there.
+pub(crate) fn get(worn: &[Item], path: ItemPath) -> Option<&Item> {
+    worn.get(path.worn)?
+        .pockets
+        .get(path.pocket)?
+        .get(path.index)
+}
+
 /// Takes the item at `path` out of its pocket, if there is one there.
 pub(crate) fn take(worn: &mut [Item], path: ItemPath) -> Option<Item> {
     let pocket = worn.get_mut(path.worn)?.pockets.get_mut(path.pocket)?;
@@ -297,6 +305,23 @@ pub(crate) fn take_matching(
         .rev()
         .filter_map(|&path| take(worn, path))
         .collect();
+    taken.reverse();
+    taken
+}
+
+/// Takes `count` items that `wanted` says yes to out of `pile` (the
+/// contents of a locker, say), the last put in first, and returns them in
+/// the order they lay. If there are fewer than `count`, takes all there
+/// are.
+pub(crate) fn take_from_pile(
+    pile: &mut Vec<Item>,
+    count: usize,
+    wanted: impl Fn(&Item) -> bool,
+) -> Vec<Item> {
+    let found: Vec<usize> = (0..pile.len()).filter(|&i| wanted(&pile[i])).collect();
+    let chosen = &found[found.len().saturating_sub(count)..];
+    // As in `take_matching`: from the end backwards, then put in order.
+    let mut taken: Vec<Item> = chosen.iter().rev().map(|&i| pile.remove(i)).collect();
     taken.reverse();
     taken
 }
@@ -794,5 +819,43 @@ mod take_matching_tests {
         assert_eq!(take_matching(&mut worn, 5, |i| i.kind == 2).len(), 1);
         assert!(take_matching(&mut worn, 1, |i| i.kind == 2).is_empty());
         assert_eq!(worn[0].pockets[0].len(), 1, "the cutter wasn't wanted");
+    }
+
+    #[test]
+    fn taking_from_a_pile_takes_the_last_put_in_and_keeps_their_order() {
+        let items = test_items();
+        // Scrap of materials 0 and 1, a cutter, then scrap of material 2.
+        let mut pile = vec![
+            Item::new(2, 0, items.list()),
+            Item::new(2, 1, items.list()),
+            Item::new(1, 0, items.list()),
+            Item::new(2, 2, items.list()),
+        ];
+        let taken = take_from_pile(&mut pile, 2, |i| i.kind == 2);
+        let materials: Vec<u16> = taken.iter().map(|i| i.material).collect();
+        assert_eq!(materials, vec![1, 2], "the last two, in the order they lay");
+        assert_eq!(pile.len(), 2, "the first scrap and the cutter stay");
+        assert_eq!(take_from_pile(&mut pile, 5, |i| i.kind == 2).len(), 1);
+        assert!(take_from_pile(&mut pile, 1, |i| i.kind == 2).is_empty());
+        assert_eq!(pile.len(), 1, "the cutter wasn't wanted");
+    }
+
+    #[test]
+    fn get_finds_a_carried_item_by_its_path_or_nothing() {
+        let items = test_items();
+        let mut worn = vec![Item::new(0, 0, items.list())];
+        worn[0].pockets[1].push(Item::new(1, 0, items.list()));
+        let at = |worn: usize, pocket: usize, index: usize| ItemPath {
+            worn,
+            pocket,
+            index,
+        };
+        assert_eq!(get(&worn, at(0, 1, 0)).map(|i| i.kind), Some(1));
+        assert!(
+            get(&worn, at(0, 1, 1)).is_none(),
+            "past the end of a pocket"
+        );
+        assert!(get(&worn, at(0, 9, 0)).is_none(), "no such pocket");
+        assert!(get(&worn, at(3, 0, 0)).is_none(), "nothing worn there");
     }
 }

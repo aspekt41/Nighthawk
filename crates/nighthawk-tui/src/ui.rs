@@ -1130,7 +1130,7 @@ fn inventory_lines(world: &World, selected: usize) -> Vec<Line<'static>> {
     lines.extend([
         Line::raw(format!("Carrying {} in all", kilograms(total))),
         Line::raw(""),
-        Line::styled("j/k choose   d drop   Esc close", dim),
+        Line::styled("j/k choose   d drop   p put away   Esc close", dim),
     ]);
     lines
 }

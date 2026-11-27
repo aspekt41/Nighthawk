@@ -11,7 +11,7 @@ use std::fs;
 use std::path::PathBuf;
 
 use nighthawk_sim::{
-    Command, Dir, LoadedMap, MapError, Piece, Pos, Tile, Vertical, World, parse_map,
+    Command, Dir, Event, LoadedMap, MapError, Piece, Pos, Tile, Vertical, World, parse_map,
 };
 
 /// The number of the shipped action with this id, like `"cut"`.
@@ -433,6 +433,27 @@ fn the_gear_locker_in_view_of_the_start_holds_a_cutter_a_lamp_and_a_screwdriver(
     let lamp = world.item_type_index("hand_lamp").unwrap();
     assert_eq!(world.carried_count(lamp), 1);
     assert!(world.furniture_at(GEAR_LOCKER).unwrap().contents.is_empty());
+}
+
+#[test]
+fn beside_the_gear_locker_its_tools_are_at_hand_and_things_can_go_back_in() {
+    let mut world = common::start_world(1);
+    assert_eq!(world.tool_level("SCREW"), 0, "where you wake");
+    world.apply(Command::Move(Dir::NorthWest));
+    world.apply(Command::Move(Dir::NorthWest));
+    assert_eq!(world.containers_in_reach(), [GEAR_LOCKER], "the only one");
+    assert_eq!(world.tool_level("SCREW"), 1, "the screwdriver inside");
+    world.apply(Command::Interact {
+        at: GEAR_LOCKER,
+        action: action(&world, "take_out"),
+    });
+    let (first, _) = world.carried()[0];
+    let events = world.apply(Command::Store {
+        item: first,
+        into: GEAR_LOCKER,
+    });
+    assert!(events.iter().any(|e| matches!(e, Event::Stored { .. })));
+    assert_eq!(world.furniture_at(GEAR_LOCKER).unwrap().contents.len(), 1);
 }
 
 #[test]

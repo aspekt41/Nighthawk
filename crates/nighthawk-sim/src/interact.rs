@@ -55,6 +55,8 @@ pub enum Blocked {
     /// For a craft: the player hasn't yet carried everything it uses, so
     /// they don't know how to make it.
     NotKnown,
+    /// For putting something away: there's no room left inside.
+    Full,
 }
 
 /// One line of the interact menu: an action (its number), and why it can't
@@ -227,15 +229,16 @@ fn missing(world: &World, at: Pos, action: &Action) -> Option<Blocked> {
     missing_items(world, &recipe.uses)
 }
 
-/// `Missing` for the first of `uses` that the player doesn't carry enough
-/// of (counting only items of the tagged material, for a use with a tag).
-/// Recipes and crafts share it.
+/// `Missing` for the first of `uses` that the player doesn't have enough
+/// of at hand, in their pockets or in furniture within reach (counting
+/// only items of the tagged material, for a use with a tag). Recipes and
+/// crafts share it.
 pub(crate) fn missing_items(world: &World, uses: &[Use]) -> Option<Blocked> {
     let tags = world.content().material_tags();
     uses.iter().find_map(|used| {
         let item = world.item_type_index(&used.item)?;
         let tag = used.tag.as_deref();
-        let have = world.carried_count_tagged(item, tag);
+        let have = world.count_at_hand(item, tag);
         let tag = tag.and_then(|t| tags.iter().position(|&known| known == t));
         (have < used.count).then_some(Blocked::Missing {
             item,

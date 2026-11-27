@@ -6,7 +6,7 @@
 //! of it can be tested directly.
 
 use nighthawk_sim::{
-    ActionOption, Blocked, Cause, Command, DateTime, LoadedMap, Pos, World, options_at,
+    ActionOption, Blocked, Cause, Command, DateTime, ItemPath, LoadedMap, Pos, World, options_at,
 };
 use ratatui::crossterm::event::KeyEvent;
 
@@ -30,6 +30,16 @@ pub enum Screen {
     Playing(Box<World>),
 }
 
+/// A question the game is waiting for a direction key to answer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Asking {
+    /// Which way to do action number `.0`, after its shortcut key.
+    Action(u16),
+    /// Which container to put the carried item at `.0` in, when more than
+    /// one is within reach.
+    PutAway(ItemPath),
+}
+
 pub struct App {
     pub screen: Screen,
     /// The message log of the current game.
@@ -43,9 +53,10 @@ pub struct App {
     /// Picks the seed for a new game. In the real game it reads the clock;
     /// tests pass a function that returns a fixed number.
     new_seed: fn() -> u64,
-    /// After a shortcut key (`c` to close a door), the number of its
-    /// action, while the game waits for a direction to do it in.
-    asking_direction: Option<u16>,
+    /// What the game is asking a direction for, if anything: after a
+    /// shortcut key (`c` to close a door), or which container to put
+    /// something in.
+    asking_direction: Option<Asking>,
     /// Which overlay the map shows, if any. A view setting, not part of
     /// the game, so it isn't saved.
     pub overlay: Option<Overlay>,
@@ -114,8 +125,8 @@ impl App {
     /// or a cursor. Returns whether something was open, and so took the
     /// key (even a key it does nothing with).
     fn on_open_screen(&mut self, key: KeyEvent) -> bool {
-        if let Some(action) = self.asking_direction {
-            self.answer_direction(key, action);
+        if let Some(asking) = self.asking_direction {
+            self.answer_direction(key, asking);
             return true;
         }
         if self.inventory.is_some() {
@@ -189,7 +200,7 @@ impl App {
                     Screen::Playing(world) => text::action_name(world, action).to_string(),
                     Screen::Title(_) => return,
                 };
-                self.asking_direction = Some(action);
+                self.asking_direction = Some(Asking::Action(action));
                 self.push_log(format!(
                     "{name} which way? (a direction key; anything else cancels)"
                 ));
@@ -251,6 +262,38 @@ impl App {
                 self.apply(Command::Drop(path));
                 self.inventory = Some(selected.min(last.saturating_sub(1)));
             }
+            InventoryAction::PutAway => match carried.get(selected) {
+                Some(&(path, _)) => {
+                    let containers = world.containers_in_reach();
+                    self.begin_put_away(path, &containers);
+                }
+                None => self.push_log("You have nothing to put away.".into()),
+            },
+        }
+    }
+
+    /// Puts the carried item at `path` into the only one of `containers`
+    /// (those within reach), or, with more than one, asks which way.
+    fn begin_put_away(&mut self, path: ItemPath, containers: &[Pos]) {
+        // A slice pattern matches on the list's length: none, exactly one
+        // (named `into`), or anything else.
+        match *containers {
+            [] => self.push_log("There's nothing within reach to put things in.".into()),
+            [into] => self.put_away(path, into),
+            _ => {
+                self.asking_direction = Some(Asking::PutAway(path));
+                self.push_log("Put it in which? (a direction key; anything else cancels)".into());
+            }
+        }
+    }
+
+    /// Puts the carried item at `path` into the furniture at `into`, and
+    /// keeps the inventory highlight on the list as it shrinks.
+    fn put_away(&mut self, path: ItemPath, into: Pos) {
+        self.apply(Command::Store { item: path, into });
+        if let (Screen::Playing(world), Some(selected)) = (&self.screen, self.inventory) {
+            let last = world.carried().len().saturating_sub(1);
+            self.inventory = Some(selected.min(last));
         }
     }
 
@@ -332,10 +375,11 @@ impl App {
         };
     }
 
-    /// The key after a shortcut key: a direction does action number
-    /// `action` to the tile that way (`c` then `l` closes the door to the
-    /// east); any other key cancels, costing nothing.
-    fn answer_direction(&mut self, key: KeyEvent, action: u16) {
+    /// The key after a question that wants a direction: it does the
+    /// action to the tile that way (`c` then `l` closes the door to the
+    /// east), or puts the item in the container that way; any other key
+    /// cancels, costing nothing.
+    fn answer_direction(&mut self, key: KeyEvent, asking: Asking) {
         self.asking_direction = None;
         let at = match (&self.screen, keys::direction(key)) {
             (Screen::Playing(world), Some(dir)) => world.player().step(dir),
@@ -344,7 +388,10 @@ impl App {
                 return;
             }
         };
-        self.apply(Command::Interact { at, action });
+        match asking {
+            Asking::Action(action) => self.apply(Command::Interact { at, action }),
+            Asking::PutAway(item) => self.put_away(item, at),
+        }
     }
 
     fn choose(&mut self, item: MenuItem) {
@@ -1229,6 +1276,86 @@ mod tests {
         assert!(world(&app).carried().is_empty());
         press_all(&mut app, "d");
         assert_eq!(last_log(&app), "You have nothing to drop.");
+    }
+
+    #[test]
+    fn p_puts_the_highlighted_item_in_the_only_container_within_reach() {
+        let (mut app, _dir) = new_app(Some(7));
+        press_all(&mut app, "yyeyt"); // to (8, 5); take out of the locker
+        let (before, carried) = (world(&app).seconds(), world(&app).carried().len());
+        press_all(&mut app, "ip"); // the cutter, first in the list
+        assert_eq!(
+            last_log(&app),
+            "You put the basic laser cutter (Aluminium Alloy) in the locker."
+        );
+        assert_eq!(world(&app).carried().len(), carried - 1);
+        assert_eq!(world(&app).seconds(), before + nighthawk_sim::STORE_SECONDS);
+        press_all(&mut app, "jjjjp"); // past the end: the last one
+        assert_eq!(app.inventory, Some(0), "the highlight stays on the list");
+    }
+
+    #[test]
+    fn p_with_nothing_to_put_away_or_nowhere_to_put_it_says_so() {
+        let (mut app, _dir) = new_app(Some(7));
+        press_all(&mut app, "ip");
+        assert_eq!(last_log(&app), "You have nothing to put away.");
+        let (mut app, _dir) = carrying_everything(); // at (8, 8)
+        press_all(&mut app, "ip");
+        assert_eq!(
+            last_log(&app),
+            "There's nothing within reach to put things in."
+        );
+        assert_eq!(world(&app).carried().len(), 7);
+    }
+
+    /// An app on a small lit room with a locker on each side of you and
+    /// two steel scraps at your feet:
+    ///
+    /// ```text
+    /// ##E##
+    /// #L@L#
+    /// #####
+    /// ```
+    fn between_two_lockers() -> (App, tempfile::TempDir) {
+        let rows = ["##E##", "#L@L#", "#####"];
+        let json = format!(
+            r##"{{ "id": "t", "name": "T", "player_wears": [ {{ "item": "jumpsuit" }} ],
+                 "legend": {{ "#": "bulkhead", "E": "emergency_light",
+                     "L": {{ "structure": "deck_plating", "furniture": "locker" }},
+                     "@": {{ "structure": "deck_plating",
+                             "items": [ {{ "item": "scrap", "count": 2 }} ] }} }},
+                 "decks": [ {{ "rows": {rows:?} }} ] }}"##
+        );
+        let data = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../data");
+        let content = crate::content::load_content(&data).unwrap();
+        let map = nighthawk_sim::parse_map(&json, &content).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let slot = Some(SaveSlot::in_dir(dir.path()));
+        let mut app = App::new(map, slot, Some(1), fixed_seed);
+        press_all(&mut app, "eg"); // pick up the scraps at your feet
+        assert_eq!(world(&app).carried().len(), 2);
+        (app, dir)
+    }
+
+    #[test]
+    fn with_two_containers_in_reach_p_asks_which_way() {
+        let (mut app, _dir) = between_two_lockers();
+        press_all(&mut app, "ip");
+        assert_eq!(
+            last_log(&app),
+            "Put it in which? (a direction key; anything else cancels)"
+        );
+        assert_eq!(world(&app).carried().len(), 2, "nothing yet");
+        press_all(&mut app, "h");
+        assert_eq!(last_log(&app), "You put the scrap (Steel) in the locker.");
+        let west = world(&app).furniture_at(Pos::new(1, 1, 0)).unwrap();
+        assert_eq!(west.contents.len(), 1);
+        assert_eq!(app.inventory, Some(0), "the inventory stays open");
+        press_all(&mut app, "px");
+        assert_eq!(last_log(&app), "Never mind.");
+        assert_eq!(world(&app).carried().len(), 1);
+        press_all(&mut app, "pk");
+        assert_eq!(last_log(&app), "There's nothing there to put things in.");
     }
 
     // --- Crafting ---------------------------------------------------------------

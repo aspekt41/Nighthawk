@@ -197,7 +197,7 @@ tile, and it's still one thing: a stasis chamber is two tiles long.
 | `size` | Optional. Its width and height in tiles, 1 to 4 each, as it stands unturned: `[2, 1]` is two across and one down. Default `[1, 1]`. A map can turn a piece a quarter (see `turned` under [Maps](#maps-mapsjson)), which swaps them. |
 | `walkable` | Optional. You can walk through it, like a chair. Left out, it's in the way: walking into it bumps it. Air always flows past furniture. |
 | `blocks_sight` | Optional. It's tall enough to hide what's behind it (and to cast a shadow), like a locker. Left out, you can see over it. |
-| `holds_ml` | Optional. It's a container holding this many millilitres, like a locker (60000, 60 L). Maps can put items inside it (`contents`, under [Maps](#maps-mapsjson)), look mode lists what's inside, and the `take_out` action (`t` in the interact menu) takes them out into your pockets. Left out, it holds nothing. |
+| `holds_ml` | Optional. It's a container holding this many millilitres, like a locker (60000, 60 L). Maps can put items inside it (`contents`, under [Maps](#maps-mapsjson)), look mode lists what's inside, and the `take_out` action (`t` in the interact menu) takes them out into your pockets; `p` on the inventory screen puts things back in while it has room. What's inside one within reach (beside you) counts for recipes and crafts, tools included, as if it were in your pockets. Left out, it holds nothing. |
 
 A game may have no furniture at all; the folder must still exist.
 
@@ -232,14 +232,15 @@ standing there first, then for the structure.
 | `to` | The structure it becomes. |
 | `furniture` | Instead of `from` and `to`: the kind of furniture it acts on, which it takes away (every tile of it); anything inside spills on the floor. Only one recipe per action per kind of furniture. |
 | `seconds` | How long it takes (at least 1). If the player blacks out partway, nothing changes and nothing is used. |
-| `uses` | Optional. Items it uses up from your pockets, as `{ "item": id, "count": n }` (n at least 1), and optionally `"tag"`: only items of a material with that tag count and get used. The menu shows them ("Repair: 1 metal scrap") and says if you're short. |
+| `uses` | Optional. Items it uses up from your pockets, then from containers within reach, as `{ "item": id, "count": n }` (n at least 1), and optionally `"tag"`: only items of a material with that tag count and get used. The menu shows them ("Repair: 1 metal scrap") and says if you're short. |
 | `gives` | Optional. Items it leaves on the floor where the work was done, as `{ "item": id, "material": id, "count": n }`: the material is optional (the item's own), and the count is a number or `[least, most]`, a range rolled each time (from the game's seed, so a replay rolls the same). Smashing gives ranges; dismantling gives everything. |
 | `material` | Optional. `kept` (the default): the tile keeps its material. `from_used`: it becomes the material of the first item used (steel scrap makes a steel patch); needs `uses`, and a structure. |
 | `needs` | Optional. Tool levels it needs, all of them, like `{ "WELD": 1 }`, whatever the material. Qualities from `qualities/`. |
 
 ## Crafts (`crafts/*.json`)
 
-How to make items from items in your pockets, on the crafting screen
+How to make items from items in your pockets or in containers within
+reach (a locker beside you), on the crafting screen
 (`C`). You know a craft once you've carried every kind of item it uses at
 some time: pick up your first scrap and the shiv comes to mind.
 
@@ -257,8 +258,8 @@ some time: pick up your first scrap and the shiv comes to mind.
 | `makes` | The item it makes, from `items/`. |
 | `count` | Optional. How many it makes (at least 1). Default 1. |
 | `material` | Optional. `own` (the default): the made item's own material. `from_used`: the material of the first item used, so bone scrap makes a bone shiv; needs `uses`. |
-| `uses` | Optional. Items it uses up from your pockets, written as in recipes, each optionally with a `tag` (only items of a material with it count). Carrying every kind listed here, once, is what teaches you the craft; a craft that uses nothing is always known. |
-| `needs` | Optional. Tool levels it needs, all of them, like `{ "CUT": 1 }`, from anything you carry. |
+| `uses` | Optional. Items it uses up from your pockets first, then from containers within reach, written as in recipes, each optionally with a `tag` (only items of a material with it count). Carrying every kind listed here, once, is what teaches you the craft; a craft that uses nothing is always known. |
+| `needs` | Optional. Tool levels it needs, all of them, like `{ "CUT": 1 }`, from anything you carry or have in a container within reach. |
 | `seconds` | How long it takes (at least 1). Blacking out partway makes nothing and uses nothing. |
 
 What you make goes into your pockets, or falls at your feet if there's no

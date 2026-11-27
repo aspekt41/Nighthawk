@@ -74,6 +74,6 @@ pub use schema::data_schemas;
 pub use sight::Remembered;
 pub use structure::{Structure, StructureError};
 pub use world::{
-    CLIMB_SECONDS, Command, DIAGONAL_STEP_SECONDS, DROP_SECONDS, Event, STEP_SECONDS, Sound,
-    WAIT_SECONDS, World,
+    CLIMB_SECONDS, Command, DIAGONAL_STEP_SECONDS, DROP_SECONDS, Event, REACH, STEP_SECONDS,
+    STORE_SECONDS, Sound, WAIT_SECONDS, World,
 };

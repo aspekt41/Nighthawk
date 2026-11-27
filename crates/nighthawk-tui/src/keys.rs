@@ -48,11 +48,13 @@ pub enum InventoryAction {
     Down,
     /// Drop the highlighted item.
     Drop,
+    /// Put the highlighted item into a container within reach.
+    PutAway,
     Close,
 }
 
 /// The action for a key pressed on the inventory screen: up and down
-/// movement keys choose, `d` drops, Esc, `i` or `q` close.
+/// movement keys choose, `d` drops, `p` puts away, Esc, `i` or `q` close.
 pub fn inventory_action(key: KeyEvent) -> Option<InventoryAction> {
     if !is_press(key) {
         return None;
@@ -60,6 +62,7 @@ pub fn inventory_action(key: KeyEvent) -> Option<InventoryAction> {
     match (key.code, direction(key)) {
         (KeyCode::Esc | KeyCode::Char('i' | 'q'), _) => Some(InventoryAction::Close),
         (KeyCode::Char('d'), _) => Some(InventoryAction::Drop),
+        (KeyCode::Char('p'), _) => Some(InventoryAction::PutAway),
         (_, Some(Dir::North)) => Some(InventoryAction::Up),
         (_, Some(Dir::South)) => Some(InventoryAction::Down),
         _ => None,
@@ -579,6 +582,7 @@ mod tests {
             (KeyCode::Char('j'), Some(InventoryAction::Down)),
             (KeyCode::Down, Some(InventoryAction::Down)),
             (KeyCode::Char('d'), Some(InventoryAction::Drop)),
+            (KeyCode::Char('p'), Some(InventoryAction::PutAway)),
             (KeyCode::Esc, Some(InventoryAction::Close)),
             (KeyCode::Char('i'), Some(InventoryAction::Close)),
             (KeyCode::Char('q'), Some(InventoryAction::Close)),
