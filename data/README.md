@@ -16,7 +16,7 @@ the files in its folder. Mistakes name the folder and the file, for example
 `data/structures: invalid structures file doors.json: missing field "name"`.
 
 The folders load in this order, and each may refer to the ones before it:
-`qualities`, `materials`, `structures`, `items`, `recipes`.
+`qualities`, `actions`, `materials`, `structures`, `items`, `recipes`.
 
 Every tile on a map is a **structure** (what it is: a bulkhead, a door)
 made of a **material** (what it's made of: steel, Nanocarbon Alloy).
@@ -44,6 +44,45 @@ at all.
 | `name` | What it is in words. |
 | `description` | A sentence or two about it. |
 
+## Actions (`actions/*.json`)
+
+What the player can do to a tile, in the interact menu (`e`). Each action
+is a verb with its rules; what it *does* is one of a few built-in effects,
+usually following a recipe (below). The menu lists actions in file order.
+
+```json
+{
+  "actions": [
+    { "id": "cut", "name": "Cut", "key": "x", "reach": 2, "clear_line": true,
+      "tool_from_material": true, "done": "You cut through the {was}." },
+    { "id": "pick_up", "name": "Pick up", "key": "g", "reach": 1, "on_own_tile": true,
+      "effect": "pick_up", "seconds": 2 }
+  ]
+}
+```
+
+| Field | Meaning |
+|---|---|
+| `id` | Unique. How recipes and materials name it. |
+| `name` | How the menu shows it ("Cut"). Lower-cased, it's also the verb in messages: "There's nothing to cut there." |
+| `key` | The key that does it in the menu. Unique, and not a movement key (`hjkl yubn`, arrows, numpad, `.`), nor `V`, `e` or `q`, which put the cursor away. |
+| `reach` | How many steps away it works, diagonals counting as one; at least 1. |
+| `clear_line` | Optional. Something solid on the straight line to the tile blocks it (a laser). |
+| `on_own_tile` | Optional. It can be done to the tile you stand on (picking up). Otherwise you're told to step out first. |
+| `clear_of_items` | Optional. Items lying on the tile block it (they'd end up inside a repair). |
+| `tool_from_material` | Optional. It needs a tool at the level the tile's **material** lists for this action in `worked_by` (an aluminium door: `LASER 1` to cut). A material that lists none can't have it done at all. |
+| `effect` | Optional. `recipe` (the default): follow this action's recipe for the structure there. Or a built-in: `pick_up`, and for now `open_door` and `close_door`. |
+| `seconds` | Only for built-in effects: how long it takes (for picking up, per item). A recipe action takes its time from the recipe. |
+| `done` | Only for recipe actions, and required: the log line when it's done. `{was}` is the structure's name before, `{now}` after: "You cut through the {was}." |
+| `on_bump` | Optional. Walking into a solid tile does this action, if it can be done there (walking into a shut door opens it). |
+| `shortcut` | Optional. Its key also works while playing, followed by a direction (`c` then `l` closes the door to the east). It may not be a key the game already uses while playing (`a t V e i S q Q`). |
+
+Before anything is done the rules are checked in this order, and the first
+that fails is the reason shown: nothing could do it (`tool_from_material`
+and no level listed), your own tile, reach, the line, items lying there,
+then tools (the material's level, then the recipe's `needs`) and items
+(the recipe's `uses`).
+
 ## Materials (`materials/*.json`)
 
 Each material has real physical properties, in whole numbers:
@@ -55,7 +94,7 @@ Each material has real physical properties, in whole numbers:
       "description": "Structural steel: deck plating, ladders and bulkheads.",
       "colour": "grey", "density": 7850, "melting_point": 1450,
       "specific_heat": 490, "thermal_conductivity": 45, "hardness": 150,
-      "cut_by": { "LASER": 2 } }
+      "worked_by": { "cut": { "LASER": 2 } } }
   ]
 }
 ```
@@ -70,7 +109,7 @@ Each material has real physical properties, in whole numbers:
 | `specific_heat` | J/(kg·K) |
 | `thermal_conductivity` | **mW**/(m·K), thousandths of a W/(m·K), so insulators like cotton (40) aren't rounded to zero. Steel is 45000. |
 | `hardness` | Vickers hardness (HV); 0 for soft things like fabric. |
-| `cut_by` | Optional. Tool qualities that cut it, with the level each needs (1 to 10); any one is enough. Leave it out and nothing can cut it. Each must be a quality from `qualities/`. |
+| `worked_by` | Optional. For each action with `tool_from_material`, the tool qualities that can do it to this material and the level each needs (1 to 10); any one is enough. `{ "cut": { "LASER": 2 } }`: cutting it needs `LASER 2`. Leave an action out and nothing can do it to this material. Actions must be from `actions/`, qualities from `qualities/`. |
 
 Mistakes are reported precisely: a duplicate id, or a level out of range.
 
@@ -115,12 +154,13 @@ tile only when a recipe for it exists.
 | Field | Meaning |
 |---|---|
 | `id` | Unique across all recipe files. |
-| `action` | What the player does: `cut`, which needs a tool with whatever quality and level the target's **material** lists in `cut_by` (an aluminium door: `LASER 1`), from within 2 tiles along a clear line; or `repair`, by hand from right beside it, with nothing lying on the tile. |
+| `action` | The action that follows it, from `actions/`; its effect must be `recipe`. The action's rules (reach, line, tools from the material…) apply. Today: `cut` and `repair`. |
 | `from` | The structure it acts on. Only one recipe per action per structure. |
 | `to` | The structure it becomes. |
 | `seconds` | How long it takes (at least 1). If the player blacks out partway, nothing changes and nothing is used. |
 | `uses` | Optional. Items it uses up from your pockets, as `{ "item": id, "count": n }` (n at least 1). The menu shows them ("Repair: 1 scrap") and says if you're short. |
 | `material` | Optional. `kept` (the default): the tile keeps its material. `from_used`: it becomes the material of the first item used (steel scrap makes a steel patch); needs `uses`. |
+| `needs` | Optional. Tool levels it needs, all of them, like `{ "WELD": 1 }`, whatever the material. Qualities from `qualities/`. |
 
 ## Items (`items/*.json`)
 

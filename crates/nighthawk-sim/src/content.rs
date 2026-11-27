@@ -1,6 +1,7 @@
 //! Content: the JSON in `data/` (decisions D17 and D43).
 //!
-//! Each kind of content (qualities, materials, structures, items, recipes) has a
+//! Each kind of content (qualities, actions, materials, structures, items,
+//! recipes) has a
 //! folder, and every `.json` file in it is read, so content can be grouped
 //! into as many files as reads best (`metals.json`, `fabrics.json`…). The
 //! sim never touches the disk (decision D18): the front-end reads the files
@@ -19,18 +20,26 @@ use std::fmt;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
+use crate::action::{self, Action, ActionError, Actions, parse_actions};
 use crate::hash::Fnv64;
 use crate::item::{self, ItemError, ItemType, ItemTypes, parse_items};
 use crate::material::{Material, MaterialError, Materials, parse_materials};
 use crate::quality::{self, Qualities, Quality, QualityError, parse_qualities};
-use crate::recipe::{self, Recipe, RecipeError, Recipes, parse_recipes};
+use crate::recipe::{self, Recipe, RecipeError, RecipeRefs, Recipes, parse_recipes};
 use crate::structure::{Structure, StructureError, Structures, parse_structures};
 
 /// The content folders, in the order they're loaded. A kind may refer to
-/// the kinds before it (materials and items name qualities; structures
-/// name materials; recipes name structures and items), which is why the
-/// order matters.
-pub const CONTENT_FOLDERS: [&str; 5] = ["qualities", "materials", "structures", "items", "recipes"];
+/// the kinds before it (materials name actions and qualities; structures
+/// name materials; items name materials and qualities; recipes name all of
+/// those), which is why the order matters.
+pub const CONTENT_FOLDERS: [&str; 6] = [
+    "qualities",
+    "actions",
+    "materials",
+    "structures",
+    "items",
+    "recipes",
+];
 
 /// One content file: its name, for error messages, and its text.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -90,8 +99,8 @@ pub(crate) fn first_duplicate<'a>(ids: impl Iterator<Item = &'a str>) -> Option<
     ids.into_iter().find(|&id| !seen.insert(id))
 }
 
-/// Everything a game is made of: every tool quality, material, structure,
-/// item type and recipe, checked against each other.
+/// Everything a game is made of: every tool quality, action, material,
+/// structure, item type and recipe, checked against each other.
 ///
 /// The world keeps its own copy, saved with the game, so editing the data
 /// files never changes a game already in progress (decision D35). Tiles,
@@ -100,6 +109,7 @@ pub(crate) fn first_duplicate<'a>(ids: impl Iterator<Item = &'a str>) -> Option<
 #[serde(deny_unknown_fields)]
 pub struct Content {
     pub(crate) qualities: Qualities,
+    pub(crate) actions: Actions,
     pub(crate) materials: Materials,
     pub(crate) structures: Structures,
     pub(crate) item_types: ItemTypes,
@@ -132,17 +142,25 @@ impl Content {
         // Taking the array apart like this ties each step to its place in
         // CONTENT_FOLDERS: a sixth folder there won't compile until it's
         // parsed here too.
-        let [qualities, materials, structures, items, recipes] = files;
+        let [qualities, actions, materials, structures, items, recipes] = files;
         let qualities = parse_qualities(&qualities).map_err(ContentError::Qualities)?;
-        let materials = parse_materials(&materials, &qualities).map_err(ContentError::Materials)?;
+        let actions = parse_actions(&actions).map_err(ContentError::Actions)?;
+        let materials =
+            parse_materials(&materials, &qualities, &actions).map_err(ContentError::Materials)?;
         let structures =
             parse_structures(&structures, &materials).map_err(ContentError::Structures)?;
         let item_types =
             parse_items(&items, &materials, &qualities).map_err(ContentError::Items)?;
-        let recipes =
-            parse_recipes(&recipes, &structures, &item_types).map_err(ContentError::Recipes)?;
+        let refs = RecipeRefs {
+            actions: &actions,
+            qualities: &qualities,
+            structures: &structures,
+            items: &item_types,
+        };
+        let recipes = parse_recipes(&recipes, &refs).map_err(ContentError::Recipes)?;
         Ok(Self {
             qualities,
+            actions,
             materials,
             structures,
             item_types,
@@ -153,6 +171,22 @@ impl Content {
     /// Every tool quality, like LASER.
     pub fn qualities(&self) -> &[Quality] {
         self.qualities.list()
+    }
+
+    /// Every action, in the order the interact menu lists them. Commands
+    /// and events refer to actions by their place in this list.
+    pub fn actions(&self) -> &[Action] {
+        self.actions.list()
+    }
+
+    /// The action with this id, if there is one.
+    pub fn action(&self, id: &str) -> Option<&Action> {
+        self.actions.get(id)
+    }
+
+    /// The number of the action with this id, if there is one.
+    pub fn action_index(&self, id: &str) -> Option<u16> {
+        self.actions.index_of(id)
     }
 
     /// Every material, in the order tiles and items refer to them.
@@ -199,6 +233,7 @@ impl Content {
     /// save carries its own copy (decision D35).
     pub(crate) fn hash_into(&self, h: &mut Fnv64) {
         quality::hash_qualities(self.qualities(), h);
+        action::hash_actions(self.actions(), h);
         h.u64(self.materials().len() as u64);
         for material in self.materials() {
             material.hash_into(h);
@@ -223,6 +258,7 @@ impl Content {
     pub(crate) fn for_tests() -> Self {
         Self {
             qualities: crate::quality::tests::test_qualities(),
+            actions: crate::action::tests::test_actions(),
             materials: crate::material::tests::test_materials(),
             structures: crate::structure::tests::test_structures(),
             item_types: crate::item::tests::test_items(),
@@ -235,6 +271,7 @@ impl Content {
 #[derive(Debug)]
 pub enum ContentError {
     Qualities(QualityError),
+    Actions(ActionError),
     Materials(MaterialError),
     Structures(StructureError),
     Items(ItemError),
@@ -244,9 +281,10 @@ pub enum ContentError {
 impl ContentError {
     /// The folder the mistake is in, like `"materials"`.
     pub fn folder(&self) -> &'static str {
-        let [qualities, materials, structures, items, recipes] = CONTENT_FOLDERS;
+        let [qualities, actions, materials, structures, items, recipes] = CONTENT_FOLDERS;
         match self {
             ContentError::Qualities(_) => qualities,
+            ContentError::Actions(_) => actions,
             ContentError::Materials(_) => materials,
             ContentError::Structures(_) => structures,
             ContentError::Items(_) => items,
@@ -259,6 +297,7 @@ impl fmt::Display for ContentError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             ContentError::Qualities(e) => write!(f, "{e}"),
+            ContentError::Actions(e) => write!(f, "{e}"),
             ContentError::Materials(e) => write!(f, "{e}"),
             ContentError::Structures(e) => write!(f, "{e}"),
             ContentError::Items(e) => write!(f, "{e}"),
@@ -315,6 +354,7 @@ mod tests {
             "qualities" => {
                 r#"{ "qualities": [ { "id": "LASER", "name": "laser", "description": "L." } ] }"#
             }
+            "actions" => r#"{ "actions": [] }"#,
             "materials" => {
                 r#"{ "materials": [ { "id": "steel", "name": "Steel", "description": "S.",
                      "colour": "grey", "density": 7850, "specific_heat": 490,
@@ -344,6 +384,7 @@ mod tests {
         assert_eq!(asked, CONTENT_FOLDERS);
         assert_eq!(content.qualities()[0].id, "LASER");
         assert_eq!(content.quality_index("LASER"), Some(0));
+        assert!(content.actions().is_empty());
         assert_eq!(content.materials()[0].id, "steel");
         assert_eq!(content.structures()[0].id, "deck");
         assert_eq!(content.item_types()[0].id, "bolt");

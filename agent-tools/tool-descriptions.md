@@ -61,6 +61,10 @@ EDITS
 - Every OLD must match exactly one place. If any edit misses or matches
   more than once, nothing is written, and the error gives the line of the
   closest text or every matching line.
+- A match must start and end at word edges: `Action::Cut` doesn't match
+  inside `RecipeAction::Cut`, nor `cut` inside `cutter`. (A rename with
+  `--all` once turned `RecipeAction::Cut` into `RecipeCUT`.) If the only
+  matches are inside longer words, the error says so.
 - If OLD ends in a comma, the file's comma after the match is replaced
   too, so NEW's own comma doesn't make two.
 - If the edited file no longer parses (rustfmt fails), it's put back as it

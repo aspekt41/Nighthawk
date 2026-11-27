@@ -10,20 +10,22 @@
 //!
 //! Materials are content, loaded from `data/materials/*.json`. Each has real
 //! physical properties in SI units, as whole numbers (like the air, so every
-//! machine computes the same game), and the tool qualities that can cut it,
-//! CDDA-style (decision D9): `"cut_by": { "LASER": 2 }` means a cutter with
-//! the `LASER` quality at level 2 or more gets through. The levels are set
-//! by hand and tuned as the game grows. The qualities themselves are
-//! content too (`data/qualities/`, see `quality.rs`), so `cut_by` may only
-//! name qualities from there.
+//! machine computes the same game), and what it takes to work it with each
+//! action that needs a tool, CDDA-style (decision D9): `"worked_by": {
+//! "cut": { "LASER": 2 } }` means cutting it needs a tool with the `LASER`
+//! quality at level 2 or more. The levels are set by hand and tuned as the
+//! game grows. Actions and qualities are content too (`data/actions/`,
+//! `data/qualities/`), so `worked_by` may only name ones from there.
 //!
 //! Materials live in `data/materials/*.json`. Which material a structure is
 //! made of by default is up to the structure (see `structure.rs`).
 
+use std::collections::BTreeMap;
 use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
+use crate::action::Actions;
 use crate::content::{ContentFile, FileError, first_duplicate, read_all};
 use crate::hash::Fnv64;
 use crate::quality::{LevelError, Levels, Qualities, hash_levels};
@@ -82,7 +84,7 @@ pub struct Material {
     /// The tool qualities that cut it, and the level each needs. Any one
     /// is enough. Empty means nothing can cut it.
     #[serde(default)]
-    pub cut_by: Levels,
+    pub worked_by: BTreeMap<String, Levels>,
 }
 
 impl Material {
@@ -96,7 +98,11 @@ impl Material {
             .u64(u64::from(self.specific_heat))
             .u64(u64::from(self.thermal_conductivity))
             .u64(u64::from(self.hardness));
-        hash_levels(&self.cut_by, h);
+        h.u64(self.worked_by.len() as u64);
+        for (action, levels) in &self.worked_by {
+            h.str(action);
+            hash_levels(levels, h);
+        }
     }
 }
 
@@ -144,10 +150,22 @@ pub enum MaterialError {
     DuplicateId {
         id: String,
     },
-    /// Its `cut_by` names a quality that doesn't exist, or a level out of
-    /// range.
-    CutBy {
+    /// Its `worked_by` names an action that doesn't exist.
+    UnknownAction {
         material: String,
+        action: String,
+    },
+    /// Its `worked_by` lists an action with no levels at all. (Leave the
+    /// action out instead: then nothing can do it.)
+    NoLevels {
+        material: String,
+        action: String,
+    },
+    /// Its `worked_by` names a quality that doesn't exist, or a level out
+    /// of range.
+    WorkedBy {
+        material: String,
+        action: String,
         error: LevelError,
     },
 }
@@ -161,9 +179,20 @@ impl fmt::Display for MaterialError {
                 write!(f, "{count} materials is too many; the most is {}", u16::MAX)
             }
             MaterialError::DuplicateId { id } => write!(f, "material {id:?} is defined twice"),
-            MaterialError::CutBy { material, error } => {
-                write!(f, "material {material:?}'s cut_by: {error}")
-            }
+            MaterialError::UnknownAction { material, action } => write!(
+                f,
+                "material {material:?}'s worked_by names {action:?}, which isn't an action"
+            ),
+            MaterialError::NoLevels { material, action } => write!(
+                f,
+                "material {material:?}'s worked_by {action:?} lists no levels; leave it out if \
+                 nothing can do it"
+            ),
+            MaterialError::WorkedBy {
+                material,
+                action,
+                error,
+            } => write!(f, "material {material:?}'s worked_by {action:?}: {error}"),
         }
     }
 }
@@ -177,15 +206,17 @@ struct MaterialsFile {
     materials: Vec<Material>,
 }
 
-/// Parses and checks every materials file. What cuts each must be among
-/// `qualities`.
+/// Parses and checks every materials file. Each `worked_by` may only name
+/// `actions`, with levels of `qualities`.
 pub(crate) fn parse_materials(
     files: &[ContentFile],
     qualities: &Qualities,
+    actions: &Actions,
 ) -> Result<Materials, MaterialError> {
     let list = read_all(files, |f: MaterialsFile| f.materials).map_err(MaterialError::File)?;
     check_list(&list)?;
-    list.iter().try_for_each(|m| check_levels(m, qualities))?;
+    list.iter()
+        .try_for_each(|m| check_worked_by(m, qualities, actions))?;
     Ok(Materials { list })
 }
 
@@ -204,37 +235,58 @@ fn check_list(list: &[Material]) -> Result<(), MaterialError> {
     Ok(())
 }
 
-fn check_levels(material: &Material, qualities: &Qualities) -> Result<(), MaterialError> {
-    qualities
-        .check(&material.cut_by)
-        .map_err(|error| MaterialError::CutBy {
-            material: material.id.clone(),
-            error,
-        })
+/// Checks one material's `worked_by`: real actions, real qualities, and
+/// levels in range.
+fn check_worked_by(
+    material: &Material,
+    qualities: &Qualities,
+    actions: &Actions,
+) -> Result<(), MaterialError> {
+    for (action, levels) in &material.worked_by {
+        let names = || (material.id.clone(), action.clone());
+        if actions.index_of(action).is_none() {
+            let (material, action) = names();
+            return Err(MaterialError::UnknownAction { material, action });
+        }
+        if levels.is_empty() {
+            let (material, action) = names();
+            return Err(MaterialError::NoLevels { material, action });
+        }
+        qualities
+            .check(levels)
+            .map_err(|error| MaterialError::WorkedBy {
+                material: material.id.clone(),
+                action: action.clone(),
+                error,
+            })?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+    use crate::action::tests::test_actions;
     use crate::quality::tests::test_qualities;
 
-    /// A material with every property filled in, for tests.
-    fn material(id: &str, cut_by: &str) -> String {
+    /// A material with every property filled in, for tests. `worked_by`
+    /// is its JSON, like `{ "cut": { "LASER": 2 } }`.
+    fn material(id: &str, worked_by: &str) -> String {
         format!(
             r#"{{ "id": "{id}", "name": "{id}", "description": "A test material.",
                  "colour": "grey", "density": 1000, "melting_point": 1000,
                  "specific_heat": 500, "thermal_conductivity": 10000, "hardness": 100,
-                 "cut_by": {cut_by} }}"#
+                 "worked_by": {worked_by} }}"#
         )
     }
 
-    /// A small, valid materials file: steel (LASER 2) and a hard alloy
-    /// (LASER 5).
+    /// A small, valid materials file: steel (cut with LASER 2) and a hard
+    /// alloy (cut with LASER 5).
     pub(crate) fn test_materials_json() -> String {
         format!(
             r#"{{ "materials": [ {}, {} ] }}"#,
-            material("steel", r#"{ "LASER": 2 }"#),
-            material("hard_alloy", r#"{ "LASER": 5 }"#),
+            material("steel", r#"{ "cut": { "LASER": 2 } }"#),
+            material("hard_alloy", r#"{ "cut": { "LASER": 5 } }"#),
         )
     }
 
@@ -243,12 +295,17 @@ pub(crate) mod tests {
         parse_materials(
             &[ContentFile::new("test.json", test_materials_json())],
             &test_qualities(),
+            &test_actions(),
         )
         .expect("test materials are valid")
     }
 
     fn parse_one(json: &str) -> Result<Materials, MaterialError> {
-        parse_materials(&[ContentFile::new("metals.json", json)], &test_qualities())
+        parse_materials(
+            &[ContentFile::new("metals.json", json)],
+            &test_qualities(),
+            &test_actions(),
+        )
     }
 
     #[test]
@@ -258,7 +315,7 @@ pub(crate) mod tests {
         assert_eq!(materials.index_of("hard_alloy"), Some(1));
         assert_eq!(materials.index_of("cheese"), None);
         let alloy = &materials.list()[1];
-        assert_eq!(alloy.cut_by.get("LASER"), Some(&5));
+        assert_eq!(alloy.worked_by["cut"].get("LASER"), Some(&5));
     }
 
     #[test]
@@ -273,18 +330,18 @@ pub(crate) mod tests {
                 format!(r#"{{ "materials": [ {} ] }}"#, material("cotton", "{}")),
             ),
         ];
-        let materials = parse_materials(&files, &test_qualities()).unwrap();
+        let materials = parse_materials(&files, &test_qualities(), &test_actions()).unwrap();
         assert_eq!(materials.index_of("cotton"), Some(1), "file order");
     }
 
     #[test]
-    fn cut_by_is_optional_and_empty_means_uncuttable() {
+    fn worked_by_is_optional_and_empty_means_nothing_works_it() {
         let json = format!(
             r#"{{ "materials": [ {} ] }}"#,
-            material("x", "{}").replace(r#", "cut_by": {}"#, "")
+            material("x", "{}").replace(r#", "worked_by": {}"#, "")
         );
         let materials = parse_one(&json).unwrap();
-        assert!(materials.list()[0].cut_by.is_empty());
+        assert!(materials.list()[0].worked_by.is_empty());
     }
 
     fn error_of(json: &str) -> String {
@@ -301,21 +358,30 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn cut_by_may_only_name_qualities_from_the_qualities_folder() {
+    fn worked_by_may_only_name_real_actions_and_qualities() {
         let quality = test_materials_json().replace("LASER\": 5", "SPOON\": 5");
         assert_eq!(
             error_of(&quality),
-            r#"material "hard_alloy"'s cut_by: "SPOON" isn't a quality"#
+            r#"material "hard_alloy"'s worked_by "cut": "SPOON" isn't a quality"#
         );
         let welded = test_materials_json().replace("LASER\": 5", "WELD\": 5");
         assert!(parse_one(&welded).is_ok(), "any quality there is fine");
+        let action =
+            test_materials_json().replace(r#"{ "cut": { "LASER": 5"#, r#"{ "melt": { "LASER": 5"#);
+        assert_eq!(
+            error_of(&action),
+            r#"material "hard_alloy"'s worked_by names "melt", which isn't an action"#
+        );
+        let empty =
+            test_materials_json().replace(r#"{ "cut": { "LASER": 5 } }"#, r#"{ "cut": {} }"#);
+        assert!(error_of(&empty).ends_with("lists no levels; leave it out if nothing can do it"));
     }
 
     #[test]
     fn no_materials_at_all_is_an_error() {
         assert_eq!(error_of(r#"{ "materials": [] }"#), "there are no materials");
         assert!(matches!(
-            parse_materials(&[], &test_qualities()),
+            parse_materials(&[], &test_qualities(), &test_actions()),
             Err(MaterialError::NoMaterials)
         ));
     }
@@ -337,7 +403,7 @@ pub(crate) mod tests {
             assert_eq!(
                 error_of(&json),
                 format!(
-                    r#"material "hard_alloy"'s cut_by: LASER {level} is out of range; levels go from 1 to 10"#
+                    r#"material "hard_alloy"'s worked_by "cut": LASER {level} is out of range; levels go from 1 to 10"#
                 )
             );
         }
@@ -365,7 +431,7 @@ pub(crate) mod tests {
             |m| m.melting_point = None,
             |m| m.colour = Colour::Red,
             |m| m.hardness += 1,
-            |m| m.cut_by.clear(),
+            |m| m.worked_by.clear(),
             |m| m.name.push('!'),
         ];
         for change in changes {

@@ -182,14 +182,34 @@ class ReplaceTests(TempFile):
         self.assertIn("matches nowhere", err)
 
     def test_all_counts_overlapping_matches_once(self):
-        path = self.file("a.txt", "aaa\n")
-        status, _, _ = self.replace(path, edit_block("aa", "b"), "--all")
+        path = self.file("a.txt", "---\n")
+        status, _, _ = self.replace(path, edit_block("--", "="), "--all")
         self.assertEqual(status, 0)
-        self.assertEqual(path.read_text(), "ba\n")
-        path = self.file("b.txt", "aaa\n")
-        status, _, err = self.replace(path, edit_block("aa", "b"))
+        self.assertEqual(path.read_text(), "=-\n")
+        path = self.file("b.txt", "---\n")
+        status, _, err = self.replace(path, edit_block("--", "="))
         self.assertEqual(status, 1, "without --all, overlapping matches are ambiguous")
         self.assertIn("matches 2 places", err)
+
+    def test_a_match_never_starts_or_ends_inside_a_longer_word(self):
+        # The bug this guards against: renaming `Action::Cut` with --all
+        # also turned `RecipeAction::Cut` into `RecipeCUT`.
+        text = "use RecipeAction::Cut;\nlet a = Action::Cut;\nlet b = Action::Cutter;\n"
+        path = self.file("a.rs", text)
+        status, out, _ = self.replace(path, edit_block("Action::Cut", "CUT"), "--all")
+        self.assertEqual(status, 0, out)
+        self.assertEqual(
+            path.read_text(),
+            "use RecipeAction::Cut;\nlet a = CUT;\nlet b = Action::Cutter;\n",
+        )
+        path = self.file("b.rs", "let cutter = 1;\n")
+        status, _, err = self.replace(path, edit_block("cut", "chop"))
+        self.assertEqual(status, 1)
+        self.assertIn("matches only inside longer words (lines 1)", err)
+        path = self.file("c.rs", "x.cut(1);\n")
+        status, _, _ = self.replace(path, edit_block(".cut(", ".chop("))
+        self.assertEqual(status, 0, "OLD starting with punctuation can follow a word")
+        self.assertEqual(path.read_text(), "x.chop(1);\n")
 
     def test_dots_in_old_stand_for_everything_between(self):
         path = self.file("a.rs", RUST)

@@ -18,6 +18,14 @@ fn start_world() -> World {
     common::start_world(1)
 }
 
+/// The number of the shipped action with this id, like `"close"`.
+fn action(world: &World, id: &str) -> u16 {
+    world
+        .content()
+        .action_index(id)
+        .unwrap_or_else(|| panic!("no action {id:?}"))
+}
+
 fn pressure(world: &World, at: Pos) -> u64 {
     world.map().air(at).unwrap().total()
 }
@@ -75,7 +83,10 @@ fn closing_the_door_again_stops_the_loss() {
     walk_to_the_door(&mut world);
     world.apply(Command::Move(Dir::South)); // open
     wait(&mut world, 4);
-    world.apply(Command::Close(Dir::South)); // shut it
+    world.apply(Command::Interact {
+        at: DOOR,
+        action: action(&world, "close"),
+    }); // shut it, as `c` then south does
 
     let sealed = pressure(&world, OUTSIDE_THE_DOOR);
     let events = wait(&mut world, 12);
@@ -109,11 +120,10 @@ const CRACK: Pos = Pos::new(23, 0, 1); // in the top-middle crew room's hull
 /// the corridor, through the crew room's door at (22, 4), and stand just
 /// inside the crack at (23, 1).
 fn walk_to_the_crack(world: &mut World) {
-    use nighthawk_sim::Action;
     world.apply(Command::Move(Dir::SouthWest));
     world.apply(Command::Interact {
         at: Pos::new(9, 9, 0),
-        action: Action::PickUp,
+        action: action(world, "pick_up"),
     });
     let route = std::iter::repeat_n(Command::Move(Dir::North), 6)
         .chain(std::iter::repeat_n(Command::Move(Dir::East), 24))
@@ -131,7 +141,6 @@ fn walk_to_the_crack(world: &mut World) {
 
 #[test]
 fn one_scrap_patches_the_crew_deck_crack_and_stops_the_leak() {
-    use nighthawk_sim::Action;
     let mut world = start_world();
     walk_to_the_crack(&mut world);
     assert_eq!(world.structure_at(CRACK).unwrap().id, "hull_crack");
@@ -142,12 +151,18 @@ fn one_scrap_patches_the_crew_deck_crack_and_stops_the_leak() {
     assert!(pressure(&world, here) < leaking, "the crack leaks at first");
 
     let before = world.seconds();
+    let repair = action(&world, "repair");
     let events = world.apply(Command::Interact {
         at: CRACK,
-        action: Action::Repair,
+        action: repair,
     });
     let last = events.last().copied();
-    assert!(matches!(last, Some(Event::Repaired { at, .. }) if at == CRACK));
+    let repaired = Event::Transformed {
+        at: CRACK,
+        action: repair,
+        was: world.content().structure_index("hull_crack").unwrap(),
+    };
+    assert_eq!(last, Some(repaired));
     assert_eq!(world.seconds() - before, 60, "a minute");
     assert_eq!(world.carried_count(scrap), 3);
     assert_eq!(world.structure_at(CRACK).unwrap().id, "hull_plating");

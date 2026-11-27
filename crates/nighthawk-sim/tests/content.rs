@@ -12,6 +12,14 @@ use std::path::PathBuf;
 
 use nighthawk_sim::{Dir, LoadedMap, MapError, Pos, Tile, Vertical, parse_map};
 
+/// The number of the shipped action with this id, like `"cut"`.
+fn action(world: &nighthawk_sim::World, id: &str) -> u16 {
+    world
+        .content()
+        .action_index(id)
+        .unwrap_or_else(|| panic!("no action {id:?}"))
+}
+
 fn maps_dir() -> PathBuf {
     // CARGO_MANIFEST_DIR is this crate's folder, crates/nighthawk-sim.
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../data/maps")
@@ -207,7 +215,11 @@ fn the_shipped_materials_have_the_agreed_laser_levels() {
     let content = common::content();
     let level = |id: &str| {
         let i = usize::from(content.material_index(id).unwrap());
-        content.materials()[i].cut_by.get("LASER").copied()
+        content.materials()[i]
+            .worked_by
+            .get("cut")
+            .and_then(|levels| levels.get("LASER"))
+            .copied()
     };
     assert_eq!(level("aluminium_alloy"), Some(1));
     assert_eq!(level("steel"), Some(2));
@@ -269,13 +281,13 @@ fn a_laser_cutter_and_four_steel_scraps_lie_near_the_start() {
 fn the_basic_laser_cuts_the_side_room_door_into_a_damaged_door() {
     // Pick up the laser cutter two steps east, walk back to two tiles from
     // the side room's door at (6, 7), and cut it.
-    use nighthawk_sim::{Action, Command, Event};
+    use nighthawk_sim::{Command, Event};
     let mut world = common::start_world(1);
     let laser = Pos::new(12, 7, 0);
     world.apply(Command::Move(Dir::East));
     world.apply(Command::Interact {
         at: laser,
-        action: Action::PickUp,
+        action: action(&world, "pick_up"),
     });
     for _ in 0..3 {
         world.apply(Command::Move(Dir::West));
@@ -283,12 +295,15 @@ fn the_basic_laser_cuts_the_side_room_door_into_a_damaged_door() {
     assert_eq!(world.player(), Pos::new(8, 7, 0));
     let door = Pos::new(6, 7, 0);
     let before = world.seconds();
+    let cut = action(&world, "cut");
     let events = world.apply(Command::Interact {
         at: door,
-        action: Action::Cut,
+        action: cut,
     });
     let last = events.last().copied();
-    assert!(matches!(last, Some(Event::CutThrough { at, .. }) if at == door));
+    assert!(
+        matches!(last, Some(Event::Transformed { at, action, .. }) if at == door && action == cut)
+    );
     assert_eq!(world.seconds() - before, 120, "two minutes");
     assert_eq!(world.structure_at(door).unwrap().id, "damaged_door");
     assert_eq!(world.material_at(door).unwrap().id, "aluminium_alloy");
@@ -297,27 +312,32 @@ fn the_basic_laser_cuts_the_side_room_door_into_a_damaged_door() {
 
 #[test]
 fn two_scraps_repair_the_cut_side_room_door() {
-    use nighthawk_sim::{Action, Command, Event};
+    use nighthawk_sim::{Command, Event};
     let mut world = common::start_world(1);
     let door = Pos::new(6, 7, 0);
+    let (pick_up, cut, repair) = (
+        action(&world, "pick_up"),
+        action(&world, "cut"),
+        action(&world, "repair"),
+    );
     // Pick up the laser, cut the door from two tiles away (as above), then
     // fetch the scrap at (9, 9) and come back to stand beside the door.
     world.apply(Command::Move(Dir::East));
     world.apply(Command::Interact {
         at: Pos::new(12, 7, 0),
-        action: Action::PickUp,
+        action: pick_up,
     });
     for _ in 0..3 {
         world.apply(Command::Move(Dir::West));
     }
     world.apply(Command::Interact {
         at: door,
-        action: Action::Cut,
+        action: cut,
     });
     world.apply(Command::Move(Dir::SouthEast));
     world.apply(Command::Interact {
         at: Pos::new(9, 9, 0),
-        action: Action::PickUp,
+        action: pick_up,
     });
     world.apply(Command::Move(Dir::NorthWest));
     world.apply(Command::Move(Dir::West));
@@ -328,10 +348,12 @@ fn two_scraps_repair_the_cut_side_room_door() {
     let before = world.seconds();
     let events = world.apply(Command::Interact {
         at: door,
-        action: Action::Repair,
+        action: repair,
     });
     let last = events.last().copied();
-    assert!(matches!(last, Some(Event::Repaired { at, .. }) if at == door));
+    assert!(
+        matches!(last, Some(Event::Transformed { at, action, .. }) if at == door && action == repair)
+    );
     assert_eq!(world.seconds() - before, 180, "three minutes");
     assert_eq!(world.carried_count(scrap), 2, "two scraps used");
     assert_eq!(world.structure_at(door).unwrap().id, "door");

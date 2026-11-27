@@ -22,23 +22,48 @@ const SEED: u64 = 0x4e49_4748_5448_4157; // "NIGHTHAW" in ASCII
 const TURNS: usize = 500;
 
 /// The stored fingerprints. See "If this test fails" above.
-const EXPECTED_STATE_HASH: u64 = 0x3d7e_d637_9fdc_18a4;
+const EXPECTED_STATE_HASH: u64 = 0x2a4a_aa8b_efa2_319d;
 const EXPECTED_AMBIENT_COUNT: usize = 74;
 
 fn start_world() -> World {
     common::start_world(SEED)
 }
 
+/// One step of the script: a command, or closing the door next to the
+/// player in a direction, the way the `c` key does. That needs the world:
+/// which tile is "that way" depends on where the player is by then.
+#[derive(Clone, Copy)]
+enum Step {
+    Do(Command),
+    Close(Dir),
+}
+
+/// Plays one step.
+fn apply(world: &mut World, step: Step) -> Vec<Event> {
+    let command = match step {
+        Step::Do(command) => command,
+        Step::Close(dir) => Command::Interact {
+            at: world.player().step(dir),
+            action: world
+                .content()
+                .action_index("close")
+                .expect("a close action"),
+        },
+    };
+    world.apply(command)
+}
+
 /// A fixed script: walk to the ladder, then loop around it forever,
 /// walking, waiting, bumping walls, climbing both ways, and opening and
 /// closing a door. It isn't random:
 /// the same list every run.
-fn script() -> impl Iterator<Item = Command> {
-    use Command::{Climb, Close, Move, Wait};
-    // From the start (4, 7) to the ladder at (27, 2), then up.
+fn script() -> impl Iterator<Item = Step> {
+    use Command::{Climb, Move, Wait};
+    // From the start (10, 7) to the ladder at (33, 2), then up.
     let to_the_ladder = std::iter::repeat_n(Move(Dir::North), 5)
         .chain(std::iter::repeat_n(Move(Dir::East), 23))
-        .chain([Climb(Vertical::Up)]);
+        .chain([Climb(Vertical::Up)])
+        .map(Step::Do);
     // A small loop that starts and ends on the ladder, on either deck.
     let around = [
         Move(Dir::East),
@@ -48,15 +73,17 @@ fn script() -> impl Iterator<Item = Command> {
         Move(Dir::West),
         Move(Dir::West),
         Move(Dir::North),
-    ];
+    ]
+    .map(Step::Do);
     // North into the wall twice (no time passes), then back to the ladder.
     let bump_and_back = [
         Move(Dir::North),
         Move(Dir::North),
         Move(Dir::North),
         Move(Dir::South),
-    ];
-    // On the crew deck: down the corridor to the door at (27, 7), open it,
+    ]
+    .map(Step::Do);
+    // On the crew deck: down the corridor to the door at (33, 7), open it,
     // walk through and back, close it behind you, and return to the ladder.
     let door_trip = std::iter::repeat_n(Move(Dir::South), 4)
         .chain([
@@ -65,23 +92,24 @@ fn script() -> impl Iterator<Item = Command> {
             Move(Dir::South), // into the room beyond
             Move(Dir::North),
             Move(Dir::North),
-            Close(Dir::South),
         ])
-        .chain(std::iter::repeat_n(Move(Dir::North), 4));
+        .map(Step::Do)
+        .chain([Step::Close(Dir::South)])
+        .chain(std::iter::repeat_n(Step::Do(Move(Dir::North)), 4));
     let pattern = door_trip
         .chain(around)
-        .chain([Climb(Vertical::Down)])
+        .chain([Step::Do(Climb(Vertical::Down))])
         .chain(bump_and_back)
         .chain(around)
-        .chain([Climb(Vertical::Up), Climb(Vertical::Up)]); // the second can't
-    let pattern: Vec<Command> = pattern.collect();
+        .chain([Climb(Vertical::Up), Climb(Vertical::Up)].map(Step::Do)); // the second can't
+    let pattern: Vec<Step> = pattern.collect();
     to_the_ladder.chain(pattern.into_iter().cycle()).take(TURNS)
 }
 
 /// Plays the script and returns the final world and every event it produced.
 fn play() -> (World, Vec<Event>) {
     let mut world = start_world();
-    let events = script().flat_map(|c| world.apply(c)).collect();
+    let events = script().flat_map(|s| apply(&mut world, s)).collect();
     (world, events)
 }
 
@@ -118,11 +146,15 @@ fn saving_and_loading_halfway_changes_nothing() {
     let mut world = start_world();
     let mut events: Vec<Event> = script()
         .take(TURNS / 2)
-        .flat_map(|c| world.apply(c))
+        .flat_map(|s| apply(&mut world, s))
         .collect();
 
     let mut resumed = load_from_str(&save_to_string(&world)).expect("save loads");
-    events.extend(script().skip(TURNS / 2).flat_map(|c| resumed.apply(c)));
+    events.extend(
+        script()
+            .skip(TURNS / 2)
+            .flat_map(|s| apply(&mut resumed, s)),
+    );
 
     let (uninterrupted, uninterrupted_events) = play();
     assert_eq!(resumed.state_hash(), EXPECTED_STATE_HASH);
@@ -134,8 +166,8 @@ fn saving_and_loading_halfway_changes_nothing() {
 fn saving_after_every_command_changes_nothing() {
     // The harshest version: save and reload after every single command.
     let mut world = start_world();
-    for command in script() {
-        world.apply(command);
+    for step in script() {
+        apply(&mut world, step);
         world = load_from_str(&save_to_string(&world)).expect("save loads");
     }
     assert_eq!(world.state_hash(), EXPECTED_STATE_HASH);
@@ -177,8 +209,8 @@ fn air_is_never_created_or_destroyed() {
     // air the ship started with, down to the last pascal.
     let start = start_world().map().total_air();
     let mut world = start_world();
-    for command in script() {
-        world.apply(command);
+    for step in script() {
+        apply(&mut world, step);
         let (on_board, vented) = (world.map().total_air(), world.map().vented());
         let accounted = [0, 1, 2].map(|g| on_board[g] + vented[g]);
         assert_eq!(accounted, start, "after {} seconds", world.seconds());
@@ -196,8 +228,8 @@ fn heat_is_never_created_or_destroyed() {
     // lost must always equal what the ship started with, to the last unit.
     let start = start_world().map().total_heat();
     let mut world = start_world();
-    for command in script() {
-        world.apply(command);
+    for step in script() {
+        apply(&mut world, step);
         let accounted = world.map().total_heat() + world.map().heat_lost();
         assert_eq!(accounted, start, "after {} seconds", world.seconds());
     }

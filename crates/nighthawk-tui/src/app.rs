@@ -5,9 +5,7 @@
 //! action means on the current screen. There's no terminal code here, so all
 //! of it can be tested directly.
 
-use nighthawk_sim::{
-    Action, ActionOption, Cause, Command, DateTime, LoadedMap, Pos, World, options_at,
-};
+use nighthawk_sim::{ActionOption, Cause, Command, DateTime, LoadedMap, Pos, World, options_at};
 use ratatui::crossterm::event::KeyEvent;
 
 use crate::keys::{self, CursorAction, GameAction, InventoryAction, TitleAction};
@@ -43,8 +41,9 @@ pub struct App {
     /// Picks the seed for a new game. In the real game it reads the clock;
     /// tests pass a function that returns a fixed number.
     new_seed: fn() -> u64,
-    /// True after `c`, while the game waits for the direction to close.
-    asking_close_direction: bool,
+    /// After a shortcut key (`c` to close a door), the number of its
+    /// action, while the game waits for a direction to do it in.
+    asking_direction: Option<u16>,
     /// Which overlay the map shows, if any. A view setting, not part of
     /// the game, so it isn't saved.
     pub overlay: Option<Overlay>,
@@ -72,7 +71,7 @@ impl App {
             slot,
             start_map,
             new_seed,
-            asking_close_direction: false,
+            asking_direction: None,
             overlay: None,
             cursor: None,
             inventory: None,
@@ -90,8 +89,8 @@ impl App {
         if !keys::is_press(key) {
             return;
         }
-        if self.asking_close_direction {
-            self.answer_close_direction(key);
+        if let Some(action) = self.asking_direction {
+            self.answer_direction(key, action);
             return;
         }
         if self.inventory.is_some() {
@@ -101,7 +100,7 @@ impl App {
             return;
         }
         if self.cursor.is_some() {
-            if let Some(action) = keys::cursor_action(key) {
+            if let Some(action) = keys::cursor_action(key, self.actions()) {
                 self.on_cursor(action);
             }
             return;
@@ -113,10 +112,19 @@ impl App {
                 }
             }
             Screen::Playing(_) => {
-                if let Some(action) = keys::game_action(key) {
+                if let Some(action) = keys::game_action(key, self.actions()) {
                     self.on_game(action);
                 }
             }
+        }
+    }
+
+    /// The actions of the game being played (from `data/actions/`), or
+    /// none on the title menu.
+    fn actions(&self) -> &[nighthawk_sim::Action] {
+        match &self.screen {
+            Screen::Playing(world) => world.content().actions(),
+            Screen::Title(_) => &[],
         }
     }
 
@@ -155,9 +163,15 @@ impl App {
             | GameAction::Look
             | GameAction::Interact
             | GameAction::Inventory => self.change_view(action),
-            GameAction::BeginClose => {
-                self.asking_close_direction = true;
-                self.push_log("Close which way? (a direction key; anything else cancels)".into());
+            GameAction::BeginShortcut(action) => {
+                let name = match &self.screen {
+                    Screen::Playing(world) => text::action_name(world, action).to_string(),
+                    Screen::Title(_) => return,
+                };
+                self.asking_direction = Some(action);
+                self.push_log(format!(
+                    "{name} which way? (a direction key; anything else cancels)"
+                ));
             }
         }
     }
@@ -230,7 +244,7 @@ impl App {
     /// Does `chosen` (or, for `None`, the first action that can be done)
     /// to the tile at `at`, and puts the cursor away. If it can't be done,
     /// says why and leaves the cursor up, so you can pick something else.
-    fn choose_action(&mut self, at: Pos, chosen: Option<Action>) {
+    fn choose_action(&mut self, at: Pos, chosen: Option<u16>) {
         let Screen::Playing(world) = &self.screen else {
             return;
         };
@@ -247,9 +261,9 @@ impl App {
         let refusal = match pick {
             None => Some("There's nothing to do with that here.".to_string()),
             Some(&ActionOption {
+                action,
                 blocked: Some(blocked),
-                ..
-            }) => Some(text::blocked_text(blocked, Some(world))),
+            }) => Some(text::blocked_text(blocked, action, Some(world))),
             Some(_) => None,
         };
         match (refusal, pick) {
@@ -272,14 +286,19 @@ impl App {
         };
     }
 
-    /// The key after `c`: a direction closes the door that way; any other
-    /// key cancels, costing nothing.
-    fn answer_close_direction(&mut self, key: KeyEvent) {
-        self.asking_close_direction = false;
-        match keys::direction(key) {
-            Some(dir) => self.apply(Command::Close(dir)),
-            None => self.push_log("Never mind.".into()),
-        }
+    /// The key after a shortcut key: a direction does action number
+    /// `action` to the tile that way (`c` then `l` closes the door to the
+    /// east); any other key cancels, costing nothing.
+    fn answer_direction(&mut self, key: KeyEvent, action: u16) {
+        self.asking_direction = None;
+        let at = match (&self.screen, keys::direction(key)) {
+            (Screen::Playing(world), Some(dir)) => world.player().step(dir),
+            _ => {
+                self.push_log("Never mind.".into());
+                return;
+            }
+        };
+        self.apply(Command::Interact { at, action });
     }
 
     fn choose(&mut self, item: MenuItem) {
@@ -789,7 +808,8 @@ mod tests {
             world(&app).map().get(DOOR),
             Some(nighthawk_sim::Tile::DoorClosed)
         );
-        assert_eq!(world(&app).seconds(), before + nighthawk_sim::DOOR_SECONDS);
+        // The shipped close action takes 2 seconds.
+        assert_eq!(world(&app).seconds(), before + 2);
         assert!(app.log.iter().any(|l| l == "You close the door."));
     }
 

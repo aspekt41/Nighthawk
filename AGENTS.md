@@ -179,13 +179,16 @@ precise error and exits with code 1 before entering raw mode.
 - **Test maps and content.** In the sim's unit tests, import
   `crate::map_file::parse_map_for_tests as parse_map`: it parses with a
   small test set (`Content::for_tests()`) of qualities (`LASER`, `WELD`),
-  materials, structures (one per behaviour, named after
+  actions (open, close, cut, repair, pick up, weld; their numbers are
+  `OPEN`, `CLOSE`, `CUT`… in `crate::action::tests`), materials,
+  structures (one per behaviour, named after
   it: `"wall"`, `"floor"`, `"door"`…, plus `"frame"`, a floor) and items
   (`"suit"` with two 1 L pockets, `"cutter"` with LASER 1, `"scrap"`) and
   recipes (cutting a `"door"` or a `"wall"` leaves `"floor"`, in 60 s;
   repairing a `"hull_crack"` with 2 scrap makes a `"wall"` of the scrap's
   material, in 30 s; repairing a `"frame"` with 1 scrap makes a `"door"`,
-  in 20 s), and puts the player on
+  in 20 s; welding a `"hull_crack"` with WELD 2 makes a `"wall"`, in 40 s),
+  and puts the player on
   `"floor"` if the legend doesn't say what `@` is. Integration tests share
   `crates/nighthawk-sim/tests/common/mod.rs`, which loads the real `data/`;
   every test file must call `common::start_world` so no helper is unused

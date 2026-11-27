@@ -10,8 +10,10 @@
       "specific_heat": 490,
       "thermal_conductivity": 45000,
       "hardness": 150,
-      "cut_by": {
-        "LASER": 2
+      "worked_by": {
+        "cut": {
+          "LASER": 2
+        }
       }
     },
     {
@@ -24,8 +26,10 @@
       "specific_heat": 896,
       "thermal_conductivity": 167000,
       "hardness": 107,
-      "cut_by": {
-        "LASER": 1
+      "worked_by": {
+        "cut": {
+          "LASER": 1
+        }
       }
     },
     {
@@ -38,8 +42,10 @@
       "specific_heat": 710,
       "thermal_conductivity": 8000,
       "hardness": 2500,
-      "cut_by": {
-        "LASER": 5
+      "worked_by": {
+        "cut": {
+          "LASER": 5
+        }
       }
     }
   ]

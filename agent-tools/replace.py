@@ -24,7 +24,9 @@ Why not just search and replace:
   matches.
 - Every OLD must match exactly one place. If any edit matches nowhere, or in
   more than one place, nothing at all is written, and the error says where
-  the closest text is (or where all the matches are). With --all, an OLD
+  the closest text is (or where all the matches are). A match must start
+  and end at word edges: `Action::Cut` doesn't match inside
+  `RecipeAction::Cut`. With --all, an OLD
   may match any number of places (at least one) and every one is replaced:
   for renames. Make OLD distinctive (`catalogue.` rather than `cat`), as
   every match is replaced.
@@ -127,6 +129,24 @@ def find_all(haystack, needle):
     return starts
 
 
+def is_word(ch):
+    """Whether `ch` can be part of a name: a letter, digit or underscore."""
+    return ch.isalnum() or ch == "_"
+
+
+def at_word_edges(file_text, origin, first, norm_old):
+    """Whether the match at `first` (in the normalised text) starts and ends
+    at word edges: if OLD starts with a word character, the file mustn't
+    have one just before the match, and likewise at the end. So `Cut`
+    doesn't match inside `RecipeCut`, or `cut` inside `cutter`."""
+    start, end = origin[first], origin[first + len(norm_old) - 1] + 1
+    before = file_text[start - 1] if start else ""
+    after = file_text[end] if end < len(file_text) else ""
+    head_ok = not (is_word(norm_old[0]) and is_word(before))
+    tail_ok = not (is_word(norm_old[-1]) and is_word(after))
+    return head_ok and tail_ok
+
+
 def line_of(text, position):
     """The 1-based line number of `position` in `text`."""
     return text.count("\n", 0, position) + 1
@@ -189,6 +209,8 @@ def locate_elided(file_text, head, tail, rust, many):
     norm_tail, _ = normalise(tail, rust)
     from_here = next((i for i, pos in enumerate(origin) if pos >= head_end), len(norm_file))
     at = norm_file.find(norm_tail, from_here)
+    while at != -1 and not at_word_edges(file_text, origin, at, norm_tail):
+        at = norm_file.find(norm_tail, at + 1)
     if at == -1:
         return f"the part after `...` matches nowhere after line {line_of(file_text, head_end)}"
     return [(start, span(file_text, origin, at, norm_tail, tail, rust)[1])]
@@ -200,7 +222,11 @@ def locate_exact(file_text, old, rust, many=False):
     norm_old, _ = normalise(old, rust)
     if not norm_old:
         return "OLD is empty"
-    starts = find_all(norm_file, norm_old)
+    anywhere = find_all(norm_file, norm_old)
+    starts = [s for s in anywhere if at_word_edges(file_text, origin, s, norm_old)]
+    if anywhere and not starts:
+        lines = ", ".join(str(line_of(file_text, origin[s])) for s in anywhere)
+        return f"matches only inside longer words (lines {lines}); start and end OLD at word edges"
     if many:
         starts = without_overlaps(starts, len(norm_old))
     if len(starts) == 1 or (many and starts):

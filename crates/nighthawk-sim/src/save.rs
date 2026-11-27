@@ -6,7 +6,7 @@
 //! ```json
 //! {
 //!   "format": "nighthawk-save",
-//!   "version": 13,
+//!   "version": 14,
 //!   "world": { "deck_names": ["Stasis bay"], "seconds": 36, ... }
 //! }
 //! ```
@@ -33,7 +33,7 @@ pub const SAVE_FORMAT: &str = "nighthawk-save";
 
 /// The save layout this build reads and writes. Bump it when `World` (or
 /// anything inside it) changes shape, and update the save-format test.
-pub const SAVE_VERSION: u32 = 13;
+pub const SAVE_VERSION: u32 = 14;
 
 /// Everything that can be wrong with a save file.
 #[derive(Debug)]
@@ -189,13 +189,13 @@ mod tests {
     fn save_text_is_tagged_and_versioned() {
         let text = save_to_string(&small_world());
         assert!(text.contains(r#""format": "nighthawk-save""#));
-        assert!(text.contains(r#""version": 13"#));
+        assert!(text.contains(r#""version": 14"#));
     }
 
     /// The exact text of the tiny save in `the_save_format_is_stable`.
     const EXPECTED_SAVE: &str = r#"{
   "format": "nighthawk-save",
-  "version": 13,
+  "version": 14,
   "world": {
     "deck_names": [
       "Deck 0"
@@ -260,6 +260,23 @@ mod tests {
           "description": "Cuts with light."
         }
       ],
+      "actions": [
+        {
+          "id": "cut",
+          "name": "Cut",
+          "key": "x",
+          "reach": 2,
+          "clear_line": false,
+          "on_own_tile": false,
+          "clear_of_items": false,
+          "tool_from_material": true,
+          "effect": "recipe",
+          "seconds": null,
+          "done": "You cut the {was}.",
+          "on_bump": false,
+          "shortcut": false
+        }
+      ],
       "materials": [
         {
           "id": "steel",
@@ -271,8 +288,10 @@ mod tests {
           "specific_heat": 490,
           "thermal_conductivity": 45000,
           "hardness": 150,
-          "cut_by": {
-            "LASER": 2
+          "worked_by": {
+            "cut": {
+              "LASER": 2
+            }
           }
         }
       ],
@@ -316,8 +335,8 @@ mod tests {
   }
 }"#;
 
-    /// A two-tile world built from one quality, material, structure and
-    /// item, so its save is short enough to write out in full. Content
+    /// A two-tile world built from one quality, action, material, structure
+    /// and item, so its save is short enough to write out in full. Content
     /// folders not named here (recipes, and any added later) are empty.
     fn tiny_world() -> World {
         use crate::content::{Content, ContentError, ContentFile};
@@ -327,11 +346,15 @@ mod tests {
                     r#"{ "qualities": [ { "id": "LASER", "name": "laser cutting",
                          "description": "Cuts with light." } ] }"#
                 }
+                "actions" => {
+                    r#"{ "actions": [ { "id": "cut", "name": "Cut", "key": "x", "reach": 2,
+                         "tool_from_material": true, "done": "You cut the {was}." } ] }"#
+                }
                 "materials" => {
                     r#"{ "materials": [ { "id": "steel", "name": "Steel", "description": "Steel.",
                          "colour": "grey", "density": 7850, "melting_point": 1450,
                          "specific_heat": 490, "thermal_conductivity": 45000, "hardness": 150,
-                         "cut_by": { "LASER": 2 } } ] }"#
+                         "worked_by": { "cut": { "LASER": 2 } } } ] }"#
                 }
                 "structures" => {
                     r#"{ "structures": [ { "id": "deck_plating", "name": "deck plating",
@@ -388,20 +411,20 @@ mod tests {
 
     #[test]
     fn a_save_without_a_version_is_not_a_save() {
-        let text = save_with("\"version\": 13,", "");
+        let text = save_with("\"version\": 14,", "");
         assert!(matches!(load_from_str(&text), Err(SaveError::NotASave)));
     }
 
     #[test]
     fn saves_from_other_versions_are_rejected_clearly() {
-        // A save from before qualities were content: exactly what an old
+        // A save from before actions were content: exactly what an old
         // save file on disk looks like after this build is installed.
-        let text = save_with(r#""version": 13"#, r#""version": 12"#);
+        let text = save_with(r#""version": 14"#, r#""version": 13"#);
         let err = load_from_str(&text).unwrap_err();
-        assert!(matches!(err, SaveError::UnsupportedVersion { found: 12 }));
+        assert!(matches!(err, SaveError::UnsupportedVersion { found: 13 }));
         assert_eq!(
             err.to_string(),
-            "save file is version 12, but this build only reads version 13"
+            "save file is version 13, but this build only reads version 14"
         );
     }
 

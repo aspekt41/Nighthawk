@@ -33,6 +33,8 @@ pub enum LoadError {
     /// A mistake in one of the content folders, like `data/materials/`
     /// (the error names the folder and the file).
     Content(ContentError),
+    /// An action's key that clashes with one of the game's own keys.
+    Keys(String),
 }
 
 /// Lets `?` turn a content mistake into a `LoadError`, which is what
@@ -58,6 +60,7 @@ impl fmt::Display for LoadError {
             }
             LoadError::Map { path, source } => write!(f, "{}: {source}", path.display()),
             LoadError::Content(source) => write!(f, "data/{}: {source}", source.folder()),
+            LoadError::Keys(message) => write!(f, "data/actions: {message}"),
         }
     }
 }
@@ -118,9 +121,12 @@ fn read_folder(dir: &Path) -> Result<Vec<ContentFile>, LoadError> {
 
 /// Loads and checks every content folder in `data_dir` (`materials/`,
 /// `structures/` and so on). The sim decides which folders there are; this
-/// only says how to read one.
+/// only says how to read one. Then checks the actions' keys fit this
+/// front-end's own keys.
 pub fn load_content(data_dir: &Path) -> Result<Content, LoadError> {
-    Content::load(|folder| read_folder(&data_dir.join(folder)))
+    let content = Content::load(|folder| read_folder(&data_dir.join(folder)))?;
+    crate::keys::check_action_keys(content.actions()).map_err(LoadError::Keys)?;
+    Ok(content)
 }
 
 /// Loads and checks `data/maps/<map_id>.json`, along with the structures
@@ -257,6 +263,20 @@ mod tests {
                 "{message}"
             );
         }
+    }
+
+    #[test]
+    fn an_action_key_that_clashes_with_a_game_key_stops_loading() {
+        let dir = data_dir_with_content();
+        let actions = dir.path().join("actions/basic.json");
+        let text = fs::read_to_string(&actions).unwrap();
+        fs::write(&actions, text.replace(r#""key": "x""#, r#""key": "h""#)).unwrap();
+        let err = load_map(dir.path(), "aft_ring").unwrap_err();
+        assert!(matches!(err, LoadError::Keys(_)));
+        assert_eq!(
+            err.to_string(),
+            r#"data/actions: action "cut" uses the key 'h', which is a movement key"#
+        );
     }
 
     #[test]

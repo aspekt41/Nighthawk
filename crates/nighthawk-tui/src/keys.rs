@@ -23,8 +23,9 @@ pub enum GameAction {
     ToTitleWithoutSaving,
     /// Save, then close the program (Ctrl-C).
     Exit,
-    /// Ask which way to close a door; the next key answers.
-    BeginClose,
+    /// Ask which way to do action number `.0`, a shortcut action (`c` to
+    /// close a door); the next key answers.
+    BeginShortcut(u16),
     /// Show or hide an overlay (`a` air, `t` heat). Only changes the view;
     /// no time passes.
     ToggleOverlay(Overlay),
@@ -70,22 +71,46 @@ pub enum CursorAction {
     Move(Dir),
     /// Put the cursor away.
     Stop,
-    /// Do this action to the tile under the cursor (interact only).
-    Do(Action),
+    /// Do action number `.0` to the tile under the cursor (interact only).
+    Do(u16),
     /// Do the first action on the list that can be done (Enter).
     DoFirst,
 }
 
-/// The key that does `action` in the interact menu. None of them is a
-/// movement key, so moving the cursor and choosing never clash.
-pub fn action_key(action: Action) -> char {
-    match action {
-        Action::Open => 'o',
-        Action::Close => 'c',
-        Action::Cut => 'x',
-        Action::PickUp => 'g',
-        Action::Repair => 'r',
+/// The number of the action in `actions` whose key is `code`, if any.
+fn action_for(code: KeyCode, actions: &[Action]) -> Option<u16> {
+    (0..)
+        .zip(actions)
+        .find(|(_, action)| code == KeyCode::Char(action.key))
+        .map(|(number, _)| number)
+}
+
+/// Checks the actions' keys (from `data/actions/`) can't be confused with
+/// the game's own: none may be a movement key or one that puts the cursor
+/// away, and a shortcut action's key, which also works while playing, may
+/// not be one of the other keys used then. Two actions sharing a key is
+/// already a content error.
+pub fn check_action_keys(actions: &[Action]) -> Result<(), String> {
+    for action in actions {
+        let key = action.key;
+        let code = KeyCode::Char(key);
+        let taken = if KEYMAP.iter().any(|&(bound, _)| bound == code) {
+            Some("a movement key")
+        } else if CURSOR_STOP_KEYS.contains(&key) {
+            Some("a key that puts the cursor away")
+        } else if action.shortcut && GAME_KEYS.iter().any(|&(c, _)| c == key) {
+            Some("already used while playing")
+        } else {
+            None
+        };
+        if let Some(why) = taken {
+            return Err(format!(
+                "action {:?} uses the key {key:?}, which is {why}",
+                action.id
+            ));
+        }
     }
+    Ok(())
 }
 
 /// Something the player wants on the title menu.
@@ -142,7 +167,6 @@ const GAME_KEYS: &[(char, GameAction)] = &[
     ('q', GameAction::ToTitle),
     ('Q', GameAction::ToTitleWithoutSaving),
     ('S', GameAction::Save),
-    ('c', GameAction::BeginClose),
     ('a', GameAction::ToggleOverlay(Overlay::Air)),
     ('t', GameAction::ToggleOverlay(Overlay::Heat)),
     ('V', GameAction::Look),
@@ -150,9 +174,10 @@ const GAME_KEYS: &[(char, GameAction)] = &[
     ('i', GameAction::Inventory),
 ];
 
-/// The action for a key pressed while playing, if any. Ctrl-C saves and
-/// exits.
-pub fn game_action(key: KeyEvent) -> Option<GameAction> {
+/// The action for a key pressed while playing, if any: the game's own
+/// keys, then a shortcut action's key (from `actions`), then moving.
+/// Ctrl-C saves and exits.
+pub fn game_action(key: KeyEvent, actions: &[Action]) -> Option<GameAction> {
     if !is_press(key) {
         return None;
     }
@@ -163,7 +188,12 @@ pub fn game_action(key: KeyEvent) -> Option<GameAction> {
         .iter()
         .find(|&&(c, _)| key.code == KeyCode::Char(c))
         .map(|&(_, action)| action);
-    other.or_else(|| {
+    let shortcut = || {
+        action_for(key.code, actions)
+            .filter(|&n| actions[usize::from(n)].shortcut)
+            .map(GameAction::BeginShortcut)
+    };
+    other.or_else(shortcut).or_else(|| {
         KEYMAP
             .iter()
             .find(|(bound, _)| *bound == key.code)
@@ -190,19 +220,22 @@ pub fn title_action(key: KeyEvent) -> Option<TitleAction> {
     }
 }
 
+/// The keys (besides Esc) that put the look or interact cursor away.
+const CURSOR_STOP_KEYS: [char; 3] = ['V', 'e', 'q'];
+
 /// The action for a key pressed while the cursor is up: a movement key
-/// moves it; Esc, `V`, `e` or `q` put it away; an action key or Enter
-/// chooses. Other keys do nothing, so a stray key can't spend time.
-pub fn cursor_action(key: KeyEvent) -> Option<CursorAction> {
+/// moves it; Esc, `V`, `e` or `q` put it away; an action's key (from
+/// `actions`) or Enter chooses. Other keys do nothing, so a stray key
+/// can't spend time.
+pub fn cursor_action(key: KeyEvent, actions: &[Action]) -> Option<CursorAction> {
     if !is_press(key) {
         return None;
     }
     match key.code {
-        KeyCode::Esc | KeyCode::Char('V' | 'e' | 'q') => Some(CursorAction::Stop),
+        KeyCode::Esc => Some(CursorAction::Stop),
+        KeyCode::Char(c) if CURSOR_STOP_KEYS.contains(&c) => Some(CursorAction::Stop),
         KeyCode::Enter => Some(CursorAction::DoFirst),
-        code => Action::ALL
-            .into_iter()
-            .find(|&action| code == KeyCode::Char(action_key(action)))
+        code => action_for(code, actions)
             .map(CursorAction::Do)
             .or_else(|| direction(key).map(CursorAction::Move)),
     }
@@ -248,8 +281,28 @@ mod tests {
         }
     }
 
+    /// The shipped actions, from `data/actions/`.
+    fn actions() -> Vec<Action> {
+        let map = crate::content::load_start_map().unwrap();
+        map.content.actions().to_vec()
+    }
+
+    /// The number of the shipped action with this id.
+    fn number(id: &str) -> u16 {
+        let map = crate::content::load_start_map().unwrap();
+        map.content.action_index(id).unwrap()
+    }
+
+    fn game(key: KeyEvent) -> Option<GameAction> {
+        game_action(key, &actions())
+    }
+
+    fn cursor(key: KeyEvent) -> Option<CursorAction> {
+        cursor_action(key, &actions())
+    }
+
     fn command_for(code: KeyCode) -> Option<Command> {
-        match game_action(press(code)) {
+        match game(press(code)) {
             Some(GameAction::Sim(c)) => Some(c),
             _ => None,
         }
@@ -308,51 +361,48 @@ mod tests {
 
     #[test]
     fn game_keys_for_saving_and_leaving() {
+        assert_eq!(game(press(KeyCode::Char('S'))), Some(GameAction::Save));
+        assert_eq!(game(press(KeyCode::Char('q'))), Some(GameAction::ToTitle));
         assert_eq!(
-            game_action(press(KeyCode::Char('S'))),
-            Some(GameAction::Save)
-        );
-        assert_eq!(
-            game_action(press(KeyCode::Char('q'))),
-            Some(GameAction::ToTitle)
-        );
-        assert_eq!(
-            game_action(press(KeyCode::Char('Q'))),
+            game(press(KeyCode::Char('Q'))),
             Some(GameAction::ToTitleWithoutSaving)
         );
-        assert_eq!(game_action(ctrl_c()), Some(GameAction::Exit));
+        assert_eq!(game(ctrl_c()), Some(GameAction::Exit));
     }
 
     #[test]
     fn unbound_game_keys_do_nothing() {
-        assert_eq!(game_action(press(KeyCode::Char('z'))), None);
-        assert_eq!(game_action(press(KeyCode::Tab)), None);
+        assert_eq!(game(press(KeyCode::Char('z'))), None);
+        assert_eq!(game(press(KeyCode::Tab)), None);
     }
 
     #[test]
     fn plain_c_starts_closing_a_door_and_is_not_ctrl_c() {
+        // `c` is the shipped close action's key, and it's a shortcut.
         assert_eq!(
-            game_action(press(KeyCode::Char('c'))),
-            Some(GameAction::BeginClose)
+            game(press(KeyCode::Char('c'))),
+            Some(GameAction::BeginShortcut(number("close")))
+        );
+        assert_eq!(
+            game(press(KeyCode::Char('x'))),
+            None,
+            "cutting isn't a shortcut: only the menu does it"
         );
     }
 
     #[test]
     fn capital_v_starts_looking() {
-        assert_eq!(
-            game_action(press(KeyCode::Char('V'))),
-            Some(GameAction::Look)
-        );
+        assert_eq!(game(press(KeyCode::Char('V'))), Some(GameAction::Look));
     }
 
     #[test]
     fn with_the_cursor_up_movement_keys_move_and_esc_v_e_q_stop() {
         assert_eq!(
-            cursor_action(press(KeyCode::Char('l'))),
+            cursor(press(KeyCode::Char('l'))),
             Some(CursorAction::Move(Dir::East))
         );
         assert_eq!(
-            cursor_action(press(KeyCode::Char('y'))),
+            cursor(press(KeyCode::Char('y'))),
             Some(CursorAction::Move(Dir::NorthWest))
         );
         for code in [
@@ -361,57 +411,71 @@ mod tests {
             KeyCode::Char('e'),
             KeyCode::Char('q'),
         ] {
-            assert_eq!(
-                cursor_action(press(code)),
-                Some(CursorAction::Stop),
-                "{code:?}"
-            );
+            assert_eq!(cursor(press(code)), Some(CursorAction::Stop), "{code:?}");
         }
-        assert_eq!(cursor_action(press(KeyCode::Char('.'))), None, "no waiting");
-        assert_eq!(cursor_action(release(KeyCode::Esc)), None);
+        assert_eq!(cursor(press(KeyCode::Char('.'))), None, "no waiting");
+        assert_eq!(cursor(release(KeyCode::Esc)), None);
     }
 
     #[test]
     fn e_starts_interacting_and_o_c_x_enter_choose() {
+        assert_eq!(game(press(KeyCode::Char('e'))), Some(GameAction::Interact));
         assert_eq!(
-            game_action(press(KeyCode::Char('e'))),
-            Some(GameAction::Interact)
+            cursor(press(KeyCode::Char('o'))),
+            Some(CursorAction::Do(number("open")))
         );
         assert_eq!(
-            cursor_action(press(KeyCode::Char('o'))),
-            Some(CursorAction::Do(Action::Open))
+            cursor(press(KeyCode::Char('c'))),
+            Some(CursorAction::Do(number("close")))
         );
         assert_eq!(
-            cursor_action(press(KeyCode::Char('c'))),
-            Some(CursorAction::Do(Action::Close))
+            cursor(press(KeyCode::Char('x'))),
+            Some(CursorAction::Do(number("cut")))
         );
-        assert_eq!(
-            cursor_action(press(KeyCode::Char('x'))),
-            Some(CursorAction::Do(Action::Cut))
-        );
-        assert_eq!(
-            cursor_action(press(KeyCode::Enter)),
-            Some(CursorAction::DoFirst)
-        );
+        assert_eq!(cursor(press(KeyCode::Enter)), Some(CursorAction::DoFirst));
     }
 
     #[test]
-    fn every_action_has_its_own_key_that_is_not_a_movement_key() {
-        let keys: Vec<char> = Action::ALL.map(action_key).to_vec();
+    fn the_shipped_action_keys_are_the_agreed_ones_and_clash_with_nothing() {
+        let actions = actions();
+        let keys: Vec<char> = actions.iter().map(|a| a.key).collect();
         assert_eq!(keys, vec!['o', 'c', 'x', 'r', 'g']);
-        for key in keys {
-            assert_eq!(direction(press(KeyCode::Char(key))), None, "{key}");
-        }
+        assert_eq!(check_action_keys(&actions), Ok(()));
+    }
+
+    #[test]
+    fn action_keys_may_not_be_movement_cursor_or_playing_keys() {
+        let with_key = |key: char, shortcut: bool| {
+            let mut actions = actions();
+            actions[2].key = key;
+            actions[2].shortcut = shortcut;
+            check_action_keys(&actions)
+        };
+        assert_eq!(
+            with_key('h', false),
+            Err(r#"action "cut" uses the key 'h', which is a movement key"#.into())
+        );
+        assert!(
+            with_key('V', false)
+                .unwrap_err()
+                .contains("puts the cursor away")
+        );
+        assert_eq!(with_key('S', false), Ok(()), "the menu doesn't save");
+        assert!(
+            with_key('S', true)
+                .unwrap_err()
+                .contains("already used while playing")
+        );
     }
 
     #[test]
     fn a_and_t_toggle_the_air_and_heat_overlays() {
         assert_eq!(
-            game_action(press(KeyCode::Char('a'))),
+            game(press(KeyCode::Char('a'))),
             Some(GameAction::ToggleOverlay(Overlay::Air))
         );
         assert_eq!(
-            game_action(press(KeyCode::Char('t'))),
+            game(press(KeyCode::Char('t'))),
             Some(GameAction::ToggleOverlay(Overlay::Heat))
         );
     }
@@ -473,16 +537,13 @@ mod tests {
     #[test]
     fn key_releases_are_ignored_everywhere() {
         // Terminals with the kitty keyboard protocol also send releases.
-        assert_eq!(game_action(release(KeyCode::Char('q'))), None);
+        assert_eq!(game(release(KeyCode::Char('q'))), None);
         assert_eq!(title_action(release(KeyCode::Enter)), None);
     }
 
     #[test]
     fn i_opens_the_inventory_where_up_down_choose_and_d_drops() {
-        assert_eq!(
-            game_action(press(KeyCode::Char('i'))),
-            Some(GameAction::Inventory)
-        );
+        assert_eq!(game(press(KeyCode::Char('i'))), Some(GameAction::Inventory));
         let cases = [
             (KeyCode::Char('k'), Some(InventoryAction::Up)),
             (KeyCode::Up, Some(InventoryAction::Up)),

@@ -17,6 +17,7 @@
 //!   seeded from the world's seed, so the same seed and commands always
 //!   produce the same game.
 
+mod action;
 mod air;
 mod body;
 mod calendar;
@@ -36,6 +37,7 @@ mod save;
 mod structure;
 mod world;
 
+pub use action::{Action, ActionError, Effect};
 pub use air::{Gas, Mix, TILE_VOLUME_CM3, VENT_SPEED_CM_PER_S, vent_ppm, vented_amount};
 pub use body::{
     BREATH_FULL, BreathLevel, COMFORT_MK, Cause, SAFE_O2_PA, VACUUM_FEELS_LIKE_MK, WARMTH_FULL,
@@ -47,7 +49,7 @@ pub use heat::{
     HULL_LOSS_PER_BILLION, MAX_CELSIUS, MIN_CELSIUS, MIXING_PER_MILLE, ROOM_TEMPERATURE_MK,
     SPACE_TEMPERATURE_MK, ZERO_CELSIUS_MK, celsius_to_mk, mk_to_tenths_celsius,
 };
-pub use interact::{Action, ActionOption, Blocked, HAND_REACH, LASER_REACH, blocked, options_at};
+pub use interact::{ActionOption, Blocked, blocked, options_at};
 pub use item::{
     FloorItem, Item, ItemContext, ItemError, ItemPath, ItemRef, ItemType, PocketType, Wear,
 };
@@ -56,11 +58,11 @@ pub use map_file::{ItemSpecError, LegendError, LoadedMap, MapError, parse_map};
 pub use material::{Colour, Material, MaterialError};
 pub use pos::{Dir, Pos, Vertical};
 pub use quality::{LevelError, Levels, MAX_QUALITY_LEVEL, Quality, QualityError};
-pub use recipe::{Recipe, RecipeAction, RecipeError};
+pub use recipe::{Recipe, RecipeError, RecipeMaterial, Use};
 pub use rng::{GameRng, Stream};
 pub use save::{SAVE_FORMAT, SAVE_VERSION, SaveError, load_from_str, save_to_string};
 pub use structure::{Behaviour, Structure, StructureError};
 pub use world::{
-    CLIMB_SECONDS, Command, DIAGONAL_STEP_SECONDS, DOOR_SECONDS, DROP_SECONDS, Event,
-    PICK_UP_SECONDS, STEP_SECONDS, Sound, WAIT_SECONDS, World,
+    CLIMB_SECONDS, Command, DIAGONAL_STEP_SECONDS, DROP_SECONDS, Event, STEP_SECONDS, Sound,
+    WAIT_SECONDS, World,
 };

@@ -2,17 +2,18 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::action::Effect;
 use crate::body::{self, BREATH_FULL, BreathLevel, Cause, WARMTH_FULL, WarmthLevel};
 use crate::calendar::{DateTime, SHIP_START};
 use crate::content::Content;
 use crate::hash::Fnv64;
-use crate::interact::{self, Action, Blocked};
+use crate::interact::{self, Blocked};
 use crate::item::{self, FloorItem, Item, ItemContext, ItemPath, ItemRef, ItemType};
 use crate::map::{Map, Tile};
 use crate::map_file::LoadedMap;
 use crate::material::Material;
 use crate::pos::{Dir, Pos, Vertical};
-use crate::recipe::{Recipe, RecipeAction, RecipeMaterial};
+use crate::recipe::{Recipe, RecipeMaterial};
 use crate::rng::{GameRng, Stream};
 use crate::structure::Structure;
 
@@ -23,13 +24,12 @@ pub enum Command {
     Wait,
     /// Use the stairs you're standing on.
     Climb(Vertical),
-    /// Close the open door next to you in this direction.
-    Close(Dir),
-    /// Do `action` to the tile at `at`, from the interact menu (D36). The
-    /// same rules the menu shows are checked again here.
+    /// Do action number `action` (its place in the world's list of
+    /// actions) to the tile at `at`, from the interact menu (D36) or a
+    /// shortcut key. The same rules the menu shows are checked again here.
     Interact {
         at: Pos,
-        action: Action,
+        action: u16,
     },
     /// Drop a carried item onto the floor where you stand.
     Drop(ItemPath),
@@ -66,10 +66,6 @@ pub enum Event {
     DoorClosed {
         at: Pos,
     },
-    /// There's no open door in that direction. No time passes.
-    NothingToClose {
-        at: Pos,
-    },
     Waited,
     /// A background noise from the ship, heard while time passes.
     Ambient(Sound),
@@ -84,9 +80,9 @@ pub enum Event {
     /// The player's breath or warmth ran out: they've blacked out, and the
     /// world takes no more commands.
     BlackedOut(Cause),
-    /// An interact action couldn't be done, and why. No time passes.
+    /// Action number `action` couldn't be done, and why. No time passes.
     Unable {
-        action: Action,
+        action: u16,
         blocked: Blocked,
     },
     /// The player picked this item up and put it in a pocket.
@@ -97,16 +93,12 @@ pub enum Event {
     Dropped(ItemRef),
     /// There's no item where a drop asked for one. No time passes.
     NothingToDrop,
-    /// The player cut through the tile at `at`, which was structure
-    /// number `was` and is now what its cut recipe makes.
-    CutThrough {
+    /// The player followed a recipe for action number `action` on the tile
+    /// at `at`, which was structure number `was` and is now what the
+    /// recipe makes (it cut through a door, patched a crack…).
+    Transformed {
         at: Pos,
-        was: u16,
-    },
-    /// The player repaired the tile at `at`, which was structure number
-    /// `was` and is now what its repair recipe makes.
-    Repaired {
-        at: Pos,
+        action: u16,
         was: u16,
     },
 }
@@ -140,13 +132,11 @@ pub const STEP_SECONDS: u64 = 3;
 pub const DIAGONAL_STEP_SECONDS: u64 = 4;
 /// Climbing a ladder to the next deck.
 pub const CLIMB_SECONDS: u64 = 20;
-/// Opening or closing a door.
-pub const DOOR_SECONDS: u64 = 2;
 /// Waiting (`.`): a short pause.
 pub const WAIT_SECONDS: u64 = 5;
-/// Picking up one item and putting it in a pocket.
-pub const PICK_UP_SECONDS: u64 = 2;
-/// Dropping an item.
+/// Dropping an item. (Actions on tiles, like opening a door or picking
+/// something up, say how long they take in `data/actions/` and
+/// `data/recipes/`.)
 pub const DROP_SECONDS: u64 = 1;
 
 /// Each second has a 1 in this many chance of an ambient sound, so about
@@ -344,7 +334,6 @@ impl World {
         match command {
             Command::Move(dir) => self.walk(dir),
             Command::Climb(way) => self.climb(way),
-            Command::Close(dir) => self.close(dir),
             Command::Interact { at, action } => self.interact(at, action),
             Command::Drop(path) => self.drop_item(path),
             Command::Wait => {
@@ -359,8 +348,7 @@ impl World {
         let target = self.player.step(dir);
         match self.map.get(target) {
             None => vec![Event::BlockedByEdge],
-            Some(Tile::DoorClosed) => self.open(target),
-            Some(tile) if !tile.is_walkable() => vec![Event::Bumped { at: target, tile }],
+            Some(tile) if !tile.is_walkable() => self.bump(target, tile),
             Some(_) => {
                 self.player = target;
                 let mut events = vec![Event::Moved { to: target }];
@@ -375,59 +363,69 @@ impl World {
         }
     }
 
-    /// Opens the closed door at `at`. The player stays put: opening takes
-    /// the time, and the next step walks through.
-    fn open(&mut self, at: Pos) -> Vec<Event> {
+    /// Walking into the solid `tile` at `at`: does the first action marked
+    /// `on_bump` that can be done there (walking into a shut door opens
+    /// it), or else bumps into it, which costs no time.
+    fn bump(&mut self, at: Pos, tile: Tile) -> Vec<Event> {
+        let chosen = (0..)
+            .zip(self.content.actions())
+            .find(|&(number, action)| {
+                action.on_bump && interact::blocked(self, at, number).is_none()
+            })
+            .map(|(number, _)| number);
+        match chosen {
+            Some(action) => self.interact(at, action),
+            None => vec![Event::Bumped { at, tile }],
+        }
+    }
+
+    /// Opens the closed door at `at`, taking `seconds`. The player stays
+    /// put: opening takes the time, and the next step walks through.
+    fn open(&mut self, at: Pos, seconds: u64) -> Vec<Event> {
         self.map.set(at, Tile::DoorOpen);
         let mut events = vec![Event::DoorOpened { at }];
-        self.pass_time(DOOR_SECONDS, &mut events);
+        self.pass_time(seconds, &mut events);
         events
     }
 
-    /// Closes the open door next to the player in direction `dir`. You
-    /// can't close a door you're standing in: only one beside you.
-    fn close(&mut self, dir: Dir) -> Vec<Event> {
-        let at = self.player.step(dir);
-        if self.map.get(at) != Some(Tile::DoorOpen) {
-            return vec![Event::NothingToClose { at }];
-        }
-        self.shut(at)
-    }
-
-    /// Shuts the open door at `at`, which the caller has checked.
-    fn shut(&mut self, at: Pos) -> Vec<Event> {
+    /// Shuts the open door at `at`, taking `seconds`.
+    fn shut(&mut self, at: Pos, seconds: u64) -> Vec<Event> {
         self.map.set(at, Tile::DoorClosed);
         let mut events = vec![Event::DoorClosed { at }];
-        self.pass_time(DOOR_SECONDS, &mut events);
+        self.pass_time(seconds, &mut events);
         events
     }
 
-    /// An action from the interact menu. If anything blocks it, nothing
-    /// happens and no time passes; the event says why.
-    fn interact(&mut self, at: Pos, action: Action) -> Vec<Event> {
+    /// Action number `action` on the tile at `at`. If anything blocks it,
+    /// nothing happens and no time passes; the event says why.
+    fn interact(&mut self, at: Pos, action: u16) -> Vec<Event> {
         if let Some(blocked) = interact::blocked(self, at, action) {
             return vec![Event::Unable { action, blocked }];
         }
-        match action {
-            Action::Open => self.open(at),
-            Action::PickUp => self.pick_up(at),
-            Action::Close => self.shut(at),
-            Action::Cut => self.follow_recipe(at, RecipeAction::Cut),
-            Action::Repair => self.follow_recipe(at, RecipeAction::Repair),
+        // `blocked` checked the action exists. Copy out what's needed, so
+        // the borrow of `self.content` ends before `self` changes.
+        let rule = &self.content.actions()[usize::from(action)];
+        let (effect, seconds) = (rule.effect, u64::from(rule.seconds.unwrap_or(0)));
+        match effect {
+            Effect::Recipe => self.follow_recipe(at, action),
+            Effect::PickUp => self.pick_up(at, seconds),
+            Effect::OpenDoor => self.open(at, seconds),
+            Effect::CloseDoor => self.shut(at, seconds),
         }
     }
 
-    /// Follows the `kind` recipe for the tile at `at`, which the caller has
+    /// Follows the recipe for action number `action` on the tile at `at`, which the caller has
     /// checked exists and can be done (decision D40). The recipe's time
     /// passes first; if the player blacks out before it's done, nothing
     /// changes and nothing is used up. Then the items it uses come out of
     /// the player's pockets, and the tile becomes the recipe's `to`: of the
     /// same material (an aluminium door cut open leaves an aluminium frame),
     /// or of the first item used (a crack patched with steel scrap).
-    fn follow_recipe(&mut self, at: Pos, kind: RecipeAction) -> Vec<Event> {
+    fn follow_recipe(&mut self, at: Pos, action: u16) -> Vec<Event> {
         let was = self.map.structure_index(at).unwrap_or(0);
+        let id = &self.content.actions()[usize::from(action)].id;
         let recipe = self
-            .recipe_for(kind, at)
+            .recipe_for(id, at)
             .cloned()
             .expect("interact checked there's a recipe");
         let mut events = Vec::new();
@@ -447,10 +445,7 @@ impl World {
         self.map.set_structure(at, to);
         // Last, after everything heard while working, so it's the line the
         // log ends on.
-        events.push(match kind {
-            RecipeAction::Cut => Event::CutThrough { at, was },
-            RecipeAction::Repair => Event::Repaired { at, was },
-        });
+        events.push(Event::Transformed { at, action, was });
         events
     }
 
@@ -475,9 +470,9 @@ impl World {
             .expect("recipes name real structures")
     }
 
-    /// The recipe for `action` on whatever structure is at `at`, if there
-    /// is one.
-    pub fn recipe_for(&self, action: RecipeAction, at: Pos) -> Option<&Recipe> {
+    /// The recipe for the action with id `action` on whatever structure is
+    /// at `at`, if there is one.
+    pub fn recipe_for(&self, action: &str, at: Pos) -> Option<&Recipe> {
         let structure = self.structure_at(at)?;
         self.content
             .recipes()
@@ -500,8 +495,9 @@ impl World {
     }
 
     /// Picks up everything at `at` that fits in a pocket, one item at a
-    /// time; anything that doesn't fit stays where it was.
-    fn pick_up(&mut self, at: Pos) -> Vec<Event> {
+    /// time, taking `seconds_each` per item picked up; anything that
+    /// doesn't fit stays where it was.
+    fn pick_up(&mut self, at: Pos, seconds_each: u64) -> Vec<Event> {
         let (here, elsewhere): (Vec<FloorItem>, Vec<FloorItem>) =
             std::mem::take(&mut self.floor_items)
                 .into_iter()
@@ -528,7 +524,7 @@ impl World {
                 }
             }
         }
-        self.pass_time(PICK_UP_SECONDS * picked, &mut events);
+        self.pass_time(seconds_each * picked, &mut events);
         events
     }
 
@@ -783,9 +779,14 @@ impl World {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::action::tests::{CLOSE, CUT, OPEN, PICK_UP, REPAIR};
     use crate::map_file::parse_map_for_tests as parse_map;
 
     const TEST_SEED: u64 = 1234;
+    /// How long the test actions take to open or close a door, and to pick
+    /// up one item (`data/actions/` says, in the real game).
+    const DOOR_SECONDS: u64 = 2;
+    const PICK_UP_SECONDS: u64 = 2;
 
     /// The events with ambient sounds removed, for tests about movement.
     fn without_ambient(events: Vec<Event>) -> Vec<Event> {
@@ -928,10 +929,10 @@ mod tests {
                 STEP_SECONDS,
                 DIAGONAL_STEP_SECONDS,
                 CLIMB_SECONDS,
-                DOOR_SECONDS,
-                WAIT_SECONDS
+                WAIT_SECONDS,
+                DROP_SECONDS
             ],
-            [3, 4, 20, 2, 5]
+            [3, 4, 20, 5, 1]
         );
     }
 
@@ -1229,7 +1230,7 @@ mod tests {
         world.apply(Command::Move(Dir::East)); // open
         let before = world.seconds();
 
-        let events = world.apply(Command::Close(Dir::East));
+        let events = world.apply(close_toward(&world, Dir::East));
 
         assert_eq!(
             without_ambient(events),
@@ -1244,10 +1245,12 @@ mod tests {
         let mut world = door_world();
         let cases = [Dir::East, Dir::North, Dir::West]; // closed door, wall, wall
         for dir in cases {
-            let at = world.player().step(dir);
             assert_eq!(
-                world.apply(Command::Close(dir)),
-                vec![Event::NothingToClose { at }]
+                world.apply(close_toward(&world, dir)),
+                vec![Event::Unable {
+                    action: CLOSE,
+                    blocked: Blocked::NotPossible
+                }]
             );
         }
         assert_eq!(world.seconds(), 0);
@@ -1260,13 +1263,30 @@ mod tests {
         world.apply(Command::Move(Dir::East)); // open
         world.apply(Command::Move(Dir::East)); // stand in the doorway
         for dir in Dir::ALL {
-            let events = world.apply(Command::Close(dir));
-            assert!(
-                matches!(events[..], [Event::NothingToClose { .. }]),
-                "{dir:?}"
-            );
+            let events = world.apply(close_toward(&world, dir));
+            assert!(matches!(events[..], [Event::Unable { .. }]), "{dir:?}");
         }
         assert_eq!(world.map().get(DOOR), Some(Tile::DoorOpen));
+        let own = Command::Interact {
+            at: world.player(),
+            action: CLOSE,
+        };
+        assert_eq!(
+            world.apply(own),
+            vec![Event::Unable {
+                action: CLOSE,
+                blocked: Blocked::StandingInIt
+            }]
+        );
+    }
+
+    /// Closing the tile next to the player in direction `dir`, as the `c`
+    /// shortcut does.
+    fn close_toward(world: &World, dir: Dir) -> Command {
+        Command::Interact {
+            at: world.player().step(dir),
+            action: CLOSE,
+        }
     }
 
     #[test]
@@ -1608,14 +1628,14 @@ mod tests {
         let door = Pos::new(2, 1, 0);
         let events = world.apply(Command::Interact {
             at: door,
-            action: Action::Open,
+            action: OPEN,
         });
         assert_eq!(events[0], Event::DoorOpened { at: door });
         assert_eq!(world.map.get(door), Some(Tile::DoorOpen));
         assert_eq!(world.seconds(), DOOR_SECONDS);
         let events = world.apply(Command::Interact {
             at: door,
-            action: Action::Close,
+            action: CLOSE,
         });
         assert_eq!(events[0], Event::DoorClosed { at: door });
         assert_eq!(world.map.get(door), Some(Tile::DoorClosed));
@@ -1626,12 +1646,12 @@ mod tests {
         let mut world = door_world();
         let events = world.apply(Command::Interact {
             at: Pos::new(3, 1, 0),
-            action: Action::Open,
+            action: OPEN,
         });
         assert_eq!(
             events,
             vec![Event::Unable {
-                action: Action::Open,
+                action: OPEN,
                 blocked: Blocked::NotPossible
             }]
         );
@@ -1701,7 +1721,7 @@ mod tests {
     fn pick_up_pile(world: &mut World) -> Vec<Event> {
         world.apply(Command::Interact {
             at: PILE,
-            action: Action::PickUp,
+            action: PICK_UP,
         })
     }
 
@@ -1885,10 +1905,7 @@ mod tests {
     }
 
     fn cut(world: &mut World, at: Pos) -> Vec<Event> {
-        world.apply(Command::Interact {
-            at,
-            action: Action::Cut,
-        })
+        world.apply(Command::Interact { at, action: CUT })
     }
 
     #[test]
@@ -1906,7 +1923,14 @@ mod tests {
         let mut world = cutting_world(2);
         let door = Pos::new(2, 1, 0);
         let events = without_ambient(cut(&mut world, door));
-        assert_eq!(events.last(), Some(&Event::CutThrough { at: door, was: 4 }));
+        assert_eq!(
+            events.last(),
+            Some(&Event::Transformed {
+                at: door,
+                action: CUT,
+                was: 4
+            })
+        );
         assert_eq!(world.seconds(), 60, "the recipe's time");
         assert_eq!(world.map().get(door), Some(Tile::Floor));
         assert_eq!(world.structure_at(door).unwrap().id, "floor");
@@ -1924,7 +1948,7 @@ mod tests {
         assert_eq!(
             events,
             vec![Event::Unable {
-                action: Action::Cut,
+                action: CUT,
                 blocked: Blocked::Needs {
                     quality: 0, // LASER, the first test quality
                     level: 2
@@ -1994,17 +2018,21 @@ mod tests {
     const FRAME: Pos = Pos::new(2, 1, 0);
 
     fn repair(world: &mut World, at: Pos) -> Vec<Event> {
-        world.apply(Command::Interact {
-            at,
-            action: Action::Repair,
-        })
+        world.apply(Command::Interact { at, action: REPAIR })
     }
 
     #[test]
     fn patching_a_crack_uses_the_scrap_and_is_made_of_it() {
         let mut world = repair_world(2);
         let events = without_ambient(repair(&mut world, CRACK));
-        assert_eq!(events.last(), Some(&Event::Repaired { at: CRACK, was: 5 }));
+        assert_eq!(
+            events.last(),
+            Some(&Event::Transformed {
+                at: CRACK,
+                action: REPAIR,
+                was: 5
+            })
+        );
         assert_eq!(world.seconds(), 30, "the recipe's time");
         assert_eq!(world.map().get(CRACK), Some(Tile::Wall));
         assert_eq!(world.structure_at(CRACK).unwrap().id, "wall");
@@ -2031,7 +2059,7 @@ mod tests {
         assert_eq!(
             repair(&mut world, CRACK),
             vec![Event::Unable {
-                action: Action::Repair,
+                action: REPAIR,
                 blocked: Blocked::Missing {
                     item: 2,
                     need: 2,
@@ -2048,7 +2076,7 @@ mod tests {
         let mut world = repair_world(1); // one hard alloy scrap
         world.apply(Command::Move(Dir::East)); // onto the frame
         assert_eq!(
-            interact::blocked(&world, FRAME, Action::Repair),
+            interact::blocked(&world, FRAME, REPAIR),
             Some(Blocked::StandingInIt)
         );
         world.apply(Command::Move(Dir::West));
@@ -2058,7 +2086,7 @@ mod tests {
             item: lying,
         });
         assert_eq!(
-            interact::blocked(&world, FRAME, Action::Repair),
+            interact::blocked(&world, FRAME, REPAIR),
             Some(Blocked::Cluttered)
         );
         world.floor_items.clear();

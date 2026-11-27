@@ -14,7 +14,7 @@
 //! ```
 
 use nighthawk_sim::{
-    Action, ActionOption, BREATH_FULL, Colour, Item, ItemRef, Material, Mix, PocketType, Pos, Tile,
+    ActionOption, BREATH_FULL, Colour, Item, ItemRef, Material, Mix, PocketType, Pos, Tile,
     WARMTH_FULL, World, celsius_to_mk, mk_to_tenths_celsius, options_at,
 };
 use ratatui::Frame;
@@ -25,8 +25,8 @@ use ratatui::text::Line;
 use ratatui::widgets::{Block, Paragraph, Widget, Wrap};
 
 use crate::app::{App, Screen};
+use crate::text;
 use crate::title::{MenuItem, TitleMenu};
-use crate::{keys, text};
 
 const SIDEBAR_WIDTH: u16 = 24;
 const LOG_HEIGHT: u16 = 6;
@@ -432,12 +432,24 @@ fn sidebar_lines(world: &World) -> Vec<Line<'static>> {
     lines.extend([
         Line::raw(""),
         Line::styled("move hjkl yubn  wait .", dim),
-        Line::styled("climb < >  close c", dim),
+        Line::styled(format!("climb < >{}", shortcut_hints(world)), dim),
         Line::styled("look V  use e  items i", dim),
         Line::styled("air a  heat t  save S", dim),
         Line::styled("menu q/Q", dim),
     ]);
     lines
+}
+
+/// The shortcut actions' keys (from `data/actions/`), for the key hints:
+/// "  close c".
+fn shortcut_hints(world: &World) -> String {
+    world
+        .content()
+        .actions()
+        .iter()
+        .filter(|a| a.shortcut)
+        .map(|a| format!("  {} {}", a.name.to_lowercase(), a.key))
+        .collect()
 }
 
 /// One of the player's meters (breath, warmth): a percentage and a
@@ -527,7 +539,7 @@ fn look_lines(world: &World, at: Pos) -> Vec<Line<'static>> {
     let tile = world.map().get(at).unwrap_or(Tile::Wall);
     lines.push(Line::raw(tile_name(world, at, tile)));
     if let Some(material) = world.material_at(at) {
-        lines.extend(material_lines(material));
+        lines.extend(material_lines(world, material));
     }
     lines.push(Line::raw(""));
     lines.extend(air_here(world, at, tile));
@@ -539,17 +551,28 @@ fn look_lines(world: &World, at: Pos) -> Vec<Line<'static>> {
     lines
 }
 
-/// A material's name, in its colour, and its properties.
-fn material_lines(m: &Material) -> Vec<Line<'static>> {
-    vec![
+/// A material's name, in its colour, and its properties, then for each
+/// action that needs a tool at the material's level, what does it ("Cut
+/// by   LASER 2").
+fn material_lines(world: &World, m: &Material) -> Vec<Line<'static>> {
+    let mut lines = vec![
         Line::styled(m.name.clone(), Style::new().fg(colour(m.colour))),
         Line::raw(format!("Density  {} kg/m³", m.density)),
         Line::raw(format!("Melts    {}", melts(m.melting_point))),
         Line::raw(format!("Hardness {} HV", m.hardness)),
         Line::raw(format!("Heat cap {} J/kg·K", m.specific_heat)),
         Line::raw(format!("Conducts {} W/m·K", watts(m.thermal_conductivity))),
-        Line::raw(format!("Cut by   {}", cut_by(m))),
-    ]
+    ];
+    let tool_actions = world
+        .content()
+        .actions()
+        .iter()
+        .filter(|a| a.tool_from_material);
+    lines.extend(tool_actions.map(|action| {
+        let label = format!("{} by", action.name);
+        Line::raw(format!("{label:<9}{}", worked_by(m, &action.id)))
+    }));
+    lines
 }
 
 /// A melting point for the look panel: "1450 °C", or "never" for things
@@ -568,13 +591,13 @@ fn watts(milliwatts: u32) -> String {
     format!("{whole}.{}", fraction.trim_end_matches('0'))
 }
 
-/// The qualities that cut a material, like "LASER 2", or "nothing".
-fn cut_by(m: &Material) -> String {
-    if m.cut_by.is_empty() {
+/// The tool levels that do action `action` to a material, like "LASER 2",
+/// or "nothing".
+fn worked_by(m: &Material, action: &str) -> String {
+    let Some(levels) = m.worked_by.get(action) else {
         return "nothing".into();
-    }
-    let each: Vec<String> = m
-        .cut_by
+    };
+    let each: Vec<String> = levels
         .iter()
         .map(|(quality, level)| format!("{quality} {level}"))
         .collect();
@@ -654,11 +677,12 @@ fn interact_lines(world: &World, at: Pos) -> Vec<Line<'static>> {
 /// ("r  Repair: 2 scrap"); and if it can't be done, greyed with the reason
 /// on the next line.
 fn option_lines(world: &World, at: Pos, option: ActionOption) -> Vec<Line<'static>> {
-    let key = keys::action_key(option.action);
+    let action = &world.content().actions()[usize::from(option.action)];
     let label = format!(
-        "{key}  {}{}",
-        text::action_name(option.action),
-        uses(world, at, option.action)
+        "{}  {}{}",
+        action.key,
+        action.name,
+        uses(world, at, &action.id)
     );
     match option.blocked {
         None => vec![Line::styled(label, Style::new().fg(Color::Yellow))],
@@ -667,7 +691,10 @@ fn option_lines(world: &World, at: Pos, option: ActionOption) -> Vec<Line<'stati
             vec![
                 Line::styled(label, dim),
                 Line::styled(
-                    format!("   {}", text::blocked_short(blocked, Some(world))),
+                    format!(
+                        "   {}",
+                        text::blocked_short(blocked, option.action, Some(world))
+                    ),
                     dim,
                 ),
             ]
@@ -675,12 +702,10 @@ fn option_lines(world: &World, at: Pos, option: ActionOption) -> Vec<Line<'stati
     }
 }
 
-/// What the recipe for `action` at `at` uses up, like ": 2 scrap", or ""
-/// if it uses nothing or there's no recipe.
-fn uses(world: &World, at: Pos, action: Action) -> String {
-    let recipe = action
-        .recipe_action()
-        .and_then(|kind| world.recipe_for(kind, at));
+/// What the recipe for the action with id `action` at `at` uses up, like
+/// ": 2 scrap", or "" if it uses nothing or there's no recipe.
+fn uses(world: &World, at: Pos, action: &str) -> String {
+    let recipe = world.recipe_for(action, at);
     let parts: Vec<String> = recipe
         .map(|r| {
             r.uses
@@ -1304,9 +1329,19 @@ mod tests {
         let world = real_world();
         let steel = world.materials().iter().find(|m| m.id == "steel").unwrap();
         let mut material = steel.clone();
-        assert_eq!(cut_by(&material), "LASER 2");
-        material.cut_by.clear();
-        assert_eq!(cut_by(&material), "nothing");
+        assert_eq!(worked_by(&material, "cut"), "LASER 2");
+        material.worked_by.clear();
+        assert_eq!(worked_by(&material, "cut"), "nothing");
+        let texts: Vec<String> = material_lines(&world, &material)
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+        assert_eq!(texts.last().map(String::as_str), Some("Cut by   nothing"));
+    }
+
+    /// The number of the shipped action with this id.
+    fn number(world: &World, id: &str) -> u16 {
+        world.content().action_index(id).unwrap()
     }
 
     #[test]
@@ -1437,7 +1472,7 @@ mod tests {
             &world,
             world.player(),
             ActionOption {
-                action: nighthawk_sim::Action::Open,
+                action: number(&world, "open"),
                 blocked: None,
             },
         );
@@ -1534,7 +1569,7 @@ mod tests {
         world.apply(Command::Move(Dir::East));
         world.apply(Command::Interact {
             at: Pos::new(12, 7, 0),
-            action: nighthawk_sim::Action::PickUp,
+            action: number(&world, "pick_up"),
         });
         let lines = inventory_lines(&world, 0);
         assert_eq!(
@@ -1589,14 +1624,14 @@ mod tests {
         world.apply(Command::Move(Dir::East));
         world.apply(Command::Interact {
             at: Pos::new(12, 7, 0),
-            action: nighthawk_sim::Action::PickUp,
+            action: number(&world, "pick_up"),
         });
         for _ in 0..3 {
             world.apply(Command::Move(Dir::West));
         }
         world.apply(Command::Interact {
             at: Pos::new(6, 7, 0),
-            action: nighthawk_sim::Action::Cut,
+            action: number(&world, "cut"),
         });
         let (glyph, style) = glyph_at(&world, Pos::new(6, 7, 0), None);
         assert_eq!(glyph, "/");

@@ -1,87 +1,22 @@
-//! What the player can do to a tile, and why not (decision D36).
+//! What the player can do to a tile, and why not (decisions D36 and D43).
 //!
 //! The interact menu points a cursor at a tile and lists the actions that
-//! make sense there. Each action has a *reach*: opening or closing a door
-//! needs you right beside it, while a laser cutter works from 2 tiles away
-//! along a clear line (you, the gap, the wall). An action that can't be done
-//! is still listed, with the reason ([`Blocked`]), so the player can see
-//! what stands in the way.
+//! make sense there. Actions are content (`data/actions/`, see `action.rs`):
+//! each says how far it reaches (opening a door needs you right beside it; a
+//! laser cutter works from 2 tiles away along a clear line), whether the
+//! tile must be clear of items, and whether a tool is needed. An action that
+//! can't be done is still listed, with the reason ([`Blocked`]), so the
+//! player can see what stands in the way.
 //!
 //! These are rules, so they live in the sim: the front-end asks
 //! [`options_at`] what to show, and [`crate::World::apply`] checks the same
-//! rules again before doing anything.
+//! rules again before doing anything. Actions are referred to by their
+//! number: their place in the world's list of actions.
 
+use crate::action::{Action, Effect};
 use crate::map::Tile;
-
 use crate::pos::Pos;
-use crate::recipe::RecipeAction;
 use crate::world::World;
-
-/// How far you can reach to open or close a door: the tiles right around
-/// you, diagonals included.
-pub const HAND_REACH: u32 = 1;
-
-/// How far a laser cutter reaches: 2 tiles, so standing at (1, 1) it can
-/// cut a wall at (1, 3) across the open tile at (1, 2).
-pub const LASER_REACH: u32 = 2;
-
-/// Something the player can do to a tile.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Action {
-    Open,
-    Close,
-    /// Cut through it with a tool.
-    Cut,
-    /// Pick up the items lying there.
-    PickUp,
-    /// Repair or patch it, using up items.
-    Repair,
-}
-
-impl Action {
-    /// Every action, in the order the menu lists them.
-    pub const ALL: [Action; 5] = [
-        Action::Open,
-        Action::Close,
-        Action::Cut,
-        Action::Repair,
-        Action::PickUp,
-    ];
-
-    /// The kind of recipe this action follows, if it follows one.
-    pub fn recipe_action(self) -> Option<RecipeAction> {
-        match self {
-            Action::Cut => Some(RecipeAction::Cut),
-            Action::Repair => Some(RecipeAction::Repair),
-            Action::Open | Action::Close | Action::PickUp => None,
-        }
-    }
-
-    /// How far away the action works, in steps (diagonals count as one).
-    pub fn reach(self) -> u32 {
-        match self {
-            Action::Open | Action::Close | Action::PickUp | Action::Repair => HAND_REACH,
-            Action::Cut => LASER_REACH,
-        }
-    }
-
-    /// Whether the action makes sense at `at` at all: doors open and
-    /// close; things with a cut or repair recipe can be cut or repaired
-    /// (decision D40); items lying there can be picked up.
-    fn applies_at(self, world: &World, at: Pos) -> bool {
-        let Some(tile) = world.map().get(at) else {
-            return false;
-        };
-        match self {
-            Action::Open => tile == Tile::DoorClosed,
-            Action::Close => tile == Tile::DoorOpen,
-            // Something solid, with a recipe saying what it becomes.
-            Action::Cut => !tile.holds_air() && world.recipe_for(RecipeAction::Cut, at).is_some(),
-            Action::PickUp => world.items_at(at).next().is_some(),
-            Action::Repair => world.recipe_for(RecipeAction::Repair, at).is_some(),
-        }
-    }
-}
 
 /// Why an action can't be done right now.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -90,13 +25,14 @@ pub enum Blocked {
     TooFar { reach: u32 },
     /// Something solid is between you and the tile.
     InTheWay { at: Pos },
-    /// You can't close a door you're standing in.
+    /// It can't be done to the tile you're standing on.
     StandingInIt,
     /// It needs a tool with quality number `quality` (in the world's
     /// content) at `level`, and you have nothing that good.
     Needs { quality: u16, level: u8 },
-    /// Nothing can cut this material.
-    Uncuttable,
+    /// It needs a tool at the level the material lists for it, and this
+    /// material lists none: nothing you could carry would do it.
+    Unworkable,
     /// The action doesn't apply to this tile (opening a wall, say).
     NotPossible,
     /// You don't carry enough of an item the recipe uses: `need` of item
@@ -106,88 +42,79 @@ pub enum Blocked {
     Cluttered,
 }
 
-/// One line of the interact menu: an action, and why it can't be done, if
-/// it can't.
+/// One line of the interact menu: an action (its number), and why it can't
+/// be done, if it can't.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ActionOption {
-    pub action: Action,
+    pub action: u16,
     pub blocked: Option<Blocked>,
 }
 
-/// The actions that make sense on the tile at `at`, each with what blocks
-/// it. Empty for tiles with nothing to do, like open floor.
+/// The actions that make sense on the tile at `at`, in menu order, each
+/// with what blocks it. Empty for tiles with nothing to do, like open
+/// floor.
 pub fn options_at(world: &World, at: Pos) -> Vec<ActionOption> {
-    Action::ALL
-        .into_iter()
-        .filter(|action| action.applies_at(world, at))
-        .map(|action| ActionOption {
-            action,
-            blocked: blocked(world, at, action),
+    // `(0..).zip(list)` numbers the actions as it goes: 0, 1, 2…
+    (0..)
+        .zip(world.content().actions())
+        .filter(|(_, action)| applies(world, at, action))
+        .map(|(number, action)| ActionOption {
+            action: number,
+            blocked: rules(world, at, action),
         })
         .collect()
 }
 
-/// What stops the player doing `action` to the tile at `at` right now, or
-/// `None` if nothing does.
-pub fn blocked(world: &World, at: Pos, action: Action) -> Option<Blocked> {
-    if !action.applies_at(world, at) {
-        return Some(Blocked::NotPossible);
-    }
-    match action {
-        Action::Cut => cut_blocked(world, at),
-        Action::Open | Action::Close => hand_blocked(world, at),
-        // Picking up from the tile you stand on is fine.
-        Action::PickUp => too_far(world, at, HAND_REACH),
-        Action::Repair => repair_blocked(world, at),
+/// What stops the player doing action number `action` to the tile at
+/// `at` right now, or `None` if nothing does.
+pub fn blocked(world: &World, at: Pos, action: u16) -> Option<Blocked> {
+    match world.content().actions().get(usize::from(action)) {
+        Some(action) if applies(world, at, action) => rules(world, at, action),
+        _ => Some(Blocked::NotPossible),
     }
 }
 
-/// Repairs: you must be beside it (not on it), nothing may lie on it, and
-/// you must carry everything the recipe uses.
-fn repair_blocked(world: &World, at: Pos) -> Option<Blocked> {
-    hand_blocked(world, at)
-        .or_else(|| world.items_at(at).next().map(|_| Blocked::Cluttered))
-        .or_else(|| missing(world, at))
-}
-
-/// The first item the repair recipe at `at` uses that you don't carry
-/// enough of.
-fn missing(world: &World, at: Pos) -> Option<Blocked> {
-    let recipe = world.recipe_for(RecipeAction::Repair, at)?;
-    recipe.uses.iter().find_map(|used| {
-        let item = world.item_type_index(&used.item)?;
-        let have = world.carried_count(item);
-        (have < used.count).then_some(Blocked::Missing {
-            item,
-            need: used.count,
-            have,
-        })
-    })
-}
-
-/// Doors: you must be beside the door, and not standing in it.
-fn hand_blocked(world: &World, at: Pos) -> Option<Blocked> {
-    if at == world.player() {
-        return Some(Blocked::StandingInIt);
-    }
-    too_far(world, at, HAND_REACH)
-}
-
-/// Cutting: the material must be cuttable, within the laser's reach along a
-/// clear line, and you need the tool.
-fn cut_blocked(world: &World, at: Pos) -> Option<Blocked> {
-    let material = world.material_at(at)?;
-    let Some((id, &level)) = material.cut_by.iter().next() else {
-        return Some(Blocked::Uncuttable);
+/// Whether `action` makes sense at `at` at all: there's a recipe for it,
+/// there are items to pick up, or there's a door to open or shut.
+fn applies(world: &World, at: Pos, action: &Action) -> bool {
+    let Some(tile) = world.map().get(at) else {
+        return false;
     };
-    let have = world.tool_level(id);
-    let quality = world
-        .content()
-        .quality_index(id)
-        .expect("materials name real qualities");
-    too_far(world, at, LASER_REACH)
-        .or_else(|| in_the_way(world, at))
-        .or_else(|| (have < level).then_some(Blocked::Needs { quality, level }))
+    match action.effect {
+        Effect::Recipe => world.recipe_for(&action.id, at).is_some(),
+        Effect::PickUp => world.items_at(at).next().is_some(),
+        Effect::OpenDoor => tile == Tile::DoorClosed,
+        Effect::CloseDoor => tile == Tile::DoorOpen,
+    }
+}
+
+/// What stops an action that applies here, checked in a fixed order, so
+/// the reason given is the first thing to fix: whether anything could do
+/// it at all, where you stand, how far it is, what's in the way, what's
+/// lying on it, then the tools and items you carry.
+fn rules(world: &World, at: Pos, action: &Action) -> Option<Blocked> {
+    unworkable(world, at, action)
+        .or_else(|| standing_in_it(world, at, action))
+        .or_else(|| too_far(world, at, action.reach))
+        .or_else(|| blocked_line(world, at, action))
+        .or_else(|| cluttered(world, at, action))
+        .or_else(|| tool_needed(world, at, action))
+        .or_else(|| missing(world, at, action))
+}
+
+/// `Unworkable` for an action that needs a tool at the material's level,
+/// on a material that lists none for it.
+fn unworkable(world: &World, at: Pos, action: &Action) -> Option<Blocked> {
+    if !action.tool_from_material {
+        return None;
+    }
+    let material = world.material_at(at)?;
+    (!material.worked_by.contains_key(&action.id)).then_some(Blocked::Unworkable)
+}
+
+/// `StandingInIt` for an action that can't be done to your own tile.
+fn standing_in_it(world: &World, at: Pos, action: &Action) -> Option<Blocked> {
+    (!action.on_own_tile && at == world.player()).then_some(Blocked::StandingInIt)
 }
 
 /// `TooFar` if `at` is more than `reach` steps from the player, or on
@@ -195,6 +122,12 @@ fn cut_blocked(world: &World, at: Pos) -> Option<Blocked> {
 fn too_far(world: &World, at: Pos, reach: u32) -> Option<Blocked> {
     let near = world.player().steps_to(at).is_some_and(|d| d <= reach);
     (!near).then_some(Blocked::TooFar { reach })
+}
+
+/// `InTheWay` for an action that needs a clear line, if something solid
+/// is on it.
+fn blocked_line(world: &World, at: Pos, action: &Action) -> Option<Blocked> {
+    action.clear_line.then(|| in_the_way(world, at)).flatten()
 }
 
 /// `InTheWay` naming the first solid tile on the straight line from the
@@ -209,9 +142,75 @@ fn in_the_way(world: &World, at: Pos) -> Option<Blocked> {
         .map(|p| Blocked::InTheWay { at: p })
 }
 
+/// `Cluttered` for an action that needs the tile clear, if items lie
+/// there.
+fn cluttered(world: &World, at: Pos, action: &Action) -> Option<Blocked> {
+    let lying = world.items_at(at).next().is_some();
+    (action.clear_of_items && lying).then_some(Blocked::Cluttered)
+}
+
+/// `Needs` for the first tool level the player is short of: what the
+/// material asks for this action (any one of its levels is enough), then
+/// what the recipe itself needs (all of them).
+fn tool_needed(world: &World, at: Pos, action: &Action) -> Option<Blocked> {
+    material_tool(world, at, action).or_else(|| recipe_tools(world, at, action))
+}
+
+/// What the material asks: met if any one of its levels for this action
+/// is; if none is, the first is the one asked for.
+fn material_tool(world: &World, at: Pos, action: &Action) -> Option<Blocked> {
+    if !action.tool_from_material {
+        return None;
+    }
+    let levels = world.material_at(at)?.worked_by.get(&action.id)?;
+    if levels
+        .iter()
+        .any(|(q, &level)| world.tool_level(q) >= level)
+    {
+        return None;
+    }
+    let (quality, &level) = levels.iter().next()?;
+    Some(needs(world, quality, level))
+}
+
+/// What the recipe asks: every level it lists.
+fn recipe_tools(world: &World, at: Pos, action: &Action) -> Option<Blocked> {
+    let recipe = world.recipe_for(&action.id, at)?;
+    recipe
+        .needs
+        .iter()
+        .find(|&(quality, &level)| world.tool_level(quality) < level)
+        .map(|(quality, &level)| needs(world, quality, level))
+}
+
+/// `Needs` for `quality` (an id, checked on load) at `level`.
+fn needs(world: &World, quality: &str, level: u8) -> Blocked {
+    let quality = world
+        .content()
+        .quality_index(quality)
+        .expect("content names real qualities");
+    Blocked::Needs { quality, level }
+}
+
+/// The first item the recipe for `action` at `at` uses that you don't
+/// carry enough of.
+fn missing(world: &World, at: Pos, action: &Action) -> Option<Blocked> {
+    let recipe = world.recipe_for(&action.id, at)?;
+    recipe.uses.iter().find_map(|used| {
+        let item = world.item_type_index(&used.item)?;
+        let have = world.carried_count(item);
+        (have < used.count).then_some(Blocked::Missing {
+            item,
+            need: used.count,
+            have,
+        })
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::action::tests::{CLOSE, CUT, OPEN, PICK_UP, REPAIR, WELD};
     use crate::map_file::parse_map_for_tests as parse_map;
 
     /// A test room. `@` at (1, 1); a closed door `+` at (1, 3) two tiles
@@ -257,11 +256,11 @@ mod tests {
             only(&w, Pos::new(1, 3, 0)),
             vec![
                 ActionOption {
-                    action: Action::Open,
+                    action: OPEN,
                     blocked: Some(Blocked::TooFar { reach: 1 })
                 },
                 ActionOption {
-                    action: Action::Cut,
+                    action: CUT,
                     blocked: Some(Blocked::Needs {
                         quality: 0, // LASER, the first test quality
                         level: 2
@@ -275,18 +274,13 @@ mod tests {
     fn an_open_door_beside_you_can_be_closed_but_not_while_you_stand_in_it() {
         let mut w = world();
         let door = Pos::new(2, 1, 0);
-        assert_eq!(
-            only(&w, door),
-            vec![ActionOption {
-                action: Action::Close,
-                blocked: None
-            }]
-        );
+        let close = ActionOption {
+            action: CLOSE,
+            blocked: None,
+        };
+        assert_eq!(only(&w, door)[0], close, "closing first, then cutting");
         w.apply(crate::Command::Move(crate::Dir::East));
-        assert_eq!(
-            blocked(&w, door, Action::Close),
-            Some(Blocked::StandingInIt)
-        );
+        assert_eq!(blocked(&w, door, CLOSE), Some(Blocked::StandingInIt));
     }
 
     #[test]
@@ -294,7 +288,7 @@ mod tests {
         let mut w = world();
         w.apply(crate::Command::Move(crate::Dir::South)); // to (1, 2)
         // The open door at (2, 1) is diagonal from (1, 2).
-        assert_eq!(blocked(&w, Pos::new(2, 1, 0), Action::Close), None);
+        assert_eq!(blocked(&w, Pos::new(2, 1, 0), CLOSE), None);
     }
 
     #[test]
@@ -302,7 +296,7 @@ mod tests {
         let w = world();
         let hard = only(&w, Pos::new(5, 1, 0));
         assert_eq!(hard.len(), 1);
-        assert_eq!(hard[0].action, Action::Cut);
+        assert_eq!(hard[0].action, CUT);
         assert_eq!(hard[0].blocked, Some(Blocked::TooFar { reach: 2 }));
     }
 
@@ -315,7 +309,7 @@ mod tests {
         w.apply(crate::Command::Move(crate::Dir::East));
         assert_eq!(w.player(), Pos::new(2, 2, 0));
         assert_eq!(
-            blocked(&w, Pos::new(4, 2, 0), Action::Cut),
+            blocked(&w, Pos::new(4, 2, 0), CUT),
             Some(Blocked::InTheWay {
                 at: Pos::new(3, 2, 0)
             })
@@ -323,7 +317,7 @@ mod tests {
         // The near half itself is right beside you: only the tool is
         // missing.
         assert_eq!(
-            blocked(&w, Pos::new(3, 2, 0), Action::Cut),
+            blocked(&w, Pos::new(3, 2, 0), CUT),
             Some(Blocked::Needs {
                 quality: 0, // LASER, the first test quality
                 level: 2
@@ -335,8 +329,8 @@ mod tests {
     fn a_material_nothing_cuts_says_so() {
         let mut w = world();
         let wall = Pos::new(0, 1, 0);
-        w.materials_mut()[0].cut_by.clear();
-        assert_eq!(blocked(&w, wall, Action::Cut), Some(Blocked::Uncuttable));
+        w.materials_mut()[0].worked_by.clear();
+        assert_eq!(blocked(&w, wall, CUT), Some(Blocked::Unworkable));
     }
 
     #[test]
@@ -353,30 +347,18 @@ mod tests {
     fn actions_that_do_not_apply_are_not_possible() {
         let w = world();
         assert_eq!(
-            blocked(&w, Pos::new(0, 0, 0), Action::Open),
+            blocked(&w, Pos::new(0, 0, 0), OPEN),
             Some(Blocked::NotPossible)
         );
         assert_eq!(
-            blocked(&w, Pos::new(9, 9, 9), Action::Cut),
+            blocked(&w, Pos::new(9, 9, 9), CUT),
             Some(Blocked::NotPossible)
         );
-    }
-
-    #[test]
-    fn reaches_are_the_agreed_ones() {
-        assert_eq!(Action::Open.reach(), 1);
-        assert_eq!(Action::Close.reach(), 1);
-        assert_eq!(Action::Cut.reach(), 2);
-        assert_eq!(Action::Repair.reach(), 1);
-    }
-
-    #[test]
-    fn cutting_and_repairing_follow_recipes_and_the_rest_do_not() {
-        assert_eq!(Action::Cut.recipe_action(), Some(RecipeAction::Cut));
-        assert_eq!(Action::Repair.recipe_action(), Some(RecipeAction::Repair));
-        for action in [Action::Open, Action::Close, Action::PickUp] {
-            assert_eq!(action.recipe_action(), None);
-        }
+        assert_eq!(
+            blocked(&w, Pos::new(1, 3, 0), 999),
+            Some(Blocked::NotPossible),
+            "an action number that isn't in the list"
+        );
     }
 
     #[test]
@@ -392,39 +374,116 @@ mod tests {
         assert_eq!(
             only(&w, Pos::new(2, 1, 0)),
             vec![ActionOption {
-                action: Action::PickUp,
+                action: PICK_UP,
                 blocked: None
             }]
         );
         assert_eq!(only(&w, Pos::new(1, 2, 0)), vec![], "no items there");
-        assert_eq!(Action::PickUp.reach(), 1);
     }
 
     #[test]
-    fn only_solid_things_with_a_cut_recipe_offer_cutting() {
+    fn cutting_is_offered_wherever_there_is_a_cut_recipe() {
         let w = world();
-        // The test recipes cut doors and walls; the open door at (2, 1)
-        // isn't solid, and floor has no recipe.
-        let cut_offered = |at| options_at(&w, at).iter().any(|o| o.action == Action::Cut);
+        // The test recipes cut doors and walls; floor has none. An open
+        // door is still the "door" structure, so it can be cut too.
+        let cut_offered = |at| options_at(&w, at).iter().any(|o| o.action == CUT);
         assert!(cut_offered(Pos::new(1, 3, 0)), "a shut door");
         assert!(cut_offered(Pos::new(0, 1, 0)), "a wall");
-        assert!(!cut_offered(Pos::new(2, 1, 0)), "an open door");
+        assert!(cut_offered(Pos::new(2, 1, 0)), "an open door");
         assert!(!cut_offered(Pos::new(2, 2, 0)), "floor");
+    }
+
+    /// A room with a hull crack `x` north of the player and a pile of
+    /// scrap `s` to the east:
+    ///
+    /// ```text
+    /// #x##
+    /// #@s#
+    /// ####
+    /// ```
+    fn crack_world() -> World {
+        let rows = ["#x##", "#@s#", "####"];
+        let json = format!(
+            r##"{{ "id": "t", "name": "T",
+                 "legend": {{ "#": "wall", "x": "hull_crack",
+                    "s": {{ "structure": "floor", "items": [ {{ "item": "scrap" }} ] }} }},
+                 "decks": [ {{ "rows": {rows:?} }} ] }}"##
+        );
+        World::new(parse_map(&json).unwrap(), 1)
+    }
+
+    #[test]
+    fn a_recipe_can_need_tool_levels_of_its_own() {
+        // Welding the crack needs WELD 2 (the test recipe), whatever it's
+        // made of.
+        let crack = Pos::new(1, 0, 0);
+        let weld = Blocked::Needs {
+            quality: 1, // WELD, the second test quality
+            level: 2,
+        };
+        assert_eq!(blocked(&crack_world(), crack, WELD), Some(weld));
+        let welder = with_tool(crack_world(), "WELD", 2);
+        assert_eq!(blocked(&welder, crack, WELD), None);
+        let weak = with_tool(crack_world(), "WELD", 1);
+        assert_eq!(blocked(&weak, crack, WELD), Some(weld));
+    }
+
+    #[test]
+    fn any_one_level_the_material_lists_is_enough() {
+        // Steel walls take LASER 2 to cut; let WELD 1 do it too.
+        let mut w = with_tool(world(), "WELD", 1);
+        let wall = Pos::new(0, 1, 0);
+        let either = [("LASER".to_string(), 2), ("WELD".to_string(), 1)].into();
+        w.materials_mut()[0].worked_by.insert("cut".into(), either);
+        assert_eq!(blocked(&w, wall, CUT), None);
+        let both_high = [("LASER".to_string(), 2), ("WELD".to_string(), 3)].into();
+        w.materials_mut()[0]
+            .worked_by
+            .insert("cut".into(), both_high);
+        assert_eq!(
+            blocked(&w, wall, CUT),
+            Some(Blocked::Needs {
+                quality: 0,
+                level: 2
+            }),
+            "with none met, the first is asked for"
+        );
+    }
+
+    #[test]
+    fn items_lying_on_a_tile_block_actions_that_need_it_clear() {
+        // Repairing doesn't apply to floor, so drop scrap onto the crack's
+        // neighbour and check the rule directly.
+        let w = crack_world();
+        let rules_for = |id: &str| w.content().action(id).unwrap().clone();
+        let pile = Pos::new(2, 1, 0);
+        assert_eq!(
+            cluttered(&w, pile, &rules_for("repair")),
+            Some(Blocked::Cluttered)
+        );
+        assert_eq!(cluttered(&w, pile, &rules_for("pick_up")), None);
+        assert_eq!(cluttered(&w, Pos::new(1, 0, 0), &rules_for("repair")), None);
+        assert_eq!(REPAIR, w.content().action_index("repair").unwrap());
     }
 
     #[test]
     fn with_the_right_tool_in_reach_nothing_blocks_the_cut() {
         // The steel door two tiles south needs LASER 2.
         let w = with_laser(world(), 2);
-        assert_eq!(blocked(&w, Pos::new(1, 3, 0), Action::Cut), None);
+        assert_eq!(blocked(&w, Pos::new(1, 3, 0), CUT), None);
     }
 
-    /// The world, wearing a tool with `LASER level`. The tool is set up by
-    /// editing the world's saved form, since its fields are private to the
-    /// `world` module.
+    /// The world, wearing a tool with `LASER level`.
     fn with_laser(world: World, level: u8) -> World {
+        with_tool(world, "LASER", level)
+    }
+
+    /// The world, wearing a tool with `quality` at `level`. The tool is set
+    /// up by editing the world's saved form, since its fields are private
+    /// to the `world` module.
+    fn with_tool(world: World, quality: &str, level: u8) -> World {
         let mut json: serde_json::Value = serde_json::to_value(&world).unwrap();
-        json["content"]["item_types"][1]["qualities"]["LASER"] = level.into();
+        json["content"]["item_types"][1]["qualities"] = serde_json::json!({ quality: level });
         json["content"]["item_types"][1]["wear"] = serde_json::json!({ "pockets": [] });
         json["worn"] = serde_json::json!([ { "kind": 1, "material": 0, "pockets": [] } ]);
         serde_json::from_value(json).unwrap()

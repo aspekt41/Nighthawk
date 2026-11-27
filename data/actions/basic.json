@@ -1,0 +1,48 @@
+{
+  "actions": [
+    {
+      "id": "open",
+      "name": "Open",
+      "key": "o",
+      "reach": 1,
+      "effect": "open_door",
+      "seconds": 2,
+      "on_bump": true
+    },
+    {
+      "id": "close",
+      "name": "Close",
+      "key": "c",
+      "reach": 1,
+      "effect": "close_door",
+      "seconds": 2,
+      "shortcut": true
+    },
+    {
+      "id": "cut",
+      "name": "Cut",
+      "key": "x",
+      "reach": 2,
+      "clear_line": true,
+      "tool_from_material": true,
+      "done": "You cut through the {was}."
+    },
+    {
+      "id": "repair",
+      "name": "Repair",
+      "key": "r",
+      "reach": 1,
+      "clear_of_items": true,
+      "done": "You repair the {was}."
+    },
+    {
+      "id": "pick_up",
+      "name": "Pick up",
+      "key": "g",
+      "reach": 1,
+      "on_own_tile": true,
+      "effect": "pick_up",
+      "seconds": 2
+    }
+  ]
+}
