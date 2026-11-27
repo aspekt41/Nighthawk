@@ -44,6 +44,8 @@ pub enum Colour {
     Cyan,
     Blue,
     Magenta,
+    /// Doors, so they stand out from the walls around them.
+    LightRed,
 }
 
 impl Colour {
@@ -445,5 +447,6 @@ pub(crate) mod tests {
     fn colours_have_their_own_hash_ids() {
         assert_eq!(Colour::White.hash_id(), 0);
         assert_eq!(Colour::Magenta.hash_id(), 8);
+        assert_eq!(Colour::LightRed.hash_id(), 9, "added last, so none moved");
     }
 }

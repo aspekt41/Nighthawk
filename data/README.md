@@ -103,7 +103,7 @@ Each material has real physical properties, in whole numbers:
 |---|---|
 | `id` | How structures and maps refer to it. |
 | `name`, `description` | Shown in look mode (`V`). |
-| `colour` | Walls made of it are drawn in this colour: `white`, `grey`, `dark_grey`, `red`, `yellow`, `green`, `cyan`, `blue`, `magenta`. |
+| `colour` | Walls made of it are drawn in this colour: `white`, `grey`, `dark_grey`, `red`, `yellow`, `green`, `cyan`, `blue`, `magenta`, `light_red`. |
 | `density` | kg/m³ |
 | `melting_point` | °C. Optional: leave it out for something that doesn't melt (cotton chars and burns). |
 | `specific_heat` | J/(kg·K) |
@@ -125,10 +125,11 @@ other change.
   "structures": [
     { "id": "door", "name": "door",
       "description": "A sliding pressure door, shut. It holds air.",
-      "glyph": "+", "behaviour": "door", "material": "aluminium_alloy" },
+      "glyph": "+", "material": "aluminium_alloy", "colour": "light_red" },
     { "id": "door_open", "name": "open door",
       "description": "A sliding pressure door, open. Air passes through it.",
-      "glyph": "'", "behaviour": "open_door", "material": "aluminium_alloy" }
+      "glyph": "'", "material": "aluminium_alloy", "colour": "light_red",
+      "walkable": true }
   ]
 }
 ```
@@ -139,9 +140,11 @@ other change.
 | `name`, `description` | Shown in look mode and in messages ("You bump into the hull plating."). |
 | `glyph` | The one character the map draws it with. |
 
-| `behaviour` | What it does in the simulation, one of: `floor` (walk on it; air passes), `wall` (solid, airtight), `stairs_up` / `stairs_down` (a ladder to the next deck; see [Stairs](#stairs)), `door` (a shut door: solid and airtight), `open_door` (an open door: walkable, air passes), `hull_crack` (solid, a 4 cm² leak to space), `hull_breach` (solid, a 400 cm² hole to space). |
+| `walkable` | Optional. You can walk on it, and air fills it and moves through it (floor, ladders, an open door). Left out, it's solid and airtight (a wall, a shut door). |
+| `leak_cm2` | Optional. A hole to space of this many cm² (a hull crack is 4, a breach 400): the space beside it leaks, faster the bigger the hole. Solid structures only. |
+| `climb` | Optional. A ladder: `"up"` to the deck above or `"down"` to the one below (see [Stairs](#stairs)). Walkable structures only. |
 | `material` | The material it's made of, unless a map legend says otherwise. |
-| `colour` | Optional. Draw it in this colour (same names as materials) instead of the usual colour for its behaviour; a damaged door is red though it behaves like floor. |
+| `colour` | Optional. Draw it in this colour (same names as materials). Otherwise ladders are cyan, leaks red (bold from 100 cm²), floor dark grey, and solid structures their material's colour. Doors are `light_red`; a damaged door is `red`. |
 
 ## Recipes (`recipes/*.json`)
 
@@ -242,10 +245,11 @@ once, and the legend says what it stands on (something walkable).
 
 ### Stairs
 
-Stairs come in pairs. Stairs up (`>` in the example) need stairs down (`<`) at
-**exactly the same row and column on the deck above**, and stairs down need
-stairs up below them. A staircase without its partner is an error naming
-its spot, for example
+Stairs come in pairs. A ladder up (a structure with `"climb": "up"`, `>` in
+the example) needs a ladder down (`"climb": "down"`, `<`) at **exactly the
+same row and column on the deck above**, and a ladder down needs one up
+below it. A ladder without its partner is an error naming its spot, for
+example
 `stairs up at deck 0, row 2, column 27 need stairs down at the same spot on deck 1`.
 Climbing takes 20 seconds.
 

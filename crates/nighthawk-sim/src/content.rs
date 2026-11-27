@@ -362,7 +362,7 @@ mod tests {
             }
             "structures" => {
                 r#"{ "structures": [ { "id": "deck", "name": "deck", "description": "D.",
-                     "glyph": ".", "behaviour": "floor", "material": "steel" } ] }"#
+                     "glyph": ".", "walkable": true, "material": "steel" } ] }"#
             }
             "items" => {
                 r#"{ "items": [ { "id": "bolt", "name": "bolt", "description": "B.",

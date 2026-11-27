@@ -287,9 +287,12 @@ fn glyph_at(world: &World, pos: Pos, overlay: Option<Overlay>) -> (String, Style
     {
         return item_glyph(world, item);
     }
-    let shaded = match (tile, overlay) {
-        (Tile::Floor, Some(Overlay::Air)) => air_glyph(map.air(pos).unwrap_or(Mix::VACUUM)),
-        (Tile::Floor, Some(Overlay::Heat)) => heat_glyph(map.temperature(pos)),
+    // Overlays shade the open spaces: walkable tiles, except ladders, which
+    // stay visible so you can find your way.
+    let open_space = tile.walkable && tile.climb.is_none();
+    let shaded = match overlay {
+        Some(Overlay::Air) if open_space => air_glyph(map.air(pos).unwrap_or(Mix::VACUUM)),
+        Some(Overlay::Heat) if open_space => heat_glyph(map.temperature(pos)),
         _ => return structure_glyph(world, pos, tile),
     };
     (shaded.0.to_string(), shaded.1)
@@ -310,15 +313,17 @@ fn item_glyph(world: &World, item: &Item) -> (String, Style) {
     (glyph.to_string(), style)
 }
 
-/// How the structure at `pos` looks: its own glyph (a door's changes when
-/// it opens), in the colour for its kind of tile. Walls take their
-/// material's colour, so the hull stands out from the bulkheads inside.
+/// How the structure at `pos` looks: its own glyph, in its own colour if
+/// it has one (doors are light red), else the colour for its properties.
+/// Plain solid tiles take their material's colour, so the hull stands out
+/// from the bulkheads inside.
 fn structure_glyph(world: &World, pos: Pos, tile: Tile) -> (String, Style) {
     let glyph = world.structure_at(pos).map_or('?', |s| s.glyph);
     let own = world.structure_at(pos).and_then(|s| s.colour);
-    let style = match (own, tile, world.material_at(pos)) {
-        (Some(c), _, _) => tile_style(tile).fg(colour(c)),
-        (None, Tile::Wall, Some(material)) => Style::new().fg(colour(material.colour)),
+    let plain_solid = !tile.walkable && tile.leak_cm2 == 0;
+    let style = match (own, world.material_at(pos)) {
+        (Some(c), _) => tile_style(tile).fg(colour(c)),
+        (None, Some(material)) if plain_solid => Style::new().fg(colour(material.colour)),
         _ => tile_style(tile),
     };
     (glyph.to_string(), style)
@@ -336,6 +341,7 @@ fn colour(c: Colour) -> Color {
         Colour::Cyan => Color::Cyan,
         Colour::Blue => Color::Blue,
         Colour::Magenta => Color::Magenta,
+        Colour::LightRed => Color::LightRed,
     }
 }
 
@@ -384,18 +390,25 @@ fn air_glyph(mix: Mix) -> (&'static str, Style) {
     }
 }
 
-/// The colour for each kind of tile. Ladders and breaches are bold, so
+/// A hole to space at least this big (cm²) is drawn bold: a breach, not a
+/// crack.
+const BIG_HOLE_CM2: u32 = 100;
+
+/// The colour for a tile's properties: ladders cyan, leaks red, open floor
+/// dark grey, anything else solid grey. Ladders and big holes are bold, so
 /// the way on and the danger catch the eye.
 fn tile_style(tile: Tile) -> Style {
-    match tile {
-        Tile::Wall => Style::new().fg(Color::Gray),
-        Tile::Floor => Style::new().fg(Color::DarkGray),
-        Tile::StairsUp | Tile::StairsDown => {
-            Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD)
-        }
-        Tile::DoorClosed | Tile::DoorOpen => Style::new().fg(Color::LightRed),
-        Tile::HullCrack => Style::new().fg(Color::Red),
-        Tile::HullBreach => Style::new().fg(Color::Red).add_modifier(Modifier::BOLD),
+    let bold = Style::new().add_modifier(Modifier::BOLD);
+    if tile.climb.is_some() {
+        bold.fg(Color::Cyan)
+    } else if tile.leak_cm2 >= BIG_HOLE_CM2 {
+        bold.fg(Color::Red)
+    } else if tile.leak_cm2 > 0 {
+        Style::new().fg(Color::Red)
+    } else if tile.walkable {
+        Style::new().fg(Color::DarkGray)
+    } else {
+        Style::new().fg(Color::Gray)
     }
 }
 
@@ -536,7 +549,7 @@ fn look_lines(world: &World, at: Pos) -> Vec<Line<'static>> {
         Line::raw(format!("Look  {}, {}  deck {}", at.x, at.y, at.z)),
         here,
     ];
-    let tile = world.map().get(at).unwrap_or(Tile::Wall);
+    let tile = world.map().get(at).unwrap_or_default();
     lines.push(Line::raw(tile_name(world, at, tile)));
     if let Some(material) = world.material_at(at) {
         lines.extend(material_lines(world, material));
@@ -620,7 +633,17 @@ fn air_here(world: &World, at: Pos, tile: Tile) -> Vec<Line<'static>> {
 fn tile_name(world: &World, at: Pos, tile: Tile) -> String {
     world
         .structure_at(at)
-        .map_or_else(|| capitalised(tile.name()), |s| capitalised(&s.name))
+        .map_or_else(|| solid_or_open(tile).into(), |s| capitalised(&s.name))
+}
+
+/// What to call a tile with no structure to name it (which a map never
+/// has, but the panel shouldn't fail): what it's like.
+fn solid_or_open(tile: Tile) -> &'static str {
+    if tile.walkable {
+        "Open space"
+    } else {
+        "Something solid"
+    }
 }
 
 /// "ladder up" → "Ladder up".
@@ -640,7 +663,7 @@ fn interact_panel(world: &World, at: Pos) -> Paragraph<'static> {
 
 fn interact_lines(world: &World, at: Pos) -> Vec<Line<'static>> {
     let dim = Style::new().fg(Color::DarkGray);
-    let tile = world.map().get(at).unwrap_or(Tile::Wall);
+    let tile = world.map().get(at).unwrap_or_default();
     let mut lines = vec![
         Line::raw(format!("At    {}, {}  deck {}", at.x, at.y, at.z)),
         Line::raw(tile_name(world, at, tile)),
@@ -1047,21 +1070,42 @@ mod tests {
     }
 
     #[test]
-    fn tiles_have_their_own_colours() {
-        assert_eq!(tile_style(Tile::Floor).fg, Some(Color::DarkGray));
-        assert_eq!(tile_style(Tile::Wall).fg, Some(Color::Gray));
-        assert_eq!(tile_style(Tile::DoorOpen).fg, Some(Color::LightRed));
-        assert!(
-            tile_style(Tile::StairsUp)
-                .add_modifier
-                .contains(Modifier::BOLD)
-        );
-        assert_eq!(tile_style(Tile::HullCrack).fg, Some(Color::Red));
-        assert!(
-            tile_style(Tile::HullBreach)
-                .add_modifier
-                .contains(Modifier::BOLD)
-        );
+    fn tiles_are_coloured_by_their_properties() {
+        let solid = Tile::default();
+        let floor = Tile {
+            walkable: true,
+            ..solid
+        };
+        let ladder = Tile {
+            climb: Some(nighthawk_sim::Vertical::Up),
+            ..floor
+        };
+        let crack = Tile {
+            leak_cm2: 4,
+            ..solid
+        };
+        let breach = Tile {
+            leak_cm2: 400,
+            ..solid
+        };
+        assert_eq!(tile_style(floor).fg, Some(Color::DarkGray));
+        assert_eq!(tile_style(solid).fg, Some(Color::Gray));
+        assert_eq!(tile_style(ladder).fg, Some(Color::Cyan));
+        assert!(tile_style(ladder).add_modifier.contains(Modifier::BOLD));
+        assert_eq!(tile_style(crack).fg, Some(Color::Red));
+        assert!(!tile_style(crack).add_modifier.contains(Modifier::BOLD));
+        assert!(tile_style(breach).add_modifier.contains(Modifier::BOLD));
+        assert_eq!(solid_or_open(floor), "Open space");
+        assert_eq!(solid_or_open(solid), "Something solid");
+    }
+
+    #[test]
+    fn doors_keep_their_light_red_through_their_colour() {
+        // The real side-room door: solid, coloured light red in the data.
+        let world = real_world();
+        let (glyph, style) = glyph_at(&world, Pos::new(6, 7, 0), None);
+        assert_eq!(glyph, "+");
+        assert_eq!(style.fg, Some(Color::LightRed));
     }
 
     #[test]

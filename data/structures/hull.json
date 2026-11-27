@@ -5,7 +5,6 @@
       "name": "hull plating",
       "description": "The outer hull. Beyond it is nothing at all.",
       "glyph": "#",
-      "behaviour": "wall",
       "material": "nanocarbon_alloy"
     },
     {
@@ -13,16 +12,16 @@
       "name": "cracked hull",
       "description": "A hairline crack in the hull. Air whistles through it, slowly.",
       "glyph": "x",
-      "behaviour": "hull_crack",
-      "material": "nanocarbon_alloy"
+      "material": "nanocarbon_alloy",
+      "leak_cm2": 4
     },
     {
       "id": "hull_breach",
       "name": "hull breach",
       "description": "A hole torn through the hull. Air pours out of it into space.",
       "glyph": "X",
-      "behaviour": "hull_breach",
-      "material": "nanocarbon_alloy"
+      "material": "nanocarbon_alloy",
+      "leak_cm2": 400
     }
   ]
 }

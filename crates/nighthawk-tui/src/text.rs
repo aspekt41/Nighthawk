@@ -67,7 +67,8 @@ fn item_text(event: Event, name: &str) -> String {
 pub fn describe(event: Event) -> Option<String> {
     let line = match event {
         Event::Moved { .. } => return None,
-        Event::Bumped { tile, .. } => format!("You bump into the {}.", tile.name()),
+        // Without the world to name the structure ([`describe_in`] does).
+        Event::Bumped { .. } => "You bump into something solid.".into(),
         Event::Ambient(sound) => sound_text(sound).into(),
         Event::Unable { action, blocked } => blocked_text(blocked, action, None),
         Event::PickedUp(_) | Event::NoRoom(_) | Event::Dropped(_) | Event::NothingToDrop => {
@@ -262,11 +263,12 @@ mod tests {
         );
         let bump = Event::Bumped {
             at: Pos::new(0, 0, 0),
-            tile: Tile::Wall,
+            tile: Tile::default(),
         };
         assert_eq!(
             describe(bump).as_deref(),
-            Some("You bump into the bulkhead.")
+            Some("You bump into something solid."),
+            "without a world to name it (describe_in names it)"
         );
     }
 
@@ -541,7 +543,7 @@ mod tests {
         let world = nighthawk_sim::World::new(crate::content::load_start_map().unwrap(), 1);
         let bump = Event::Bumped {
             at: Pos::new(0, 7, 0),
-            tile: Tile::Wall,
+            tile: Tile::default(),
         };
         assert_eq!(
             describe_in(&world, bump).as_deref(),

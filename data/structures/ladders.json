@@ -5,16 +5,18 @@
       "name": "ladder up",
       "description": "A steel ladder up through a hatch to the deck above.",
       "glyph": ">",
-      "behaviour": "stairs_up",
-      "material": "steel"
+      "material": "steel",
+      "walkable": true,
+      "climb": "up"
     },
     {
       "id": "ladder_down",
       "name": "ladder down",
       "description": "A steel ladder down through a hatch to the deck below.",
       "glyph": "<",
-      "behaviour": "stairs_down",
-      "material": "steel"
+      "material": "steel",
+      "walkable": true,
+      "climb": "down"
     }
   ]
 }

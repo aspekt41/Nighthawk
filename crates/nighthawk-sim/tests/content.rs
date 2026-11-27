@@ -10,7 +10,7 @@ use std::collections::{HashSet, VecDeque};
 use std::fs;
 use std::path::PathBuf;
 
-use nighthawk_sim::{Dir, LoadedMap, MapError, Pos, Tile, Vertical, parse_map};
+use nighthawk_sim::{Dir, LoadedMap, MapError, Pos, Tile, parse_map};
 
 /// The number of the shipped action with this id, like `"cut"`.
 fn action(world: &nighthawk_sim::World, id: &str) -> u16 {
@@ -73,13 +73,38 @@ fn the_starting_map_has_no_way_off_its_edges() {
     // plain bulkhead, or damaged hull (cracks and breaches leak air, but
     // they're solid).
     let text = fs::read_to_string(maps_dir().join("aft_ring.json")).unwrap();
-    let map = load(&text).unwrap().map;
+    let loaded = load(&text).unwrap();
+    let map = &loaded.map;
     let on_edge =
         |p: &Pos| p.x == 0 || p.y == 0 || p.x == map.width() - 1 || p.y == map.height() - 1;
     for p in map.positions().filter(on_edge) {
-        let tile = map.get(p).unwrap();
-        assert!(!tile.is_passable(), "{p:?} is a {}", tile.name());
+        let structure = map.structure_index(p).unwrap();
+        let name = &loaded.content.structures()[usize::from(structure)].name;
+        assert!(!passable(&loaded, p), "{p:?} is a {name}");
     }
+}
+
+/// Whether the player can get through the tile at `p`: it's walkable, or
+/// walking into it does something that makes it walkable (a shut door has
+/// an `on_bump` action, open, whose recipe makes an open door).
+fn passable(loaded: &LoadedMap, p: Pos) -> bool {
+    let (map, content) = (&loaded.map, &loaded.content);
+    if map.get(p).is_some_and(Tile::is_walkable) {
+        return true;
+    }
+    let Some(here) = map.structure_index(p) else {
+        return false;
+    };
+    let id = &content.structures()[usize::from(here)].id;
+    let walkable = |s: &str| {
+        let to = content
+            .structure_index(s)
+            .expect("recipes name real structures");
+        content.structures()[usize::from(to)].walkable
+    };
+    content.recipes().iter().any(|r| {
+        &r.from == id && content.action(&r.action).is_some_and(|a| a.on_bump) && walkable(&r.to)
+    })
 }
 
 #[test]
@@ -109,24 +134,22 @@ fn shipped_maps() -> Vec<(PathBuf, LoadedMap)> {
 /// Where the player can get to from `at`: the eight neighbours on the same
 /// deck, plus the deck above or below when standing on stairs. Closed doors
 /// count, because the player can open them.
-fn neighbours(map: &nighthawk_sim::Map, at: Pos) -> Vec<Pos> {
+fn neighbours(loaded: &LoadedMap, at: Pos) -> Vec<Pos> {
     let mut next: Vec<Pos> = Dir::ALL.iter().map(|&d| at.step(d)).collect();
-    match map.get(at) {
-        Some(Tile::StairsUp) => next.push(at.climb(Vertical::Up)),
-        Some(Tile::StairsDown) => next.push(at.climb(Vertical::Down)),
-        _ => {}
+    if let Some(way) = loaded.map.get(at).and_then(|t| t.climb) {
+        next.push(at.climb(way));
     }
-    next.retain(|&p| map.get(p).is_some_and(Tile::is_passable));
+    next.retain(|&p| passable(loaded, p));
     next
 }
 
 /// Every tile the player can get to from `start`, by a breadth-first flood
 /// fill: visit a tile, queue its unvisited neighbours, repeat until done.
-fn reachable_from(map: &nighthawk_sim::Map, start: Pos) -> HashSet<Pos> {
+fn reachable_from(loaded: &LoadedMap, start: Pos) -> HashSet<Pos> {
     let mut seen = HashSet::from([start]);
     let mut queue = VecDeque::from([start]);
     while let Some(at) = queue.pop_front() {
-        let new: Vec<Pos> = neighbours(map, at)
+        let new: Vec<Pos> = neighbours(loaded, at)
             .into_iter()
             .filter(|&p| seen.insert(p))
             .collect();
@@ -140,11 +163,11 @@ fn every_open_tile_can_be_reached_from_the_start() {
     // A flood fill from the player's start, following stairs between decks.
     // Anything it doesn't reach is a room the player could never enter.
     for (path, loaded) in shipped_maps() {
-        let map = &loaded.map;
-        let seen = reachable_from(map, loaded.player_start);
-        let unreachable: Vec<Pos> = map
+        let seen = reachable_from(&loaded, loaded.player_start);
+        let unreachable: Vec<Pos> = loaded
+            .map
             .positions()
-            .filter(|&p| map.get(p).is_some_and(Tile::is_passable) && !seen.contains(&p))
+            .filter(|&p| passable(&loaded, p) && !seen.contains(&p))
             .collect();
         assert!(
             unreachable.is_empty(),
@@ -307,7 +330,10 @@ fn the_basic_laser_cuts_the_side_room_door_into_a_damaged_door() {
     assert_eq!(world.seconds() - before, 120, "two minutes");
     assert_eq!(world.structure_at(door).unwrap().id, "damaged_door");
     assert_eq!(world.material_at(door).unwrap().id, "aluminium_alloy");
-    assert_eq!(world.map().get(door), Some(Tile::Floor), "walkable, airy");
+    assert!(
+        world.map().get(door).unwrap().is_walkable(),
+        "walkable, airy"
+    );
 }
 
 #[test]
@@ -362,5 +388,5 @@ fn two_scraps_repair_the_cut_side_room_door() {
         "aluminium_alloy",
         "a repaired door keeps its own material"
     );
-    assert_eq!(world.map().get(door), Some(Tile::DoorClosed));
+    assert!(!world.map().get(door).unwrap().is_walkable(), "shut");
 }

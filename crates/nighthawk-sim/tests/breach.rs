@@ -8,7 +8,7 @@
 
 mod common;
 
-use nighthawk_sim::{Cause, Command, Dir, Event, Pos, Tile, Vertical, World};
+use nighthawk_sim::{Cause, Command, Dir, Event, Pos, Vertical, World};
 
 const DOOR: Pos = Pos::new(11, 7, 1); // the breached room's door
 const IN_THE_ROOM: Pos = Pos::new(11, 10, 1);
@@ -42,7 +42,7 @@ fn walk_to_the_door(world: &mut World) {
         world.apply(command);
     }
     assert_eq!(world.player(), OUTSIDE_THE_DOOR);
-    assert_eq!(world.map().get(DOOR), Some(Tile::DoorClosed));
+    assert_eq!(world.structure_at(DOOR).unwrap().id, "door", "shut");
 }
 
 /// Waits `n` times (5 s each) and returns every event.
@@ -171,7 +171,11 @@ fn one_scrap_patches_the_crew_deck_crack_and_stops_the_leak() {
         "steel",
         "the patch is made of the scrap, not nanocarbon"
     );
-    assert_eq!(world.map().get(CRACK), Some(Tile::Wall));
+    let patched = world.map().get(CRACK).unwrap();
+    assert!(
+        !patched.is_walkable() && patched.hole_cm2() == 0,
+        "solid, no hole"
+    );
 
     // With the crack sealed, the deck stops losing air.
     let sealed = pressure(&world, here);

@@ -72,7 +72,9 @@ impl Pos {
 }
 
 /// Up or down between decks. Up is `z + 1`: higher decks have higher numbers.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// In data files it's `"up"` or `"down"` (a ladder's `climb`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Vertical {
     Up,
     Down,
@@ -83,6 +85,22 @@ impl Vertical {
         match self {
             Vertical::Up => 1,
             Vertical::Down => -1,
+        }
+    }
+
+    /// The other way: up for down, down for up.
+    pub fn opposite(self) -> Vertical {
+        match self {
+            Vertical::Up => Vertical::Down,
+            Vertical::Down => Vertical::Up,
+        }
+    }
+
+    /// A fixed number per way, for the state hash.
+    pub(crate) fn hash_id(self) -> u8 {
+        match self {
+            Vertical::Up => 0,
+            Vertical::Down => 1,
         }
     }
 }

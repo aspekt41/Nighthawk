@@ -789,7 +789,10 @@ mod tests {
         }
         let world = world(&app);
         assert_eq!(world.player(), nighthawk_sim::Pos::new(33, 6, 1));
-        assert_eq!(world.map().get(DOOR), Some(nighthawk_sim::Tile::DoorOpen));
+        assert_eq!(
+            world.structure_at(DOOR).map(|s| s.id.as_str()),
+            Some("door_open")
+        );
         (app, dir)
     }
 
@@ -805,8 +808,8 @@ mod tests {
         app.handle_key(key(KeyCode::Char('j')));
 
         assert_eq!(
-            world(&app).map().get(DOOR),
-            Some(nighthawk_sim::Tile::DoorClosed)
+            world(&app).structure_at(DOOR).map(|s| s.id.as_str()),
+            Some("door")
         );
         // The shipped close action takes 2 seconds.
         assert_eq!(world(&app).seconds(), before + 2);
@@ -822,8 +825,8 @@ mod tests {
         assert_eq!(last_log(&app), "Never mind.");
         assert_eq!(world(&app).seconds(), before);
         assert_eq!(
-            world(&app).map().get(DOOR),
-            Some(nighthawk_sim::Tile::DoorOpen)
+            world(&app).structure_at(DOOR).map(|s| s.id.as_str()),
+            Some("door_open")
         );
 
         // And the prompt is over: the next key is an ordinary key again.
@@ -844,8 +847,8 @@ mod tests {
         app.handle_key(release);
         app.handle_key(key(KeyCode::Char('j')));
         assert_eq!(
-            world(&app).map().get(DOOR),
-            Some(nighthawk_sim::Tile::DoorClosed)
+            world(&app).structure_at(DOOR).map(|s| s.id.as_str()),
+            Some("door")
         );
     }
 
@@ -1019,15 +1022,15 @@ mod tests {
         press_all(&mut app, "ejo");
         let door = Pos::new(22, 7, 1);
         assert_eq!(
-            world(&app).map().get(door),
-            Some(nighthawk_sim::Tile::DoorOpen)
+            world(&app).structure_at(door).map(|s| s.id.as_str()),
+            Some("door_open")
         );
         assert_eq!(app.cursor, None);
         assert!(world(&app).seconds() > before, "opening takes time");
         press_all(&mut app, "ejc");
         assert_eq!(
-            world(&app).map().get(door),
-            Some(nighthawk_sim::Tile::DoorClosed)
+            world(&app).structure_at(door).map(|s| s.id.as_str()),
+            Some("door")
         );
     }
 
@@ -1052,8 +1055,10 @@ mod tests {
         press_all(&mut app, "ej");
         app.handle_key(key(KeyCode::Enter));
         assert_eq!(
-            world(&app).map().get(Pos::new(22, 7, 1)),
-            Some(nighthawk_sim::Tile::DoorOpen),
+            world(&app)
+                .structure_at(Pos::new(22, 7, 1))
+                .map(|s| s.id.as_str()),
+            Some("door_open"),
             "Open, not the blocked Cut"
         );
     }
@@ -1086,8 +1091,10 @@ mod tests {
         press_all(&mut app, "Vjo");
         app.handle_key(key(KeyCode::Enter));
         assert_eq!(
-            world(&app).map().get(Pos::new(22, 7, 1)),
-            Some(nighthawk_sim::Tile::DoorClosed)
+            world(&app)
+                .structure_at(Pos::new(22, 7, 1))
+                .map(|s| s.id.as_str()),
+            Some("door")
         );
         assert_eq!(app.cursor.map(|c| c.mode), Some(CursorMode::Look));
     }

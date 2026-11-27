@@ -55,7 +55,10 @@ rather than accepting a skipped step.
    (`crates/nighthawk-sim/src/rng.rs`): add a new `Stream` variant with a
    new number for each new system; never renumber or reuse one; never use
    `rand`'s helpers, `rand::rng()` or the clock. New state goes into
-   `World::state_hash`. New tile types get a new, never-reused `hash_id`.
+   `World::state_hash`; a new field on a content type goes into that
+   type's `hash_into`. Fixed lists that are hashed (`Effect`, `Colour`,
+   `Vertical`) give each entry a never-reused `hash_id`; add new ones at
+   the end.
    New state must also survive save/load (D23): it lives in `World`, so it's
    saved automatically. If it changes the save layout, bump `SAVE_VERSION` in
    `crates/nighthawk-sim/src/save.rs` and update the save-format test.
@@ -181,7 +184,7 @@ precise error and exits with code 1 before entering raw mode.
   small test set (`Content::for_tests()`) of qualities (`LASER`, `WELD`),
   actions (open, close, cut, repair, pick up, weld; their numbers are
   `OPEN`, `CLOSE`, `CUT`… in `crate::action::tests`), materials,
-  structures (one per behaviour, named after
+  structures (one for each kind of tile, named for it
   it: `"wall"`, `"floor"`, `"door"`, `"open_door"`…, plus `"frame"`, a
   floor) and items
   (`"suit"` with two 1 L pockets, `"cutter"` with LASER 1, `"scrap"`) and

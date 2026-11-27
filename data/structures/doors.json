@@ -5,25 +5,26 @@
       "name": "door",
       "description": "A sliding pressure door, shut. It holds air.",
       "glyph": "+",
-      "behaviour": "door",
-      "material": "aluminium_alloy"
+      "material": "aluminium_alloy",
+      "colour": "light_red"
     },
     {
       "id": "door_open",
       "name": "open door",
       "description": "A sliding pressure door, open. Air passes through it.",
       "glyph": "'",
-      "behaviour": "open_door",
-      "material": "aluminium_alloy"
+      "material": "aluminium_alloy",
+      "walkable": true,
+      "colour": "light_red"
     },
     {
       "id": "damaged_door",
       "name": "damaged door",
       "description": "A door frame with the door cut out of it, the edges still bright from the laser. Air passes freely, and it won't shut again until it's repaired.",
       "glyph": "/",
-      "behaviour": "floor",
       "material": "aluminium_alloy",
-      "colour": "red"
+      "colour": "red",
+      "walkable": true
     }
   ]
 }

@@ -1,12 +1,13 @@
-//! Structures: what each tile *is* (decision D37).
+//! Structures: what each tile *is* (decisions D37 and D47).
 //!
 //! A structure is a kind of thing a tile can be: deck plating, a bulkhead,
 //! hull plating, a door, a ladder, a crack in the hull. Structures are
-//! content, loaded from `data/structures/*.json`. Each one names its
-//! *behaviour*, from a short fixed list the code knows how to simulate
-//! (floor, wall, door, ladder, hull damage), and the material it's made of
-//! unless a map says otherwise. So the data decides what exists and what
-//! it's called; the code decides what a door *does*.
+//! content, loaded from `data/structures/*.json`. What one does in the
+//! simulation is a few named *properties*: whether you can walk on it (and
+//! air fills it), how big a hole to space it has, and whether it's a
+//! ladder. A door is just a solid structure that a recipe opens into a
+//! walkable one. So the data decides what exists and what it does; the
+//! code only knows what each property means.
 //!
 //! What a structure is made of is a separate question, answered by its
 //! material (see `material.rs`).
@@ -19,55 +20,7 @@ use crate::content::{ContentFile, FileError, first_duplicate, read_all};
 use crate::hash::Fnv64;
 use crate::map::Tile;
 use crate::material::{Colour, Materials};
-
-/// How a structure behaves in the simulation. Each behaviour is one
-/// [`Tile`]. A shut door and an open one are two structures (decision
-/// D46): opening a door is a recipe that turns one into the other.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Behaviour {
-    Floor,
-    Wall,
-    StairsUp,
-    StairsDown,
-    /// A shut door: solid and airtight.
-    Door,
-    HullCrack,
-    HullBreach,
-    /// An open door: walkable, and air passes.
-    OpenDoor,
-}
-
-impl Behaviour {
-    /// The tile a structure with this behaviour is.
-    pub fn tile(self) -> Tile {
-        match self {
-            Behaviour::Floor => Tile::Floor,
-            Behaviour::Wall => Tile::Wall,
-            Behaviour::StairsUp => Tile::StairsUp,
-            Behaviour::StairsDown => Tile::StairsDown,
-            Behaviour::Door => Tile::DoorClosed,
-            Behaviour::HullCrack => Tile::HullCrack,
-            Behaviour::HullBreach => Tile::HullBreach,
-            Behaviour::OpenDoor => Tile::DoorOpen,
-        }
-    }
-
-    /// A fixed number per behaviour, for the state hash. Never change or
-    /// reuse one.
-    fn hash_id(self) -> u8 {
-        match self {
-            Behaviour::Floor => 0,
-            Behaviour::Wall => 1,
-            Behaviour::StairsUp => 2,
-            Behaviour::StairsDown => 3,
-            Behaviour::Door => 4,
-            Behaviour::HullCrack => 5,
-            Behaviour::HullBreach => 6,
-            Behaviour::OpenDoor => 7,
-        }
-    }
-}
+use crate::pos::Vertical;
 
 /// One kind of structure.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -81,23 +34,45 @@ pub struct Structure {
     pub description: String,
     /// The character the map draws it with.
     pub glyph: char,
-    pub behaviour: Behaviour,
     /// The id of the material it's made of, unless a map says otherwise.
     pub material: String,
     /// Optional: the colour to draw it in, instead of the usual colour for
-    /// its behaviour (a damaged door is red, though it behaves like floor).
+    /// what it is (a damaged door is red, though you walk through it).
     #[serde(default)]
     pub colour: Option<Colour>,
+    /// You can walk on it, and air fills it. Optional: left out, it's
+    /// solid and airtight, like a wall or a shut door.
+    #[serde(default)]
+    pub walkable: bool,
+    /// A hole to space, in cm² (a hull crack is 4, a breach 400): the space
+    /// beside it leaks. Only for solid structures. Optional: none.
+    #[serde(default)]
+    pub leak_cm2: u32,
+    /// A ladder, going `"up"` or `"down"`. Only for walkable structures.
+    /// Optional: not a ladder.
+    #[serde(default)]
+    pub climb: Option<Vertical>,
 }
 
 impl Structure {
+    /// Its properties, as the simulation reads them on every tile of it.
+    pub fn tile(&self) -> Tile {
+        Tile {
+            walkable: self.walkable,
+            leak_cm2: self.leak_cm2,
+            climb: self.climb,
+        }
+    }
+
     /// Feeds everything about it into a state hash.
     pub(crate) fn hash_into(&self, h: &mut Fnv64) {
         h.str(&self.id).str(&self.name).str(&self.description);
         h.u64(u64::from(self.glyph))
-            .u8(self.behaviour.hash_id())
             .str(&self.material)
-            .u64(self.colour.map_or(u64::MAX, |c| u64::from(c.hash_id())));
+            .u64(self.colour.map_or(u64::MAX, |c| u64::from(c.hash_id())))
+            .u8(u8::from(self.walkable))
+            .u64(u64::from(self.leak_cm2))
+            .u8(self.climb.map_or(u8::MAX, Vertical::hash_id));
     }
 }
 
@@ -133,8 +108,8 @@ impl Structures {
 #[derive(Debug)]
 pub enum StructureError {
     /// A file that isn't valid JSON, or has the wrong shape: a missing or
-    /// misspelled field, an unknown behaviour, a glyph that isn't one
-    /// character.
+    /// misspelled field, a climb that isn't up or down, a glyph that isn't
+    /// one character.
     File(FileError),
     NoStructures,
     TooMany {
@@ -147,6 +122,12 @@ pub enum StructureError {
     UnknownMaterial {
         structure: String,
         material: String,
+    },
+    /// Properties that don't go together: a walkable structure with a
+    /// leak, or a solid one you could climb.
+    Mismatch {
+        structure: String,
+        problem: &'static str,
     },
 }
 
@@ -170,6 +151,9 @@ impl fmt::Display for StructureError {
                 f,
                 "structure {structure:?} is made of {material:?}, which isn't a material"
             ),
+            StructureError::Mismatch { structure, problem } => {
+                write!(f, "structure {structure:?}: {problem}")
+            }
         }
     }
 }
@@ -208,7 +192,8 @@ fn check_list(list: &[Structure]) -> Result<(), StructureError> {
     }
 }
 
-/// Checks one structure: its material exists.
+/// Checks one structure: its material exists, and its properties go
+/// together.
 fn check_one(structure: &Structure, materials: &Materials) -> Result<(), StructureError> {
     if materials.index_of(&structure.material).is_none() {
         return Err(StructureError::UnknownMaterial {
@@ -216,7 +201,20 @@ fn check_one(structure: &Structure, materials: &Materials) -> Result<(), Structu
             material: structure.material.clone(),
         });
     }
-    Ok(())
+    let problem = if structure.walkable && structure.leak_cm2 > 0 {
+        Some("only solid structures can leak (leak_cm2), and this one is walkable")
+    } else if !structure.walkable && structure.climb.is_some() {
+        Some("only walkable structures can be ladders (climb)")
+    } else {
+        None
+    };
+    match problem {
+        Some(problem) => Err(StructureError::Mismatch {
+            structure: structure.id.clone(),
+            problem,
+        }),
+        None => Ok(()),
+    }
 }
 
 #[cfg(test)]
@@ -224,30 +222,33 @@ pub(crate) mod tests {
     use super::*;
     use crate::material::tests::test_materials;
 
-    /// One structure as JSON, for tests.
-    fn structure(id: &str, behaviour: &str, glyph: char, extra: &str) -> String {
+    /// One structure as JSON, for tests: steel, with `properties` (JSON
+    /// fields like `"walkable": true`, each starting with a comma).
+    fn structure(id: &str, glyph: char, properties: &str) -> String {
         format!(
             r#"{{ "id": "{id}", "name": "{id}", "description": "A test structure.",
-                 "glyph": "{glyph}", "behaviour": "{behaviour}", "material": "steel" {extra} }}"#
+                 "glyph": "{glyph}", "material": "steel" {properties} }}"#
         )
     }
 
-    /// A structures file with one structure per behaviour, named after the
-    /// behaviour (a "wall", a "door"…), all steel. Tests across the sim use
-    /// these names in their map legends.
+    const WALKABLE: &str = r#", "walkable": true"#;
+
+    /// A structures file with one structure for each kind of thing the
+    /// tests need, named for what it is (a "wall", a "door"…), all steel.
+    /// Tests across the sim use these names in their map legends.
     pub(crate) fn test_structures_json() -> String {
         let all = [
-            structure("floor", "floor", '.', ""),
-            structure("wall", "wall", '#', ""),
-            structure("stairs_up", "stairs_up", '>', ""),
-            structure("stairs_down", "stairs_down", '<', ""),
-            structure("door", "door", '+', ""),
-            structure("hull_crack", "hull_crack", 'x', ""),
-            structure("hull_breach", "hull_breach", 'X', ""),
+            structure("floor", '.', WALKABLE),
+            structure("wall", '#', ""),
+            structure("stairs_up", '>', r#", "walkable": true, "climb": "up""#),
+            structure("stairs_down", '<', r#", "walkable": true, "climb": "down""#),
+            structure("door", '+', ""),
+            structure("hull_crack", 'x', r#", "leak_cm2": 4"#),
+            structure("hull_breach", 'X', r#", "leak_cm2": 400"#),
             // Walkable, and repairable into a door (see the test recipes).
-            structure("frame", "floor", '/', ""),
+            structure("frame", '/', WALKABLE),
             // What the test recipes open a door into, and close back.
-            structure("open_door", "open_door", '\'', ""),
+            structure("open_door", '\'', WALKABLE),
         ];
         format!(r#"{{ "structures": [ {} ] }}"#, all.join(", "))
     }
@@ -274,20 +275,43 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn each_behaviour_is_one_tile() {
-        let all = [
-            (Behaviour::Floor, Tile::Floor),
-            (Behaviour::Wall, Tile::Wall),
-            (Behaviour::StairsUp, Tile::StairsUp),
-            (Behaviour::StairsDown, Tile::StairsDown),
-            (Behaviour::Door, Tile::DoorClosed),
-            (Behaviour::HullCrack, Tile::HullCrack),
-            (Behaviour::HullBreach, Tile::HullBreach),
-            (Behaviour::OpenDoor, Tile::DoorOpen),
-        ];
-        for (behaviour, tile) in all {
-            assert_eq!(behaviour.tile(), tile);
-        }
+    fn properties_are_what_the_simulation_reads_and_default_to_solid() {
+        let structures = test_structures();
+        let tile =
+            |id: &str| structures.list()[usize::from(structures.index_of(id).unwrap())].tile();
+        assert_eq!(tile("wall"), Tile::WALL, "solid, airtight, no leak");
+        assert_eq!(tile("floor"), Tile::FLOOR);
+        assert_eq!(tile("stairs_up"), Tile::LADDER_UP);
+        assert_eq!(tile("stairs_down"), Tile::LADDER_DOWN);
+        assert_eq!(tile("hull_crack"), Tile::CRACK);
+        assert_eq!(tile("hull_breach"), Tile::BREACH);
+        assert_eq!(tile("door"), Tile::WALL, "a shut door is just solid");
+        assert_eq!(tile("open_door"), Tile::FLOOR, "an open one walkable");
+    }
+
+    #[test]
+    fn properties_that_do_not_go_together_are_refused() {
+        let leaky_floor = format!(
+            r#"{{ "structures": [ {} ] }}"#,
+            structure("grate", '=', r#", "walkable": true, "leak_cm2": 10"#)
+        );
+        assert_eq!(
+            error_of(&leaky_floor),
+            r#"structure "grate": only solid structures can leak (leak_cm2), and this one is walkable"#
+        );
+        let solid_ladder = format!(
+            r#"{{ "structures": [ {} ] }}"#,
+            structure("pole", '|', r#", "climb": "up""#)
+        );
+        assert_eq!(
+            error_of(&solid_ladder),
+            r#"structure "pole": only walkable structures can be ladders (climb)"#
+        );
+        let sideways = format!(
+            r#"{{ "structures": [ {} ] }}"#,
+            structure("slide", '~', r#", "walkable": true, "climb": "sideways""#)
+        );
+        assert!(error_of(&sideways).contains("sideways"));
     }
 
     #[test]
@@ -297,10 +321,10 @@ pub(crate) mod tests {
         let long_glyph = test_structures_json().replace("\"#\"", "\"##\"");
         assert!(error_of(&long_glyph).contains("walls.json"));
         let behaviour =
-            test_structures_json().replace("\"floor\", \"material\"", "\"lava\", \"material\"");
+            test_structures_json().replace(r#""walkable": true"#, r#""behaviour": "floor""#);
         assert!(
-            error_of(&behaviour).contains("lava"),
-            "{}",
+            error_of(&behaviour).contains("unknown field `behaviour`"),
+            "behaviours are gone (D47): {}",
             error_of(&behaviour)
         );
     }
@@ -317,8 +341,8 @@ pub(crate) mod tests {
     fn the_same_id_twice_is_an_error() {
         let json = format!(
             r#"{{ "structures": [ {}, {} ] }}"#,
-            structure("wall", "wall", '#', ""),
-            structure("wall", "wall", '#', "")
+            structure("wall", '#', ""),
+            structure("wall", '#', "")
         );
         assert_eq!(error_of(&json), r#"structure "wall" is defined twice"#);
     }
@@ -327,7 +351,7 @@ pub(crate) mod tests {
     fn a_structure_must_be_made_of_a_real_material() {
         let json = format!(
             r#"{{ "structures": [ {} ] }}"#,
-            structure("wall", "wall", '#', "").replace("\"steel\"", "\"cheese\"")
+            structure("wall", '#', "").replace("\"steel\"", "\"cheese\"")
         );
         assert_eq!(
             error_of(&json),
@@ -340,7 +364,7 @@ pub(crate) mod tests {
         // An open door is its own structure, with its own glyph (D46).
         let json = format!(
             r#"{{ "structures": [ {} ] }}"#,
-            structure("door", "door", '+', r#", "open_glyph": "'""#)
+            structure("door", '+', r#", "open_glyph": "'""#)
         );
         assert!(error_of(&json).contains("unknown field `open_glyph`"));
     }
@@ -363,9 +387,11 @@ pub(crate) mod tests {
             h.finish()
         };
         let base = test_structures().list()[4].clone();
-        let changes: [fn(&mut Structure); 5] = [
+        let changes: [fn(&mut Structure); 7] = [
             |s| s.glyph = '=',
-            |s| s.behaviour = Behaviour::Wall,
+            |s| s.walkable = !s.walkable,
+            |s| s.leak_cm2 += 1,
+            |s| s.climb = Some(Vertical::Up),
             |s| s.material.push('!'),
             |s| s.name.push('!'),
             |s| s.colour = Some(Colour::Red),
@@ -378,18 +404,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn behaviours_have_their_own_hash_ids() {
-        let ids = [
-            Behaviour::Floor,
-            Behaviour::Wall,
-            Behaviour::StairsUp,
-            Behaviour::StairsDown,
-            Behaviour::Door,
-            Behaviour::HullCrack,
-            Behaviour::HullBreach,
-            Behaviour::OpenDoor,
-        ]
-        .map(Behaviour::hash_id);
-        assert_eq!(ids, [0, 1, 2, 3, 4, 5, 6, 7]);
+    fn up_and_down_hash_differently() {
+        assert_ne!(Vertical::Up.hash_id(), Vertical::Down.hash_id());
     }
 }

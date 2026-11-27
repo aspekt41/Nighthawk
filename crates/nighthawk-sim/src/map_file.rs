@@ -384,15 +384,14 @@ fn build(
 ) -> Result<Built, MapError> {
     let depth = to_i32(decks.len());
     let mut built = Built {
-        map: Map::filled(to_i32(width), to_i32(height), depth, Tile::Floor),
+        map: Map::filled(to_i32(width), to_i32(height), depth, Tile::default()),
         starts: Vec::new(),
         floor_items: Vec::new(),
     };
     for (z, y, x, glyph) in cells(decks) {
         let at = Pos::new(to_i32(x), to_i32(y), to_i32(z));
         let placed = tile_for(glyph, legend, (z, y, x))?;
-        built.map.set(at, placed.tile);
-        built.map.set_structure(at, placed.structure);
+        built.map.place(at, placed.structure, placed.tile);
         built.map.set_material(at, placed.material);
         let here = placed.items.into_iter();
         built
@@ -556,7 +555,7 @@ fn place(glyph: char, entry: &LegendEntry, content: &Content) -> Result<Placemen
                 structure: id.clone(),
             })?;
     let made = &content.structures.list()[usize::from(structure)];
-    let tile = made.behaviour.tile();
+    let tile = made.tile();
     if glyph == PLAYER_START && !tile.is_walkable() {
         return Err(LegendError::StartInsideSomething {
             structure: id.clone(),
@@ -688,14 +687,14 @@ mod tests {
             (4, 3, 1)
         );
         assert_eq!(loaded.player_start, Pos::new(2, 1, 0));
-        assert_eq!(loaded.map.get(Pos::new(0, 0, 0)), Some(Tile::Wall));
-        assert_eq!(loaded.map.get(Pos::new(1, 1, 0)), Some(Tile::Floor));
+        assert_eq!(loaded.map.get(Pos::new(0, 0, 0)), Some(Tile::WALL));
+        assert_eq!(loaded.map.get(Pos::new(1, 1, 0)), Some(Tile::FLOOR));
     }
 
     #[test]
     fn player_start_is_floor() {
         let loaded = parse_map(&one_deck(&["###", "#@#", "###"])).unwrap();
-        assert_eq!(loaded.map.get(loaded.player_start), Some(Tile::Floor));
+        assert_eq!(loaded.map.get(loaded.player_start), Some(Tile::FLOOR));
     }
 
     #[test]
@@ -706,8 +705,8 @@ mod tests {
 
         assert_eq!(loaded.map.depth(), 2);
         assert_eq!(loaded.player_start, Pos::new(0, 0, 1));
-        assert_eq!(loaded.map.get(Pos::new(1, 1, 0)), Some(Tile::Wall));
-        assert_eq!(loaded.map.get(Pos::new(1, 1, 1)), Some(Tile::Floor));
+        assert_eq!(loaded.map.get(Pos::new(1, 1, 0)), Some(Tile::WALL));
+        assert_eq!(loaded.map.get(Pos::new(1, 1, 1)), Some(Tile::FLOOR));
     }
 
     #[test]
@@ -717,7 +716,7 @@ mod tests {
             "decks": [ { "rows": ["═══", ".@."] } ] }"#;
         let loaded = parse_map(json).unwrap();
         assert_eq!(loaded.map.width(), 3);
-        assert_eq!(loaded.map.get(Pos::new(1, 0, 0)), Some(Tile::Wall));
+        assert_eq!(loaded.map.get(Pos::new(1, 0, 0)), Some(Tile::WALL));
     }
 
     #[test]
@@ -904,8 +903,8 @@ mod tests {
             loaded.deck_names,
             vec!["Deck 0".to_string(), "Upper".to_string()]
         );
-        assert_eq!(loaded.map.get(Pos::new(1, 0, 0)), Some(Tile::StairsUp));
-        assert_eq!(loaded.map.get(Pos::new(1, 0, 1)), Some(Tile::StairsDown));
+        assert_eq!(loaded.map.get(Pos::new(1, 0, 0)), Some(Tile::LADDER_UP));
+        assert_eq!(loaded.map.get(Pos::new(1, 0, 1)), Some(Tile::LADDER_DOWN));
     }
 
     #[test]
@@ -1074,7 +1073,7 @@ mod material_tests {
     fn a_legend_entry_can_name_its_material() {
         let entry = r#""H": { "structure": "wall", "material": "hard_alloy" }"#;
         let loaded = map_with_legend(entry, "@.H").unwrap();
-        assert_eq!(loaded.map.get(Pos::new(2, 0, 0)), Some(Tile::Wall));
+        assert_eq!(loaded.map.get(Pos::new(2, 0, 0)), Some(Tile::WALL));
         assert_eq!(loaded.map.material_index(Pos::new(2, 0, 0)), Some(1));
         assert_eq!(
             loaded.map.material_index(Pos::new(0, 0, 0)),
@@ -1086,7 +1085,7 @@ mod material_tests {
     #[test]
     fn an_open_door_is_its_own_structure() {
         let loaded = map_with_legend(r#""'": "open_door""#, "@.'").unwrap();
-        assert_eq!(loaded.map.get(Pos::new(2, 0, 0)), Some(Tile::DoorOpen));
+        assert_eq!(loaded.map.get(Pos::new(2, 0, 0)), Some(Tile::FLOOR));
         assert_eq!(loaded.map.structure_index(Pos::new(2, 0, 0)), Some(8));
     }
 

@@ -6,7 +6,7 @@
 //! ```json
 //! {
 //!   "format": "nighthawk-save",
-//!   "version": 15,
+//!   "version": 16,
 //!   "world": { "deck_names": ["Stasis bay"], "seconds": 36, ... }
 //! }
 //! ```
@@ -33,7 +33,7 @@ pub const SAVE_FORMAT: &str = "nighthawk-save";
 
 /// The save layout this build reads and writes. Bump it when `World` (or
 /// anything inside it) changes shape, and update the save-format test.
-pub const SAVE_VERSION: u32 = 15;
+pub const SAVE_VERSION: u32 = 16;
 
 /// Everything that can be wrong with a save file.
 #[derive(Debug)]
@@ -111,9 +111,9 @@ pub fn save_to_string(world: &World) -> String {
 /// Reads a save file's text back into a world.
 pub fn load_from_str(text: &str) -> Result<World, SaveError> {
     check_header(text)?;
-    let file: SaveFileIn = serde_json::from_str(text).map_err(SaveError::Json)?;
+    let mut file: SaveFileIn = serde_json::from_str(text).map_err(SaveError::Json)?;
     file.world
-        .check_consistent()
+        .finish_loading()
         .map_err(SaveError::Inconsistent)?;
     Ok(file.world)
 }
@@ -136,7 +136,7 @@ fn check_header(text: &str) -> Result<(), SaveError> {
 mod tests {
     use super::*;
     use crate::map_file::parse_map_for_tests as parse_map;
-    use crate::pos::Dir;
+    use crate::pos::{Dir, Pos};
     use crate::world::Command;
 
     /// A 4×3 room. Built with `format!` from rows, because raw strings can't
@@ -189,13 +189,13 @@ mod tests {
     fn save_text_is_tagged_and_versioned() {
         let text = save_to_string(&small_world());
         assert!(text.contains(r#""format": "nighthawk-save""#));
-        assert!(text.contains(r#""version": 15"#));
+        assert!(text.contains(r#""version": 16"#));
     }
 
     /// The exact text of the tiny save in `the_save_format_is_stable`.
     const EXPECTED_SAVE: &str = r#"{
   "format": "nighthawk-save",
-  "version": 15,
+  "version": 16,
   "world": {
     "deck_names": [
       "Deck 0"
@@ -204,10 +204,6 @@ mod tests {
       "width": 2,
       "height": 1,
       "depth": 1,
-      "tiles": [
-        "floor",
-        "floor"
-      ],
       "air": [
         {
           "o2": 21278,
@@ -301,9 +297,11 @@ mod tests {
           "name": "deck plating",
           "description": "Plating.",
           "glyph": ".",
-          "behaviour": "floor",
           "material": "steel",
-          "colour": null
+          "colour": null,
+          "walkable": true,
+          "leak_cm2": 0,
+          "climb": null
         }
       ],
       "item_types": [
@@ -357,7 +355,7 @@ mod tests {
                 }
                 "structures" => {
                     r#"{ "structures": [ { "id": "deck_plating", "name": "deck plating",
-                         "description": "Plating.", "glyph": ".", "behaviour": "floor",
+                         "description": "Plating.", "glyph": ".", "walkable": true,
                          "material": "steel" } ] }"#
                 }
                 "items" => {
@@ -410,21 +408,21 @@ mod tests {
 
     #[test]
     fn a_save_without_a_version_is_not_a_save() {
-        let text = save_with("\"version\": 15,", "");
+        let text = save_with("\"version\": 16,", "");
         assert!(matches!(load_from_str(&text), Err(SaveError::NotASave)));
     }
 
     #[test]
     fn saves_from_other_versions_are_rejected_clearly() {
-        // A save from before open doors were their own structure: exactly
-        // what an old save file on disk looks like after this build is
-        // installed.
-        let text = save_with(r#""version": 15"#, r#""version": 14"#);
+        // A save from before structures had properties (and maps saved
+        // tiles): exactly what an old save file on disk looks like after
+        // this build is installed.
+        let text = save_with(r#""version": 16"#, r#""version": 15"#);
         let err = load_from_str(&text).unwrap_err();
-        assert!(matches!(err, SaveError::UnsupportedVersion { found: 14 }));
+        assert!(matches!(err, SaveError::UnsupportedVersion { found: 15 }));
         assert_eq!(
             err.to_string(),
-            "save file is version 14, but this build only reads version 15"
+            "save file is version 15, but this build only reads version 16"
         );
     }
 
@@ -460,7 +458,7 @@ mod tests {
     fn a_player_inside_a_wall_is_caught() {
         let text = save_with("\"x\": 1", "\"x\": 0");
         let err = load_from_str(&text).unwrap_err();
-        assert!(err.to_string().contains("inside a bulkhead"), "{err}");
+        assert!(err.to_string().contains("inside a wall"), "{err}");
     }
 
     #[test]
@@ -501,7 +499,10 @@ mod tests {
 
     #[test]
     fn a_save_with_broken_stairs_is_caught() {
-        let text = save_to_string(&two_deck_world()).replacen("\"stairs_up\"", "\"floor\"", 1);
+        // Tiles aren't saved, so break the content instead: the ladder up
+        // is no longer a ladder, leaving the one down above without one.
+        let text =
+            save_to_string(&two_deck_world()).replacen("\"climb\": \"up\"", "\"climb\": null", 1);
         let err = load_from_str(&text).unwrap_err();
         assert!(matches!(err, SaveError::Inconsistent(_)));
         assert!(err.to_string().contains("need stairs up"), "{err}");
@@ -528,8 +529,10 @@ mod tests {
         );
         let mut world = World::new(parse_map(&json).unwrap(), 3);
         world.apply(Command::Move(Dir::East)); // opens the closed door
-        let text = save_to_string(&world);
-        assert!(text.contains("\"door_open\""));
-        assert_eq!(load_from_str(&text).unwrap(), world);
+        let loaded = load_from_str(&save_to_string(&world)).unwrap();
+        let door = Pos::new(1, 0, 0);
+        assert_eq!(loaded.structure_at(door).unwrap().id, "open_door");
+        assert!(loaded.map().get(door).unwrap().is_walkable());
+        assert_eq!(loaded, world);
     }
 }

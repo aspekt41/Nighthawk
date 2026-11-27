@@ -484,6 +484,8 @@ mod tests {
         json["content"]["item_types"][1]["qualities"] = serde_json::json!({ quality: level });
         json["content"]["item_types"][1]["wear"] = serde_json::json!({ "pockets": [] });
         json["worn"] = serde_json::json!([ { "kind": 1, "material": 0, "pockets": [] } ]);
-        serde_json::from_value(json).unwrap()
+        let mut world: World = serde_json::from_value(json).unwrap();
+        world.finish_loading().unwrap(); // saves don't keep tiles: rebuild them
+        world
     }
 }

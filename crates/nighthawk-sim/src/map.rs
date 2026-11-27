@@ -7,122 +7,72 @@ use crate::hash::Fnv64;
 use crate::heat::{self, ROOM_TEMPERATURE_MK};
 use crate::pos::{Dir, Pos, Vertical};
 
-/// What a single tile is made of. This grows into material-backed terrain
-/// later (decision D10). For now it's just enough to walk around a room.
+/// What a tile is like, for the simulation: the properties of its
+/// structure (decision D47), like whether you can walk on it and whether it
+/// leaks to space. Which structure a tile is, and its material, are kept
+/// separately; this copy of its properties sits beside them so the air and
+/// heat loops, which visit every tile every second, read it directly.
 ///
-/// `Deserialize` lets map files name tiles in JSON. `rename_all` means the
-/// JSON spelling is lowercase: `"wall"`, `"floor"`.
-///
-/// A tile is only the *shape* of what's there. What it's made of is its
-/// material (see `material.rs`). `Ord` and `Hash` let shapes be map keys,
-/// as in the materials file's list of defaults.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Tile {
-    Floor,
-    Wall,
-    /// Stairs (or a ladder) to the deck above. Must stand directly under a
-    /// `StairsDown` on that deck; see [`Map::check_stairs`].
-    StairsUp,
-    /// Stairs (or a ladder) to the deck below.
-    StairsDown,
-    /// A shut door. Blocks movement (and, from M1.2, air). Walking into it
-    /// opens it.
-    DoorClosed,
-    /// An open door: walkable, and air passes through.
-    DoorOpen,
-    /// A small crack in the hull (about 2 × 2 cm): solid, but the space
-    /// beside it slowly leaks to vacuum.
-    HullCrack,
-    /// A hole torn in the hull (about 20 × 20 cm): solid, but the space
-    /// beside it vents to vacuum in seconds.
-    HullBreach,
+/// It's not saved (it's rebuilt from each tile's structure when a game is
+/// loaded), so it can never disagree with the structure it came from.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Tile {
+    /// You can walk on it, and air fills it and moves through it. A tile
+    /// that isn't walkable is solid and airtight.
+    pub walkable: bool,
+    /// The size of its hole to space, in cm² (a hull crack is 4, a breach
+    /// 400). Only solid tiles leak: the space beside them loses air.
+    pub leak_cm2: u32,
+    /// A ladder: which way it goes, up to the deck above or down to the one
+    /// below. Must be matched by a ladder the other way there.
+    pub climb: Option<Vertical>,
 }
 
 impl Tile {
-    /// Every shape, in the order they're listed above.
-    pub const ALL: [Tile; 8] = [
-        Tile::Floor,
-        Tile::Wall,
-        Tile::StairsUp,
-        Tile::StairsDown,
-        Tile::DoorClosed,
-        Tile::DoorOpen,
-        Tile::HullCrack,
-        Tile::HullBreach,
-    ];
-
-    /// The shape's name in data files, like `"stairs_up"`.
-    pub fn json_name(self) -> &'static str {
-        match self {
-            Tile::Floor => "floor",
-            Tile::Wall => "wall",
-            Tile::StairsUp => "stairs_up",
-            Tile::StairsDown => "stairs_down",
-            Tile::DoorClosed => "door_closed",
-            Tile::DoorOpen => "door_open",
-            Tile::HullCrack => "hull_crack",
-            Tile::HullBreach => "hull_breach",
-        }
-    }
-
     pub fn is_walkable(self) -> bool {
-        match self {
-            Tile::Floor | Tile::StairsUp | Tile::StairsDown | Tile::DoorOpen => true,
-            Tile::Wall | Tile::DoorClosed | Tile::HullCrack | Tile::HullBreach => false,
-        }
+        self.walkable
     }
 
-    /// Whether air can be in this tile and move through it. Walls and
-    /// closed doors are solid: air on either side can't get past them.
+    /// Whether air can be in this tile and move through it. Solid tiles
+    /// (walls, shut doors) aren't: air on either side can't get past them.
     pub fn holds_air(self) -> bool {
-        self.is_walkable()
+        self.walkable
     }
 
-    /// The area of the hole to space in this tile, in cm². Zero for
-    /// everything except damaged hull.
+    /// The area of the hole to space in this tile, in cm².
     pub fn hole_cm2(self) -> u64 {
-        match self {
-            Tile::HullCrack => 4,
-            Tile::HullBreach => 400,
-            _ => 0,
-        }
+        u64::from(self.leak_cm2)
     }
+}
 
-    /// Whether the player can get through this tile, possibly by opening it
-    /// first. Used to check every room can be reached.
-    pub fn is_passable(self) -> bool {
-        self.is_walkable() || self == Tile::DoorClosed
-    }
-
-    /// A fixed number per tile type, for [`Map::hash_into`]. These numbers
-    /// are part of the determinism contract: never change or reuse one.
-    fn hash_id(self) -> u8 {
-        match self {
-            Tile::Floor => 0,
-            Tile::Wall => 1,
-            Tile::StairsUp => 2,
-            Tile::StairsDown => 3,
-            Tile::DoorClosed => 4,
-            Tile::DoorOpen => 5,
-            Tile::HullCrack => 6,
-            Tile::HullBreach => 7,
-        }
-    }
-
-    /// A short name for messages, like "You bump into the wall."
-    pub fn name(self) -> &'static str {
-        match self {
-            Tile::Floor => "floor",
-            Tile::Wall => "bulkhead",
-            Tile::StairsUp => "ladder up",
-            Tile::StairsDown => "ladder down",
-            Tile::DoorClosed => "closed door",
-            Tile::DoorOpen => "open door",
-            Tile::HullCrack => "cracked hull",
-            Tile::HullBreach => "hull breach",
-        }
-    }
+/// Tiles with each kind of property, for tests that build maps directly.
+#[cfg(test)]
+impl Tile {
+    pub(crate) const WALL: Tile = Tile {
+        walkable: false,
+        leak_cm2: 0,
+        climb: None,
+    };
+    pub(crate) const FLOOR: Tile = Tile {
+        walkable: true,
+        ..Tile::WALL
+    };
+    pub(crate) const LADDER_UP: Tile = Tile {
+        climb: Some(Vertical::Up),
+        ..Tile::FLOOR
+    };
+    pub(crate) const LADDER_DOWN: Tile = Tile {
+        climb: Some(Vertical::Down),
+        ..Tile::FLOOR
+    };
+    pub(crate) const CRACK: Tile = Tile {
+        leak_cm2: 4,
+        ..Tile::WALL
+    };
+    pub(crate) const BREACH: Tile = Tile {
+        leak_cm2: 400,
+        ..Tile::WALL
+    };
 }
 
 /// The tile that names `i`'s group in a union-find: follow parents until a
@@ -181,6 +131,11 @@ pub struct Map {
     width: i32,
     height: i32,
     depth: i32,
+    /// What each tile is like, deck by deck, row by row: a copy of its
+    /// structure's properties. Not saved (`#[serde(skip)]` leaves it out,
+    /// and empty when loaded); [`Map::rebuild_tiles`] fills it in again
+    /// from `structure`.
+    #[serde(skip)]
     tiles: Vec<Tile>,
     /// The air in each tile, in the same order as `tiles`. Tiles that can't
     /// hold air are vacuum, except a closed door, which keeps whatever air
@@ -202,9 +157,8 @@ pub struct Map {
     /// into the world's list of materials (decision D35).
     made_of: Vec<u16>,
     /// What each tile is, in the same order as `tiles`: an index into the
-    /// world's list of structures (decision D37). `tiles` says how it
-    /// behaves right now (a door open or shut); this says which structure
-    /// it is.
+    /// world's list of structures (decision D37). `tiles` holds its
+    /// properties.
     structure: Vec<u16>,
 }
 
@@ -256,12 +210,32 @@ impl Map {
         self.index(p).map(|i| self.structure[i])
     }
 
-    /// Sets which structure the tile at `p` is. Positions off the map are
-    /// ignored.
-    pub(crate) fn set_structure(&mut self, p: Pos, structure: u16) {
+    /// Makes the tile at `p` structure number `structure`, which is like
+    /// `tile`. Setting both together keeps them matching. Positions off
+    /// the map are ignored.
+    pub(crate) fn place(&mut self, p: Pos, structure: u16, tile: Tile) {
         if let Some(i) = self.index(p) {
             self.structure[i] = structure;
+            self.tiles[i] = tile;
         }
+    }
+
+    /// Fills in every tile's properties from its structure, after loading
+    /// a save (which doesn't store them). `tile_of` gives the properties
+    /// of a structure number, or `None` if there's no such structure,
+    /// which is an error naming the first tile that has one.
+    pub(crate) fn rebuild_tiles(
+        &mut self,
+        tile_of: impl Fn(u16) -> Option<Tile>,
+    ) -> Result<(), String> {
+        let mut tiles = Vec::with_capacity(self.structure.len());
+        for (i, &structure) in self.structure.iter().enumerate() {
+            let tile = tile_of(structure)
+                .ok_or_else(|| format!("the tile at {:?} has no structure", self.pos_of(i)))?;
+            tiles.push(tile);
+        }
+        self.tiles = tiles;
+        Ok(())
     }
 
     /// The air in the tile at `p`, or `None` if `p` is off the map.
@@ -509,7 +483,7 @@ impl Map {
             return Vec::new();
         };
         let mut targets = vec![Pos::new(p.x + 1, p.y, p.z), Pos::new(p.x, p.y + 1, p.z)];
-        if self.get(p) == Some(Tile::StairsUp) {
+        if self.get(p).and_then(|t| t.climb) == Some(Vertical::Up) {
             targets.push(p.climb(Vertical::Up));
         }
         targets
@@ -547,8 +521,11 @@ impl Map {
         self.index(p).map(|i| self.tiles[i])
     }
 
-    /// Sets the tile at `p`. Positions off the map are ignored.
-    pub fn set(&mut self, p: Pos, tile: Tile) {
+    /// Sets the tile at `p`, for tests of the physics that need no
+    /// structures. (Outside tests, tiles change only with their structure,
+    /// through [`Map::place`].) Positions off the map are ignored.
+    #[cfg(test)]
+    pub(crate) fn set(&mut self, p: Pos, tile: Tile) {
         if let Some(i) = self.index(p) {
             self.tiles[i] = tile;
         }
@@ -612,31 +589,28 @@ impl Map {
         })
     }
 
-    /// Checks that stairs come in pairs: every `StairsUp` has a `StairsDown`
-    /// at the same spot on the deck above, and every `StairsDown` has a
-    /// `StairsUp` below it. That's what lets climbing simply move you one
+    /// Checks that ladders come in pairs: every ladder up has a ladder down
+    /// at the same spot on the deck above, and every ladder down has a
+    /// ladder up below it. That's what lets climbing simply move you one
     /// deck up or down, knowing there's a way back.
     pub fn check_stairs(&self) -> Result<(), StairsError> {
         for at in self.positions() {
-            let needed = match self.get(at) {
-                Some(Tile::StairsUp) => (Vertical::Up, Tile::StairsDown),
-                Some(Tile::StairsDown) => (Vertical::Down, Tile::StairsUp),
-                _ => continue,
+            let Some(way) = self.get(at).and_then(|t| t.climb) else {
+                continue;
             };
-            let (way, partner) = needed;
-            if self.get(at.climb(way)) != Some(partner) {
+            let back = self.get(at.climb(way)).and_then(|t| t.climb);
+            if back != Some(way.opposite()) {
                 return Err(StairsError { at, way });
             }
         }
         Ok(())
     }
 
-    /// Feeds the map's size and every tile into a state hash.
+    /// Feeds the map's size and every tile into a state hash. A tile's
+    /// properties come from its structure, which is hashed (with the
+    /// world's content), so they needn't be hashed again.
     pub(crate) fn hash_into(&self, h: &mut Fnv64) {
         h.i32(self.width).i32(self.height).i32(self.depth);
-        for tile in &self.tiles {
-            h.u8(tile.hash_id());
-        }
         for lost in self.vented {
             h.u64(lost);
         }
@@ -678,29 +652,24 @@ mod tests {
     use super::*;
 
     #[test]
-    fn only_floor_is_walkable() {
-        assert!(Tile::Floor.is_walkable());
-        assert!(!Tile::Wall.is_walkable());
-    }
-
-    #[test]
-    fn tiles_have_names_for_messages() {
-        assert_eq!(Tile::Floor.name(), "floor");
-        assert_eq!(Tile::Wall.name(), "bulkhead");
+    fn walkable_tiles_hold_air_and_others_are_solid() {
+        assert!(Tile::FLOOR.is_walkable() && Tile::FLOOR.holds_air());
+        assert!(!Tile::WALL.is_walkable() && !Tile::WALL.holds_air());
+        assert_eq!(Tile::default(), Tile::WALL, "solid unless it says");
     }
 
     #[test]
     fn get_and_set_respect_all_three_axes() {
-        let mut map = Map::filled(4, 3, 2, Tile::Floor);
-        map.set(Pos::new(1, 2, 1), Tile::Wall);
-        assert_eq!(map.get(Pos::new(1, 2, 1)), Some(Tile::Wall));
+        let mut map = Map::filled(4, 3, 2, Tile::FLOOR);
+        map.set(Pos::new(1, 2, 1), Tile::WALL);
+        assert_eq!(map.get(Pos::new(1, 2, 1)), Some(Tile::WALL));
         // Same x and y on the other deck is untouched.
-        assert_eq!(map.get(Pos::new(1, 2, 0)), Some(Tile::Floor));
+        assert_eq!(map.get(Pos::new(1, 2, 0)), Some(Tile::FLOOR));
     }
 
     #[test]
     fn off_map_positions_are_none() {
-        let map = Map::filled(4, 3, 1, Tile::Floor);
+        let map = Map::filled(4, 3, 1, Tile::FLOOR);
         assert_eq!(map.get(Pos::new(-1, 0, 0)), None);
         assert_eq!(map.get(Pos::new(4, 0, 0)), None);
         assert_eq!(map.get(Pos::new(0, 0, 1)), None);
@@ -708,114 +677,25 @@ mod tests {
 
     /// A 2×1 map with two decks: stairs up at (0, 0, 0), stairs down above.
     fn stairs_map() -> Map {
-        let mut map = Map::filled(2, 1, 2, Tile::Floor);
-        map.set(Pos::new(0, 0, 0), Tile::StairsUp);
-        map.set(Pos::new(0, 0, 1), Tile::StairsDown);
+        let mut map = Map::filled(2, 1, 2, Tile::FLOOR);
+        map.set(Pos::new(0, 0, 0), Tile::LADDER_UP);
+        map.set(Pos::new(0, 0, 1), Tile::LADDER_DOWN);
         map
     }
 
     #[test]
-    fn stairs_are_walkable_and_named() {
-        assert!(Tile::StairsUp.is_walkable() && Tile::StairsDown.is_walkable());
-        assert_eq!(Tile::StairsUp.name(), "ladder up");
-        assert_eq!(Tile::StairsDown.name(), "ladder down");
-    }
-
-    #[test]
-    fn every_tile_has_its_own_hash_id() {
-        let ids = [Tile::Floor, Tile::Wall, Tile::StairsUp, Tile::StairsDown].map(Tile::hash_id);
-        assert_eq!(
-            ids,
-            [0, 1, 2, 3],
-            "hash ids are part of the determinism contract"
-        );
-    }
-
-    #[test]
-    fn positions_cover_every_tile_once_in_reading_order() {
-        let map = Map::filled(3, 2, 2, Tile::Floor);
-        let all: Vec<Pos> = map.positions().collect();
-        assert_eq!(all.len(), 12);
-        assert_eq!(all[0], Pos::new(0, 0, 0));
-        assert_eq!(all[1], Pos::new(1, 0, 0), "x changes fastest");
-        assert_eq!(all[3], Pos::new(0, 1, 0));
-        assert_eq!(all[6], Pos::new(0, 0, 1), "then the next deck");
-    }
-
-    #[test]
-    fn paired_stairs_pass_the_check() {
-        assert_eq!(stairs_map().check_stairs(), Ok(()));
-        assert_eq!(Map::filled(2, 2, 1, Tile::Floor).check_stairs(), Ok(()));
-    }
-
-    #[test]
-    fn stairs_up_without_stairs_down_above_fail() {
-        let mut map = stairs_map();
-        map.set(Pos::new(0, 0, 1), Tile::Floor);
-        let err = map.check_stairs().unwrap_err();
-        assert_eq!(
-            err,
-            StairsError {
-                at: Pos::new(0, 0, 0),
-                way: Vertical::Up
-            }
-        );
-        assert_eq!(
-            err.to_string(),
-            "stairs up at deck 0, row 0, column 0 need stairs down at the same spot on deck 1"
-        );
-    }
-
-    #[test]
-    fn stairs_down_without_stairs_up_below_fail() {
-        let mut map = stairs_map();
-        map.set(Pos::new(0, 0, 0), Tile::Floor);
-        let err = map.check_stairs().unwrap_err();
-        assert_eq!(
-            err,
-            StairsError {
-                at: Pos::new(0, 0, 1),
-                way: Vertical::Down
-            }
-        );
-        assert!(err.to_string().starts_with("stairs down at deck 1"));
-    }
-
-    #[test]
-    fn stairs_off_the_top_or_bottom_of_the_ship_fail() {
-        let mut top = Map::filled(1, 1, 1, Tile::StairsUp);
-        assert!(top.check_stairs().is_err());
-        top.set(Pos::new(0, 0, 0), Tile::StairsDown);
-        assert!(top.check_stairs().is_err());
-    }
-
-    #[test]
-    fn a_map_with_broken_stairs_is_inconsistent() {
-        let mut map = stairs_map();
-        map.set(Pos::new(0, 0, 1), Tile::Wall);
-        assert!(
-            map.check_consistent()
-                .unwrap_err()
-                .contains("need stairs down")
-        );
-    }
-
-    #[test]
-    fn doors_block_when_closed_and_let_you_through_when_open() {
-        assert!(!Tile::DoorClosed.is_walkable());
-        assert!(Tile::DoorOpen.is_walkable());
-        assert!(Tile::DoorClosed.is_passable(), "you can open it");
-        assert!(!Tile::Wall.is_passable());
-        assert!(Tile::Floor.is_passable());
-        assert_eq!(Tile::DoorClosed.name(), "closed door");
-        assert_eq!(Tile::DoorOpen.name(), "open door");
+    fn ladders_are_walkable_and_say_which_way_they_go() {
+        assert!(Tile::LADDER_UP.is_walkable() && Tile::LADDER_DOWN.is_walkable());
+        assert_eq!(Tile::LADDER_UP.climb, Some(Vertical::Up));
+        assert_eq!(Tile::LADDER_DOWN.climb, Some(Vertical::Down));
+        assert_eq!(Tile::FLOOR.climb, None);
     }
 
     // --- Air ------------------------------------------------------------------
 
     /// A one-deck corridor `w` tiles long, all floor, full of standard air.
     fn corridor(w: i32) -> Map {
-        let mut map = Map::filled(w, 1, 1, Tile::Floor);
+        let mut map = Map::filled(w, 1, 1, Tile::FLOOR);
         map.fill_deck_air(0, Mix::STANDARD);
         map
     }
@@ -838,22 +718,17 @@ mod tests {
 
     #[test]
     fn only_open_tiles_hold_air() {
-        for tile in [
-            Tile::Floor,
-            Tile::StairsUp,
-            Tile::StairsDown,
-            Tile::DoorOpen,
-        ] {
+        for tile in [Tile::FLOOR, Tile::LADDER_UP, Tile::LADDER_DOWN, Tile::FLOOR] {
             assert!(tile.holds_air(), "{tile:?}");
         }
-        assert!(!Tile::Wall.holds_air());
-        assert!(!Tile::DoorClosed.holds_air());
+        assert!(!Tile::WALL.holds_air());
+        assert!(!Tile::WALL.holds_air());
     }
 
     #[test]
     fn filling_a_deck_skips_walls_and_other_decks() {
-        let mut map = Map::filled(2, 1, 2, Tile::Floor);
-        map.set(Pos::new(1, 0, 0), Tile::Wall);
+        let mut map = Map::filled(2, 1, 2, Tile::FLOOR);
+        map.set(Pos::new(1, 0, 0), Tile::WALL);
         map.fill_deck_air(0, Mix::STANDARD);
         assert_eq!(map.air(Pos::new(0, 0, 0)), Some(Mix::STANDARD));
         assert_eq!(
@@ -890,7 +765,7 @@ mod tests {
     fn evening_out_splits_exactly_with_leftovers_going_first() {
         // 10 Pa of O2 over 3 tiles: 4, 3, 3 (the leftover pascal goes to the
         // first tile), never 3.33 and never a lost pascal.
-        let mut map = Map::filled(3, 1, 1, Tile::Floor);
+        let mut map = Map::filled(3, 1, 1, Tile::FLOOR);
         map.set_air(
             Pos::new(2, 0, 0),
             Mix {
@@ -908,7 +783,7 @@ mod tests {
 
     #[test]
     fn an_even_space_stays_exactly_as_it_is() {
-        let mut map = Map::filled(3, 1, 1, Tile::Floor);
+        let mut map = Map::filled(3, 1, 1, Tile::FLOOR);
         map.set_air(
             Pos::new(2, 0, 0),
             Mix {
@@ -948,7 +823,7 @@ mod tests {
 
     #[test]
     fn walls_and_closed_doors_keep_spaces_apart() {
-        for barrier in [Tile::Wall, Tile::DoorClosed] {
+        for barrier in [Tile::WALL, Tile::WALL] {
             let mut map = corridor(3);
             map.set(Pos::new(1, 0, 0), barrier);
             map.set_air(Pos::new(1, 0, 0), Mix::VACUUM);
@@ -968,8 +843,8 @@ mod tests {
     #[test]
     fn separate_spaces_even_out_on_their_own() {
         // Two rooms either side of a wall, each lopsided inside.
-        let mut map = Map::filled(5, 1, 1, Tile::Floor);
-        map.set(Pos::new(2, 0, 0), Tile::Wall);
+        let mut map = Map::filled(5, 1, 1, Tile::FLOOR);
+        map.set(Pos::new(2, 0, 0), Tile::WALL);
         map.set_air(
             Pos::new(0, 0, 0),
             Mix {
@@ -1008,7 +883,7 @@ mod tests {
     #[test]
     fn a_closed_door_keeps_its_air_and_releases_it_when_opened() {
         let mut map = corridor(3);
-        map.set(Pos::new(1, 0, 0), Tile::DoorClosed); // the doorway still has air
+        map.set(Pos::new(1, 0, 0), Tile::WALL); // the doorway still has air
         map.set_air(Pos::new(2, 0, 0), Mix::VACUUM);
         for _ in 0..10 {
             map.spread_air();
@@ -1018,7 +893,7 @@ mod tests {
             Some(Mix::STANDARD),
             "trapped, not lost"
         );
-        map.set(Pos::new(1, 0, 0), Tile::DoorOpen);
+        map.set(Pos::new(1, 0, 0), Tile::FLOOR);
         map.spread_air();
         let all: Vec<Pos> = (0..3).map(|x| Pos::new(x, 0, 0)).collect();
         assert!(spread_between(&map, &all) <= 1, "one even space once open");
@@ -1044,7 +919,7 @@ mod tests {
 
     #[test]
     fn no_air_moves_between_decks_without_a_ladder() {
-        let mut map = Map::filled(1, 1, 2, Tile::Floor);
+        let mut map = Map::filled(1, 1, 2, Tile::FLOOR);
         map.fill_deck_air(0, Mix::STANDARD);
         for _ in 0..10 {
             map.spread_air();
@@ -1114,9 +989,9 @@ mod tests {
     /// A 3-tile room `#...#` in a wall, full of normal air, with `damage`
     /// in the west wall: `D...#`.
     fn holed_room(damage: Tile) -> Map {
-        let mut map = Map::filled(5, 3, 1, Tile::Wall);
+        let mut map = Map::filled(5, 3, 1, Tile::WALL);
         for x in 1..4 {
-            map.set(Pos::new(x, 1, 0), Tile::Floor);
+            map.set(Pos::new(x, 1, 0), Tile::FLOOR);
         }
         map.fill_deck_air(0, Mix::STANDARD);
         map.set(Pos::new(0, 1, 0), damage);
@@ -1129,26 +1004,17 @@ mod tests {
 
     #[test]
     fn hull_damage_is_solid_airless_and_has_a_hole() {
-        for tile in [Tile::HullCrack, Tile::HullBreach] {
-            assert!(
-                !tile.is_walkable() && !tile.holds_air() && !tile.is_passable(),
-                "{tile:?}"
-            );
+        for tile in [Tile::CRACK, Tile::BREACH] {
+            assert!(!tile.is_walkable() && !tile.holds_air(), "{tile:?}");
         }
-        assert_eq!(Tile::HullCrack.hole_cm2(), 4);
-        assert_eq!(Tile::HullBreach.hole_cm2(), 400);
-        assert_eq!(Tile::Wall.hole_cm2(), 0);
-        assert_eq!(Tile::HullCrack.name(), "cracked hull");
-        assert_eq!(Tile::HullBreach.name(), "hull breach");
-        assert_eq!(
-            [Tile::HullCrack, Tile::HullBreach].map(Tile::hash_id),
-            [6, 7]
-        );
+        assert_eq!(Tile::CRACK.hole_cm2(), 4);
+        assert_eq!(Tile::BREACH.hole_cm2(), 400);
+        assert_eq!(Tile::WALL.hole_cm2(), 0);
     }
 
     #[test]
     fn a_breach_vents_a_small_room_to_vacuum_in_seconds() {
-        let mut map = holed_room(Tile::HullBreach);
+        let mut map = holed_room(Tile::BREACH);
         for _ in 0..10 {
             map.spread_air();
         }
@@ -1161,7 +1027,7 @@ mod tests {
 
     #[test]
     fn a_crack_leaks_slowly() {
-        let mut map = holed_room(Tile::HullCrack);
+        let mut map = holed_room(Tile::CRACK);
         for _ in 0..10 {
             map.spread_air();
         }
@@ -1171,7 +1037,7 @@ mod tests {
 
     #[test]
     fn air_on_board_plus_air_vented_never_changes() {
-        let mut map = holed_room(Tile::HullBreach);
+        let mut map = holed_room(Tile::BREACH);
         let start = map.total_air();
         for _ in 0..100 {
             map.spread_air();
@@ -1184,13 +1050,13 @@ mod tests {
 
     #[test]
     fn spread_air_reports_the_spaces_that_lost_air() {
-        let mut breached = holed_room(Tile::HullBreach);
+        let mut breached = holed_room(Tile::BREACH);
         let room: Vec<usize> = (1..4)
             .map(|x| breached.index_of(Pos::new(x, 1, 0)).unwrap())
             .collect();
         assert_eq!(breached.spread_air(), room);
         assert!(
-            holed_room(Tile::Wall).spread_air().is_empty(),
+            holed_room(Tile::WALL).spread_air().is_empty(),
             "sealed rooms report nothing"
         );
     }
@@ -1198,14 +1064,14 @@ mod tests {
     #[test]
     fn a_closed_door_protects_the_room_behind_it() {
         // `X.+.#`: breach, room, closed door, room.
-        let mut map = holed_room(Tile::HullBreach);
-        map.set(Pos::new(2, 1, 0), Tile::DoorClosed);
+        let mut map = holed_room(Tile::BREACH);
+        map.set(Pos::new(2, 1, 0), Tile::WALL);
         let behind = Pos::new(3, 1, 0);
         for _ in 0..60 {
             map.spread_air();
         }
         assert_eq!(map.air(behind), Some(Mix::STANDARD), "sealed off");
-        map.set(Pos::new(2, 1, 0), Tile::DoorOpen);
+        map.set(Pos::new(2, 1, 0), Tile::FLOOR);
         for _ in 0..60 {
             map.spread_air();
         }
@@ -1218,15 +1084,15 @@ mod tests {
     #[test]
     fn a_hole_touching_a_space_twice_counts_once() {
         // A breach in a corner, beside two tiles of the same L-shaped room.
-        let mut map = Map::filled(3, 3, 1, Tile::Floor);
-        map.set(Pos::new(1, 1, 0), Tile::HullBreach);
+        let mut map = Map::filled(3, 3, 1, Tile::FLOOR);
+        map.set(Pos::new(1, 1, 0), Tile::BREACH);
         let space: Vec<usize> = map.positions().filter_map(|p| map.air_index(p)).collect();
         assert_eq!(map.hole_area_around(&space), 400);
     }
 
     #[test]
     fn positions_and_indexes_convert_both_ways() {
-        let map = Map::filled(3, 2, 2, Tile::Floor);
+        let map = Map::filled(3, 2, 2, Tile::FLOOR);
         for p in map.positions() {
             assert_eq!(map.pos_of(map.index_of(p).unwrap()), p);
         }
@@ -1239,7 +1105,7 @@ mod tests {
             m.hash_into(&mut h);
             h.finish()
         };
-        let a = holed_room(Tile::HullBreach);
+        let a = holed_room(Tile::BREACH);
         let mut b = a.clone();
         b.vented = [1, 0, 0];
         assert_ne!(hash(&a), hash(&b));
@@ -1253,10 +1119,10 @@ mod heat_tests {
 
     /// A 5×5 deck: hull all round a 3×3 room of normal air at 20 °C.
     fn room() -> Map {
-        let mut map = Map::filled(5, 5, 1, Tile::Wall);
+        let mut map = Map::filled(5, 5, 1, Tile::WALL);
         for y in 1..4 {
             for x in 1..4 {
-                map.set(Pos::new(x, y, 0), Tile::Floor);
+                map.set(Pos::new(x, y, 0), Tile::FLOOR);
             }
         }
         map.fill_deck_air(0, Mix::STANDARD);
@@ -1307,7 +1173,7 @@ mod heat_tests {
         assert!(map.is_outer_hull(Pos::new(0, 2, 0)));
         assert!(!map.is_outer_hull(Pos::new(2, 2, 0)), "floor inside");
         assert!(!map.is_outer_hull(Pos::new(9, 9, 9)), "off the map");
-        map.set(Pos::new(0, 2, 0), Tile::Floor);
+        map.set(Pos::new(0, 2, 0), Tile::FLOOR);
         assert!(
             !map.is_outer_hull(Pos::new(0, 2, 0)),
             "open border tiles aren't hull"
@@ -1317,11 +1183,11 @@ mod heat_tests {
     #[test]
     fn inner_bulkheads_are_not_hull() {
         // A wall inside the map has ship on both sides, not space.
-        let mut map = Map::filled(7, 3, 1, Tile::Wall);
+        let mut map = Map::filled(7, 3, 1, Tile::WALL);
         for x in 1..6 {
-            map.set(Pos::new(x, 1, 0), Tile::Floor);
+            map.set(Pos::new(x, 1, 0), Tile::FLOOR);
         }
-        map.set(Pos::new(3, 1, 0), Tile::Wall);
+        map.set(Pos::new(3, 1, 0), Tile::WALL);
         // (2, 1) has hull above and below, and the inner wall to its east.
         assert_eq!(map.hull_faces(map.index_of(Pos::new(2, 1, 0)).unwrap()), 2);
     }
@@ -1357,7 +1223,7 @@ mod heat_tests {
     #[test]
     fn venting_air_takes_its_heat_to_space() {
         let mut map = room();
-        map.set(Pos::new(2, 0, 0), Tile::HullBreach);
+        map.set(Pos::new(2, 0, 0), Tile::BREACH);
         let start = map.total_heat();
         for _ in 0..120 {
             map.spread_air();
@@ -1410,31 +1276,8 @@ mod material_tests {
     use super::*;
 
     #[test]
-    fn every_shape_is_listed_once_with_its_data_file_name() {
-        let names: Vec<&str> = Tile::ALL.iter().map(|t| t.json_name()).collect();
-        assert_eq!(
-            names,
-            [
-                "floor",
-                "wall",
-                "stairs_up",
-                "stairs_down",
-                "door_closed",
-                "door_open",
-                "hull_crack",
-                "hull_breach"
-            ]
-        );
-        // The JSON spelling matches what serde reads and writes.
-        for tile in Tile::ALL {
-            let json = serde_json::to_string(&tile).unwrap();
-            assert_eq!(json, format!("\"{}\"", tile.json_name()));
-        }
-    }
-
-    #[test]
     fn tiles_start_as_material_0_and_can_be_changed() {
-        let mut map = Map::filled(2, 1, 1, Tile::Wall);
+        let mut map = Map::filled(2, 1, 1, Tile::WALL);
         let p = Pos::new(1, 0, 0);
         assert_eq!(map.material_index(p), Some(0));
         map.set_material(p, 3);
@@ -1445,19 +1288,36 @@ mod material_tests {
     }
 
     #[test]
-    fn tiles_start_as_structure_0_and_can_be_changed() {
-        let mut map = Map::filled(2, 1, 1, Tile::Wall);
+    fn tiles_start_as_structure_0_and_are_placed_with_their_properties() {
+        let mut map = Map::filled(2, 1, 1, Tile::WALL);
         let p = Pos::new(1, 0, 0);
         assert_eq!(map.structure_index(p), Some(0));
-        map.set_structure(p, 4);
-        map.set_structure(Pos::new(9, 9, 9), 4); // off the map: ignored
+        map.place(p, 4, Tile::FLOOR);
+        map.place(Pos::new(9, 9, 9), 4, Tile::FLOOR); // off the map: ignored
         assert_eq!(map.structure_index(p), Some(4));
+        assert_eq!(map.get(p), Some(Tile::FLOOR), "both change together");
         assert_eq!(map.structure_index(Pos::new(5, 0, 0)), None);
     }
 
     #[test]
+    fn tiles_are_rebuilt_from_their_structures_after_loading() {
+        let mut map = Map::filled(2, 1, 1, Tile::WALL);
+        map.place(Pos::new(1, 0, 0), 1, Tile::FLOOR);
+        let mut loaded: Map = serde_json::from_value(serde_json::to_value(&map).unwrap()).unwrap();
+        assert!(loaded.tiles.is_empty(), "tiles aren't saved");
+        let tile_of = |s: u16| [Tile::WALL, Tile::FLOOR].get(usize::from(s)).copied();
+        loaded.rebuild_tiles(tile_of).unwrap();
+        assert_eq!(loaded, map);
+        loaded.place(Pos::new(0, 0, 0), 7, Tile::WALL);
+        assert_eq!(
+            loaded.rebuild_tiles(tile_of),
+            Err("the tile at Pos { x: 0, y: 0, z: 0 } has no structure".to_string())
+        );
+    }
+
+    #[test]
     fn mismatched_structure_data_is_inconsistent() {
-        let mut map = Map::filled(2, 1, 1, Tile::Wall);
+        let mut map = Map::filled(2, 1, 1, Tile::WALL);
         map.structure.pop();
         assert_eq!(
             map.check_consistent(),
@@ -1472,15 +1332,15 @@ mod material_tests {
             m.hash_into(&mut h);
             h.finish()
         };
-        let a = Map::filled(2, 1, 1, Tile::Wall);
+        let a = Map::filled(2, 1, 1, Tile::WALL);
         let mut b = a.clone();
-        b.set_structure(Pos::new(0, 0, 0), 1);
+        b.place(Pos::new(0, 0, 0), 1, Tile::WALL);
         assert_ne!(hash(&a), hash(&b));
     }
 
     #[test]
     fn mismatched_material_data_is_inconsistent() {
-        let mut map = Map::filled(2, 1, 1, Tile::Wall);
+        let mut map = Map::filled(2, 1, 1, Tile::WALL);
         map.made_of.pop();
         assert_eq!(
             map.check_consistent(),
@@ -1495,7 +1355,7 @@ mod material_tests {
             m.hash_into(&mut h);
             h.finish()
         };
-        let a = Map::filled(2, 1, 1, Tile::Wall);
+        let a = Map::filled(2, 1, 1, Tile::WALL);
         let mut b = a.clone();
         b.set_material(Pos::new(0, 0, 0), 1);
         assert_ne!(hash(&a), hash(&b));

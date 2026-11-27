@@ -413,9 +413,8 @@ impl World {
             self.map.set_material(at, first.material);
         }
         let to = self.structure_index_of(&recipe.to);
-        let tile = self.structures()[usize::from(to)].behaviour.tile();
-        self.map.set(at, tile);
-        self.map.set_structure(at, to);
+        let tile = self.structures()[usize::from(to)].tile();
+        self.map.place(at, to, tile);
         // Last, after everything heard while working, so it's the line the
         // log ends on.
         events.push(Event::Transformed { at, action, was });
@@ -515,17 +514,14 @@ impl World {
         events
     }
 
-    /// Uses the stairs under the player. Stairs up only go up and stairs
-    /// down only go down; anywhere else nothing happens and no time passes.
-    /// Maps guarantee every staircase has a partner (`Map::check_stairs`),
-    /// but this still checks the destination is walkable, to stay safe.
+    /// Uses the ladder under the player. A ladder up only goes up and one
+    /// down only goes down; anywhere else nothing happens and no time
+    /// passes. Maps guarantee every ladder has a partner
+    /// (`Map::check_stairs`), but this still checks the destination is
+    /// walkable, to stay safe.
     fn climb(&mut self, way: Vertical) -> Vec<Event> {
-        let stairs = match way {
-            Vertical::Up => Tile::StairsUp,
-            Vertical::Down => Tile::StairsDown,
-        };
         let target = self.player.climb(way);
-        let on_stairs = self.map.get(self.player) == Some(stairs);
+        let on_stairs = self.map.get(self.player).and_then(|t| t.climb) == Some(way);
         if !on_stairs || !self.map.get(target).is_some_and(Tile::is_walkable) {
             return vec![Event::NoStairs { way }];
         }
@@ -635,7 +631,7 @@ impl World {
             return Err(format!("{names} deck names for {depth} decks"));
         }
         self.check_meters()?;
-        self.check_structures()?;
+
         self.check_items()?;
         let highest = usize::from(self.map.highest_material());
         if highest >= self.materials().len() {
@@ -649,10 +645,23 @@ impl World {
             Some(tile) if !tile.is_walkable() => Err(format!(
                 "player at {:?} is inside a {}",
                 self.player,
-                tile.name()
+                self.structure_at(self.player)
+                    .map_or("?", |s| s.name.as_str())
             )),
             Some(_) => Ok(()),
         }
+    }
+
+    /// Gets a world read back from a save ready to play: fills in each
+    /// tile's properties from its structure (saves don't store them), then
+    /// checks everything is consistent.
+    pub(crate) fn finish_loading(&mut self) -> Result<(), String> {
+        // Borrowing `self.content` to read and `self.map` to change at once
+        // is fine: they're separate fields.
+        let structures = self.content.structures();
+        self.map
+            .rebuild_tiles(|i| structures.get(usize::from(i)).map(Structure::tile))?;
+        self.check_consistent()
     }
 
     /// Checks the breath and warmth meters aren't over full.
@@ -668,25 +677,6 @@ impl World {
                 "warmth {} is over the full {WARMTH_FULL}",
                 self.warmth
             ));
-        }
-        Ok(())
-    }
-
-    /// Checks every tile has a structure from the list, and is in a state
-    /// that structure's behaviour allows (a door tile is a door).
-    fn check_structures(&self) -> Result<(), String> {
-        for p in self.map.positions() {
-            let tile = self.map.get(p).expect("positions are on the map");
-            let Some(structure) = self.structure_at(p) else {
-                return Err(format!("the tile at {p:?} has no structure"));
-            };
-            if structure.behaviour.tile() != tile {
-                return Err(format!(
-                    "the tile at {p:?} ({}) doesn't fit its structure {:?}",
-                    tile.name(),
-                    structure.id
-                ));
-            }
         }
         Ok(())
     }
@@ -834,7 +824,7 @@ mod tests {
             events,
             vec![Event::Bumped {
                 at: Pos::new(2, 0, 0),
-                tile: Tile::Wall
+                tile: Tile::WALL
             }]
         );
     }
@@ -847,7 +837,7 @@ mod tests {
         assert!(matches!(
             events[..],
             [Event::Bumped {
-                tile: Tile::Wall,
+                tile: Tile::WALL,
                 ..
             }]
         ));
@@ -1131,7 +1121,7 @@ mod tests {
     fn blocked_stairs_are_refused_safely() {
         // Valid maps can't do this, but a world built another way might.
         let mut world = on_stairs_up();
-        world.map.set(Pos::new(3, 1, 1), Tile::Wall);
+        world.map.set(Pos::new(3, 1, 1), Tile::WALL);
         let events = world.apply(Command::Climb(Vertical::Up));
         assert_eq!(events, vec![Event::NoStairs { way: Vertical::Up }]);
         assert_eq!(world.player(), Pos::new(3, 1, 0));
@@ -1186,7 +1176,7 @@ mod tests {
                 was: SHUT
             }]
         );
-        assert_eq!(world.map().get(DOOR), Some(Tile::DoorOpen));
+        assert_eq!(world.map().get(DOOR), Some(Tile::FLOOR));
         assert_eq!(world.structure_at(DOOR).unwrap().id, "open_door");
         assert_eq!(
             world.player(),
@@ -1221,7 +1211,7 @@ mod tests {
                 was: OPENED
             }]
         );
-        assert_eq!(world.map().get(DOOR), Some(Tile::DoorClosed));
+        assert_eq!(world.map().get(DOOR), Some(Tile::WALL));
         assert_eq!(world.structure_at(DOOR).unwrap().id, "door");
         assert_eq!(world.seconds(), before + DOOR_SECONDS);
     }
@@ -1240,7 +1230,7 @@ mod tests {
             );
         }
         assert_eq!(world.seconds(), 0);
-        assert_eq!(world.map().get(DOOR), Some(Tile::DoorClosed));
+        assert_eq!(world.map().get(DOOR), Some(Tile::WALL));
     }
 
     #[test]
@@ -1252,7 +1242,7 @@ mod tests {
             let events = world.apply(close_toward(&world, dir));
             assert!(matches!(events[..], [Event::Unable { .. }]), "{dir:?}");
         }
-        assert_eq!(world.map().get(DOOR), Some(Tile::DoorOpen));
+        assert_eq!(world.map().get(DOOR), Some(Tile::FLOOR));
         let own = Command::Interact {
             at: world.player(),
             action: CLOSE,
@@ -1421,7 +1411,7 @@ mod tests {
     fn standing_in_a_venting_space_says_air_is_escaping_once_per_action() {
         // The test room with a breach in its north wall above the player.
         let mut world = test_world();
-        world.map.set(Pos::new(2, 0, 0), Tile::HullBreach);
+        world.map.set(Pos::new(2, 0, 0), Tile::BREACH);
         let events = world.apply(Command::Wait);
         let escaping = events.iter().filter(|e| **e == Event::AirEscaping).count();
         assert_eq!(escaping, 1, "{events:?}");
@@ -1629,7 +1619,7 @@ mod tests {
             was: SHUT,
         };
         assert_eq!(events.last(), Some(&opened));
-        assert_eq!(world.map.get(door), Some(Tile::DoorOpen));
+        assert_eq!(world.map.get(door), Some(Tile::FLOOR));
         assert_eq!(world.seconds(), DOOR_SECONDS);
         let events = world.apply(Command::Interact {
             at: door,
@@ -1641,7 +1631,7 @@ mod tests {
             was: OPENED,
         };
         assert_eq!(events.last(), Some(&closed));
-        assert_eq!(world.map.get(door), Some(Tile::DoorClosed));
+        assert_eq!(world.map.get(door), Some(Tile::WALL));
     }
 
     #[test]
@@ -1673,24 +1663,22 @@ mod tests {
     }
 
     #[test]
-    fn a_tile_that_does_not_match_its_structure_is_inconsistent() {
+    fn loading_rebuilds_each_tile_from_its_structure() {
+        // A tile that somehow doesn't match its structure is put right:
+        // the structure is what's saved.
         let mut world = test_world();
-        world.map.set(Pos::new(0, 0, 0), Tile::DoorOpen); // still a "wall"
-        assert_eq!(
-            world.check_consistent(),
-            Err(
-                "the tile at Pos { x: 0, y: 0, z: 0 } (open door) doesn't fit its structure \"wall\""
-                    .to_string()
-            )
-        );
+        world.map.set(Pos::new(0, 0, 0), Tile::FLOOR); // still a "wall"
+        world.finish_loading().unwrap();
+        assert_eq!(world.map.get(Pos::new(0, 0, 0)), Some(Tile::WALL));
+        assert_eq!(world, test_world());
     }
 
     #[test]
     fn a_tile_with_a_missing_structure_is_inconsistent() {
         let mut world = test_world();
-        world.map.set_structure(Pos::new(0, 0, 0), 99);
+        world.map.place(Pos::new(0, 0, 0), 99, Tile::WALL);
         assert_eq!(
-            world.check_consistent(),
+            world.finish_loading(),
             Err("the tile at Pos { x: 0, y: 0, z: 0 } has no structure".to_string())
         );
     }
@@ -1935,7 +1923,7 @@ mod tests {
             })
         );
         assert_eq!(world.seconds(), 60, "the recipe's time");
-        assert_eq!(world.map().get(door), Some(Tile::Floor));
+        assert_eq!(world.map().get(door), Some(Tile::FLOOR));
         assert_eq!(world.structure_at(door).unwrap().id, "floor");
         assert_eq!(
             world.material_at(door).unwrap().id,
@@ -1969,7 +1957,7 @@ mod tests {
         let door = Pos::new(2, 1, 0);
         let events = cut(&mut world, door);
         assert!(events.contains(&Event::BlackedOut(Cause::Air)));
-        assert_eq!(world.map().get(door), Some(Tile::DoorClosed));
+        assert_eq!(world.map().get(door), Some(Tile::WALL));
     }
 
     #[test]
@@ -2037,7 +2025,7 @@ mod tests {
             })
         );
         assert_eq!(world.seconds(), 30, "the recipe's time");
-        assert_eq!(world.map().get(CRACK), Some(Tile::Wall));
+        assert_eq!(world.map().get(CRACK), Some(Tile::WALL));
         assert_eq!(world.structure_at(CRACK).unwrap().id, "wall");
         assert_eq!(
             world.material_at(CRACK).unwrap().id,
@@ -2094,7 +2082,7 @@ mod tests {
         );
         world.floor_items.clear();
         repair(&mut world, FRAME);
-        assert_eq!(world.map().get(FRAME), Some(Tile::DoorClosed));
+        assert_eq!(world.map().get(FRAME), Some(Tile::WALL));
         assert_eq!(world.material_at(FRAME).unwrap().id, "steel", "kept");
     }
 
@@ -2109,7 +2097,7 @@ mod tests {
         world.breath = 10;
         let events = repair(&mut world, CRACK);
         assert!(events.contains(&Event::BlackedOut(Cause::Air)));
-        assert_eq!(world.map().get(CRACK), Some(Tile::HullCrack));
+        assert_eq!(world.map().get(CRACK), Some(Tile::CRACK));
         assert_eq!(world.carried_count(2), 2);
     }
 
