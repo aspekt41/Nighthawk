@@ -31,7 +31,6 @@ use crate::heat::{MAX_CELSIUS, MIN_CELSIUS, celsius_to_mk};
 use crate::item::{FloorItem, Item};
 use crate::map::{Map, StairsError, Tile};
 use crate::pos::Pos;
-use crate::structure::Behaviour;
 
 /// The glyph that marks the player's starting position.
 const PLAYER_START: char = '@';
@@ -98,8 +97,7 @@ pub enum LegendError {
     UnknownStructure { glyph: char, structure: String },
     /// An entry naming a material that isn't defined.
     UnknownMaterial { glyph: char, material: String },
-    /// `"open": true` on something that isn't a door.
-    NotADoor { glyph: char },
+
     /// `@` standing on something you can't stand on.
     StartInsideSomething { structure: String },
     /// A mistake in an entry's list of items.
@@ -122,9 +120,7 @@ impl fmt::Display for LegendError {
                 f,
                 "legend entry {glyph:?} is made of {material:?}, which isn't a material"
             ),
-            LegendError::NotADoor { glyph } => {
-                write!(f, "legend entry {glyph:?} is open, but only doors can be")
-            }
+
             LegendError::Item { glyph, error } => write!(f, "legend entry {glyph:?}: {error}"),
             LegendError::ItemsInSolid { glyph } => write!(
                 f,
@@ -291,8 +287,9 @@ fn one() -> u32 {
 
 /// What a legend character stands for: just a structure's id
 /// (`"bulkhead"`), made of the structure's own material; or a structure
-/// with a different material, or a door placed open
-/// (`{ "structure": "door", "open": true, "material": "steel" }`).
+/// with a different material, or items lying on it
+/// (`{ "structure": "door", "material": "steel" }`). An open door is its
+/// own structure (`"'": "open_door"`).
 ///
 /// `untagged` means serde tries each form in turn and takes the first that
 /// fits, so the JSON needs no extra label saying which form it is.
@@ -309,8 +306,6 @@ struct Placed {
     structure: String,
     #[serde(default)]
     material: Option<String>,
-    #[serde(default)]
-    open: bool,
     /// Items lying on it.
     #[serde(default)]
     items: Vec<ItemSpec>,
@@ -548,9 +543,9 @@ fn glyph_legend(
 
 /// What a legend entry places.
 fn place(glyph: char, entry: &LegendEntry, content: &Content) -> Result<Placement, LegendError> {
-    let (id, material, open, specs) = match entry {
-        LegendEntry::Id(id) => (id, None, false, &[][..]),
-        LegendEntry::Placed(p) => (&p.structure, p.material.as_ref(), p.open, &p.items[..]),
+    let (id, material, specs) = match entry {
+        LegendEntry::Id(id) => (id, None, &[][..]),
+        LegendEntry::Placed(p) => (&p.structure, p.material.as_ref(), &p.items[..]),
     };
     let structure =
         content
@@ -561,10 +556,7 @@ fn place(glyph: char, entry: &LegendEntry, content: &Content) -> Result<Placemen
                 structure: id.clone(),
             })?;
     let made = &content.structures.list()[usize::from(structure)];
-    if open && made.behaviour != Behaviour::Door {
-        return Err(LegendError::NotADoor { glyph });
-    }
-    let tile = made.behaviour.tile(open);
+    let tile = made.behaviour.tile();
     if glyph == PLAYER_START && !tile.is_walkable() {
         return Err(LegendError::StartInsideSomething {
             structure: id.clone(),
@@ -1075,7 +1067,7 @@ mod material_tests {
             2,
             "the whole list comes along"
         );
-        assert_eq!(loaded.content.structures().len(), 8);
+        assert_eq!(loaded.content.structures().len(), 9);
     }
 
     #[test]
@@ -1092,21 +1084,16 @@ mod material_tests {
     }
 
     #[test]
-    fn a_door_can_be_placed_open() {
-        let entry = r#""'": { "structure": "door", "open": true }"#;
-        let loaded = map_with_legend(entry, "@.'").unwrap();
+    fn an_open_door_is_its_own_structure() {
+        let loaded = map_with_legend(r#""'": "open_door""#, "@.'").unwrap();
         assert_eq!(loaded.map.get(Pos::new(2, 0, 0)), Some(Tile::DoorOpen));
-        assert_eq!(loaded.map.structure_index(Pos::new(2, 0, 0)), Some(4));
+        assert_eq!(loaded.map.structure_index(Pos::new(2, 0, 0)), Some(8));
     }
 
     #[test]
-    fn only_doors_can_be_placed_open() {
-        let entry = r#""W": { "structure": "wall", "open": true }"#;
-        let err = map_with_legend(entry, "@.W").unwrap_err();
-        assert_eq!(
-            err.to_string(),
-            "legend entry 'W' is open, but only doors can be"
-        );
+    fn open_is_no_longer_a_legend_field() {
+        let entry = r#""'": { "structure": "door", "open": true }"#;
+        assert!(map_with_legend(entry, "@.'").is_err());
     }
 
     #[test]

@@ -58,14 +58,6 @@ pub enum Event {
     NoStairs {
         way: Vertical,
     },
-    /// The player opened the door at `at` by walking into it.
-    DoorOpened {
-        at: Pos,
-    },
-    /// The player closed the door at `at`.
-    DoorClosed {
-        at: Pos,
-    },
     Waited,
     /// A background noise from the ship, heard while time passes.
     Ambient(Sound),
@@ -379,23 +371,6 @@ impl World {
         }
     }
 
-    /// Opens the closed door at `at`, taking `seconds`. The player stays
-    /// put: opening takes the time, and the next step walks through.
-    fn open(&mut self, at: Pos, seconds: u64) -> Vec<Event> {
-        self.map.set(at, Tile::DoorOpen);
-        let mut events = vec![Event::DoorOpened { at }];
-        self.pass_time(seconds, &mut events);
-        events
-    }
-
-    /// Shuts the open door at `at`, taking `seconds`.
-    fn shut(&mut self, at: Pos, seconds: u64) -> Vec<Event> {
-        self.map.set(at, Tile::DoorClosed);
-        let mut events = vec![Event::DoorClosed { at }];
-        self.pass_time(seconds, &mut events);
-        events
-    }
-
     /// Action number `action` on the tile at `at`. If anything blocks it,
     /// nothing happens and no time passes; the event says why.
     fn interact(&mut self, at: Pos, action: u16) -> Vec<Event> {
@@ -409,8 +384,6 @@ impl World {
         match effect {
             Effect::Recipe => self.follow_recipe(at, action),
             Effect::PickUp => self.pick_up(at, seconds),
-            Effect::OpenDoor => self.open(at, seconds),
-            Effect::CloseDoor => self.shut(at, seconds),
         }
     }
 
@@ -440,7 +413,7 @@ impl World {
             self.map.set_material(at, first.material);
         }
         let to = self.structure_index_of(&recipe.to);
-        let tile = self.structures()[usize::from(to)].behaviour.tile(false);
+        let tile = self.structures()[usize::from(to)].behaviour.tile();
         self.map.set(at, tile);
         self.map.set_structure(at, to);
         // Last, after everything heard while working, so it's the line the
@@ -707,7 +680,7 @@ impl World {
             let Some(structure) = self.structure_at(p) else {
                 return Err(format!("the tile at {p:?} has no structure"));
             };
-            if !structure.behaviour.allows(tile) {
+            if structure.behaviour.tile() != tile {
                 return Err(format!(
                     "the tile at {p:?} ({}) doesn't fit its structure {:?}",
                     tile.name(),
@@ -1188,13 +1161,16 @@ mod tests {
         let rows = ["#####", "#@+.#", "#####"];
         let json = format!(
             r##"{{ "id": "t", "name": "T", "legend": {{ "#": "wall", ".": "floor",
-                     "+": "door", "'": {{ "structure": "door", "open": true }} }},
+                     "+": "door", "'": "open_door" }},
                   "decks": [ {{ "rows": {rows:?} }} ] }}"##
         );
         World::new(parse_map(&json).expect("test map is valid"), TEST_SEED)
     }
 
     const DOOR: Pos = Pos::new(2, 1, 0);
+    /// The test structures' numbers for a shut and an open door.
+    const SHUT: u16 = 4;
+    const OPENED: u16 = 8;
 
     #[test]
     fn walking_into_a_closed_door_opens_it_and_takes_two_seconds() {
@@ -1204,9 +1180,14 @@ mod tests {
 
         assert_eq!(
             without_ambient(events),
-            vec![Event::DoorOpened { at: DOOR }]
+            vec![Event::Transformed {
+                at: DOOR,
+                action: OPEN,
+                was: SHUT
+            }]
         );
         assert_eq!(world.map().get(DOOR), Some(Tile::DoorOpen));
+        assert_eq!(world.structure_at(DOOR).unwrap().id, "open_door");
         assert_eq!(
             world.player(),
             Pos::new(1, 1, 0),
@@ -1234,9 +1215,14 @@ mod tests {
 
         assert_eq!(
             without_ambient(events),
-            vec![Event::DoorClosed { at: DOOR }]
+            vec![Event::Transformed {
+                at: DOOR,
+                action: CLOSE,
+                was: OPENED
+            }]
         );
         assert_eq!(world.map().get(DOOR), Some(Tile::DoorClosed));
+        assert_eq!(world.structure_at(DOOR).unwrap().id, "door");
         assert_eq!(world.seconds(), before + DOOR_SECONDS);
     }
 
@@ -1302,8 +1288,9 @@ mod tests {
     #[test]
     fn air_moves_only_when_time_passes() {
         // Vacuum beyond a closed door: nothing moves while it's shut or
-        // while no time passes; the moment time passes with it open, the
-        // two sides share one even pressure.
+        // while no time passes. Opening takes 2 seconds and the door is
+        // open only at the end of them, like every recipe (D46); the next
+        // time time passes, the two sides share one even pressure.
         let mut world = door_world();
         let beyond = Pos::new(3, 1, 0);
         world.map.set_air(beyond, crate::air::Mix::VACUUM);
@@ -1311,6 +1298,12 @@ mod tests {
         assert_eq!(world.map.air(beyond), Some(crate::air::Mix::VACUUM));
 
         world.apply(Command::Move(Dir::East)); // open the door: 2 seconds
+        assert_eq!(
+            world.map.air(beyond),
+            Some(crate::air::Mix::VACUUM),
+            "still shut while it was opening"
+        );
+        world.apply(Command::Wait);
         let here = world.map.air(world.player()).unwrap().total();
         let there = world.map.air(beyond).unwrap().total();
         assert!(there > 0, "air rushed through the open door");
@@ -1630,14 +1623,24 @@ mod tests {
             at: door,
             action: OPEN,
         });
-        assert_eq!(events[0], Event::DoorOpened { at: door });
+        let opened = Event::Transformed {
+            at: door,
+            action: OPEN,
+            was: SHUT,
+        };
+        assert_eq!(events.last(), Some(&opened));
         assert_eq!(world.map.get(door), Some(Tile::DoorOpen));
         assert_eq!(world.seconds(), DOOR_SECONDS);
         let events = world.apply(Command::Interact {
             at: door,
             action: CLOSE,
         });
-        assert_eq!(events[0], Event::DoorClosed { at: door });
+        let closed = Event::Transformed {
+            at: door,
+            action: CLOSE,
+            was: OPENED,
+        };
+        assert_eq!(events.last(), Some(&closed));
         assert_eq!(world.map.get(door), Some(Tile::DoorClosed));
     }
 
@@ -1666,7 +1669,7 @@ mod tests {
         assert_eq!(world.structure_at(Pos::new(0, 0, 0)).unwrap().id, "wall");
         assert_eq!(world.structure_at(Pos::new(1, 1, 0)).unwrap().id, "floor");
         assert_eq!(world.structure_at(Pos::new(-1, 0, 0)), None);
-        assert_eq!(world.structures().len(), 8);
+        assert_eq!(world.structures().len(), 9);
     }
 
     #[test]

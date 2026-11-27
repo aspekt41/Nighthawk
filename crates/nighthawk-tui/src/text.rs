@@ -82,15 +82,15 @@ pub fn describe(event: Event) -> Option<String> {
     Some(line)
 }
 
-/// Log lines for getting about: edges, waiting, ladders and doors.
+/// Log lines for getting about: edges, waiting and ladders. (Opening and
+/// closing doors are recipe actions, logged with their `done` lines.)
 fn movement_text(event: Event) -> &'static str {
     match event {
         Event::BlockedByEdge => "There is nowhere to go that way.",
-        Event::Waited => "You wait.",
         Event::Climbed { way, .. } => climbed_text(way),
         Event::NoStairs { way } => no_stairs_text(way),
-        // Only door events are left by the time `describe` calls this.
-        _ => door_text(event),
+        // Only waiting is left by the time `describe` calls this.
+        _ => "You wait.",
     }
 }
 
@@ -116,14 +116,6 @@ fn no_stairs_text(way: Vertical) -> &'static str {
     match way {
         Vertical::Up => "There's no way up here.",
         Vertical::Down => "There's no way down here.",
-    }
-}
-
-/// Log lines for door events. Other events never reach here.
-fn door_text(event: Event) -> &'static str {
-    match event {
-        Event::DoorOpened { .. } => "You open the door.",
-        _ => "You close the door.",
     }
 }
 
@@ -320,14 +312,31 @@ mod tests {
     }
 
     #[test]
-    fn doors_have_lines() {
-        let at = Pos::new(1, 1, 0);
+    fn opening_and_closing_doors_read_from_the_actions_done_lines() {
+        let world = real_world();
+        let door = Pos::new(6, 7, 0);
+        let (shut, open) = (
+            world.content().structure_index("door").unwrap(),
+            world.content().structure_index("door_open").unwrap(),
+        );
+        let opened = Event::Transformed {
+            at: door,
+            action: number(&world, "open"),
+            was: shut,
+        };
+        // The side room's door is shut in the real map, so "now" reads
+        // "door" here; the line only uses "was".
         assert_eq!(
-            describe(Event::DoorOpened { at }).as_deref(),
+            describe_in(&world, opened).as_deref(),
             Some("You open the door.")
         );
+        let closed = Event::Transformed {
+            at: door,
+            action: number(&world, "close"),
+            was: open,
+        };
         assert_eq!(
-            describe(Event::DoorClosed { at }).as_deref(),
+            describe_in(&world, closed).as_deref(),
             Some("You close the door.")
         );
     }

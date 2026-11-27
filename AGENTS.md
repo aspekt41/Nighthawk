@@ -182,12 +182,14 @@ precise error and exits with code 1 before entering raw mode.
   actions (open, close, cut, repair, pick up, weld; their numbers are
   `OPEN`, `CLOSE`, `CUT`… in `crate::action::tests`), materials,
   structures (one per behaviour, named after
-  it: `"wall"`, `"floor"`, `"door"`…, plus `"frame"`, a floor) and items
+  it: `"wall"`, `"floor"`, `"door"`, `"open_door"`…, plus `"frame"`, a
+  floor) and items
   (`"suit"` with two 1 L pockets, `"cutter"` with LASER 1, `"scrap"`) and
   recipes (cutting a `"door"` or a `"wall"` leaves `"floor"`, in 60 s;
   repairing a `"hull_crack"` with 2 scrap makes a `"wall"` of the scrap's
   material, in 30 s; repairing a `"frame"` with 1 scrap makes a `"door"`,
-  in 20 s; welding a `"hull_crack"` with WELD 2 makes a `"wall"`, in 40 s),
+  in 20 s; welding a `"hull_crack"` with WELD 2 makes a `"wall"`, in 40 s;
+  opening a `"door"` makes an `"open_door"` and closing turns it back, 2 s),
   and puts the player on
   `"floor"` if the legend doesn't say what `@` is. Integration tests share
   `crates/nighthawk-sim/tests/common/mod.rs`, which loads the real `data/`;

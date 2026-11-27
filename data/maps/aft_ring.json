@@ -9,7 +9,7 @@
     ">": "ladder_up",
     "<": "ladder_down",
     "+": "door",
-    "'": { "structure": "door", "open": true },
+    "'": "door_open",
     "X": "hull_breach",
     "x": "hull_crack",
     "L": { "structure": "deck_plating", "items": [ { "item": "basic_laser_cutter" } ] },

@@ -20,9 +20,9 @@ use crate::hash::Fnv64;
 use crate::map::Tile;
 use crate::material::{Colour, Materials};
 
-/// How a structure behaves in the simulation. Each behaviour matches one
-/// or two [`Tile`]s: a door is `DoorClosed` or `DoorOpen`, depending on
-/// the state of that particular door.
+/// How a structure behaves in the simulation. Each behaviour is one
+/// [`Tile`]. A shut door and an open one are two structures (decision
+/// D46): opening a door is a recipe that turns one into the other.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Behaviour {
@@ -30,30 +30,27 @@ pub enum Behaviour {
     Wall,
     StairsUp,
     StairsDown,
+    /// A shut door: solid and airtight.
     Door,
     HullCrack,
     HullBreach,
+    /// An open door: walkable, and air passes.
+    OpenDoor,
 }
 
 impl Behaviour {
-    /// The tile a structure with this behaviour is, when placed `open` (only
-    /// a door can be open).
-    pub fn tile(self, open: bool) -> Tile {
+    /// The tile a structure with this behaviour is.
+    pub fn tile(self) -> Tile {
         match self {
             Behaviour::Floor => Tile::Floor,
             Behaviour::Wall => Tile::Wall,
             Behaviour::StairsUp => Tile::StairsUp,
             Behaviour::StairsDown => Tile::StairsDown,
-            Behaviour::Door if open => Tile::DoorOpen,
             Behaviour::Door => Tile::DoorClosed,
             Behaviour::HullCrack => Tile::HullCrack,
             Behaviour::HullBreach => Tile::HullBreach,
+            Behaviour::OpenDoor => Tile::DoorOpen,
         }
-    }
-
-    /// Whether `tile` is one this behaviour can be in.
-    pub fn allows(self, tile: Tile) -> bool {
-        tile == self.tile(false) || tile == self.tile(true)
     }
 
     /// A fixed number per behaviour, for the state hash. Never change or
@@ -67,6 +64,7 @@ impl Behaviour {
             Behaviour::Door => 4,
             Behaviour::HullCrack => 5,
             Behaviour::HullBreach => 6,
+            Behaviour::OpenDoor => 7,
         }
     }
 }
@@ -83,9 +81,6 @@ pub struct Structure {
     pub description: String,
     /// The character the map draws it with.
     pub glyph: char,
-    /// For doors only: the character for an open door.
-    #[serde(default)]
-    pub open_glyph: Option<char>,
     pub behaviour: Behaviour,
     /// The id of the material it's made of, unless a map says otherwise.
     pub material: String,
@@ -96,19 +91,10 @@ pub struct Structure {
 }
 
 impl Structure {
-    /// The character to draw this structure with, as `tile` (open or shut).
-    pub fn glyph_for(&self, tile: Tile) -> char {
-        match (tile, self.open_glyph) {
-            (Tile::DoorOpen, Some(open)) => open,
-            _ => self.glyph,
-        }
-    }
-
     /// Feeds everything about it into a state hash.
     pub(crate) fn hash_into(&self, h: &mut Fnv64) {
         h.str(&self.id).str(&self.name).str(&self.description);
         h.u64(u64::from(self.glyph))
-            .u64(self.open_glyph.map_or(0, u64::from))
             .u8(self.behaviour.hash_id())
             .str(&self.material)
             .u64(self.colour.map_or(u64::MAX, |c| u64::from(c.hash_id())));
@@ -162,10 +148,6 @@ pub enum StructureError {
         structure: String,
         material: String,
     },
-    /// A door without an open glyph, or something else with one.
-    OpenGlyph {
-        structure: String,
-    },
 }
 
 impl fmt::Display for StructureError {
@@ -187,10 +169,6 @@ impl fmt::Display for StructureError {
             } => write!(
                 f,
                 "structure {structure:?} is made of {material:?}, which isn't a material"
-            ),
-            StructureError::OpenGlyph { structure } => write!(
-                f,
-                "structure {structure:?}: doors need an open_glyph, and only doors may have one"
             ),
         }
     }
@@ -230,19 +208,12 @@ fn check_list(list: &[Structure]) -> Result<(), StructureError> {
     }
 }
 
-/// Checks one structure: its material exists, and it has an open glyph
-/// exactly when it's a door.
+/// Checks one structure: its material exists.
 fn check_one(structure: &Structure, materials: &Materials) -> Result<(), StructureError> {
     if materials.index_of(&structure.material).is_none() {
         return Err(StructureError::UnknownMaterial {
             structure: structure.id.clone(),
             material: structure.material.clone(),
-        });
-    }
-    let is_door = structure.behaviour == Behaviour::Door;
-    if is_door != structure.open_glyph.is_some() {
-        return Err(StructureError::OpenGlyph {
-            structure: structure.id.clone(),
         });
     }
     Ok(())
@@ -270,11 +241,13 @@ pub(crate) mod tests {
             structure("wall", "wall", '#', ""),
             structure("stairs_up", "stairs_up", '>', ""),
             structure("stairs_down", "stairs_down", '<', ""),
-            structure("door", "door", '+', r#", "open_glyph": "'""#),
+            structure("door", "door", '+', ""),
             structure("hull_crack", "hull_crack", 'x', ""),
             structure("hull_breach", "hull_breach", 'X', ""),
             // Walkable, and repairable into a door (see the test recipes).
             structure("frame", "floor", '/', ""),
+            // What the test recipes open a door into, and close back.
+            structure("open_door", "open_door", '\'', ""),
         ];
         format!(r#"{{ "structures": [ {} ] }}"#, all.join(", "))
     }
@@ -294,40 +267,27 @@ pub(crate) mod tests {
     #[test]
     fn a_valid_file_loads() {
         let structures = test_structures();
-        assert_eq!(structures.list().len(), 8);
+        assert_eq!(structures.list().len(), 9);
         assert_eq!(structures.index_of("door"), Some(4));
+        assert_eq!(structures.index_of("open_door"), Some(8));
         assert_eq!(structures.index_of("cheese"), None);
-        assert_eq!(structures.list()[4].open_glyph, Some('\''));
     }
 
     #[test]
-    fn each_behaviour_is_one_tile_or_for_doors_two() {
-        assert_eq!(Behaviour::Door.tile(false), Tile::DoorClosed);
-        assert_eq!(Behaviour::Door.tile(true), Tile::DoorOpen);
-        assert!(Behaviour::Door.allows(Tile::DoorOpen));
-        assert!(!Behaviour::Door.allows(Tile::Wall));
-        let others = [
+    fn each_behaviour_is_one_tile() {
+        let all = [
             (Behaviour::Floor, Tile::Floor),
             (Behaviour::Wall, Tile::Wall),
             (Behaviour::StairsUp, Tile::StairsUp),
             (Behaviour::StairsDown, Tile::StairsDown),
+            (Behaviour::Door, Tile::DoorClosed),
             (Behaviour::HullCrack, Tile::HullCrack),
             (Behaviour::HullBreach, Tile::HullBreach),
+            (Behaviour::OpenDoor, Tile::DoorOpen),
         ];
-        for (behaviour, tile) in others {
-            assert_eq!(behaviour.tile(true), tile, "can't be open");
-            assert!(behaviour.allows(tile));
+        for (behaviour, tile) in all {
+            assert_eq!(behaviour.tile(), tile);
         }
-    }
-
-    #[test]
-    fn doors_draw_their_open_glyph_when_open() {
-        let structures = test_structures();
-        let door = &structures.list()[4];
-        assert_eq!(door.glyph_for(Tile::DoorClosed), '+');
-        assert_eq!(door.glyph_for(Tile::DoorOpen), '\'');
-        let wall = &structures.list()[1];
-        assert_eq!(wall.glyph_for(Tile::DoorOpen), '#', "no open glyph");
     }
 
     #[test]
@@ -376,18 +336,13 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn only_doors_have_an_open_glyph_and_every_door_has_one() {
-        let door = format!(
+    fn open_glyph_is_no_longer_a_field() {
+        // An open door is its own structure, with its own glyph (D46).
+        let json = format!(
             r#"{{ "structures": [ {} ] }}"#,
-            structure("door", "door", '+', "")
+            structure("door", "door", '+', r#", "open_glyph": "'""#)
         );
-        let wall = format!(
-            r#"{{ "structures": [ {} ] }}"#,
-            structure("wall", "wall", '#', r#", "open_glyph": "'""#)
-        );
-        for json in [door, wall] {
-            assert!(error_of(&json).contains("doors need an open_glyph"));
-        }
+        assert!(error_of(&json).contains("unknown field `open_glyph`"));
     }
 
     #[test]
@@ -408,9 +363,8 @@ pub(crate) mod tests {
             h.finish()
         };
         let base = test_structures().list()[4].clone();
-        let changes: [fn(&mut Structure); 6] = [
+        let changes: [fn(&mut Structure); 5] = [
             |s| s.glyph = '=',
-            |s| s.open_glyph = None,
             |s| s.behaviour = Behaviour::Wall,
             |s| s.material.push('!'),
             |s| s.name.push('!'),
@@ -433,8 +387,9 @@ pub(crate) mod tests {
             Behaviour::Door,
             Behaviour::HullCrack,
             Behaviour::HullBreach,
+            Behaviour::OpenDoor,
         ]
         .map(Behaviour::hash_id);
-        assert_eq!(ids, [0, 1, 2, 3, 4, 5, 6]);
+        assert_eq!(ids, [0, 1, 2, 3, 4, 5, 6, 7]);
     }
 }

@@ -3,10 +3,17 @@
     {
       "id": "door",
       "name": "door",
-      "description": "A sliding pressure door. Shut, it holds air; open, it doesn't.",
+      "description": "A sliding pressure door, shut. It holds air.",
       "glyph": "+",
-      "open_glyph": "'",
       "behaviour": "door",
+      "material": "aluminium_alloy"
+    },
+    {
+      "id": "door_open",
+      "name": "open door",
+      "description": "A sliding pressure door, open. Air passes through it.",
+      "glyph": "'",
+      "behaviour": "open_door",
       "material": "aluminium_alloy"
     },
     {

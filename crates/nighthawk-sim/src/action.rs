@@ -27,21 +27,16 @@ pub enum Effect {
     Recipe,
     /// Pick up the items lying there.
     PickUp,
-    /// Open the shut door there.
-    OpenDoor,
-    /// Shut the open door there.
-    CloseDoor,
 }
 
 impl Effect {
     /// A fixed number per effect, for the state hash. Never change or
-    /// reuse one.
+    /// reuse one. (2 and 3 were opening and shutting doors, which are
+    /// recipes now: decision D46.)
     fn hash_id(self) -> u8 {
         match self {
             Effect::Recipe => 0,
             Effect::PickUp => 1,
-            Effect::OpenDoor => 2,
-            Effect::CloseDoor => 3,
         }
     }
 }
@@ -281,10 +276,10 @@ pub(crate) mod tests {
     /// line, tool from the material), repair (clear of items), pick up
     /// (your own tile too, 2 s per item) and weld (a second tool action).
     pub(crate) const TEST_ACTIONS: &str = r#"{ "actions": [
-        { "id": "open", "name": "Open", "key": "o", "reach": 1, "effect": "open_door",
-          "seconds": 2, "on_bump": true },
-        { "id": "close", "name": "Close", "key": "c", "reach": 1, "effect": "close_door",
-          "seconds": 2, "shortcut": true },
+        { "id": "open", "name": "Open", "key": "o", "reach": 1, "on_bump": true,
+          "done": "You open the {was}." },
+        { "id": "close", "name": "Close", "key": "c", "reach": 1, "shortcut": true,
+          "done": "You close the {now}." },
         { "id": "cut", "name": "Cut", "key": "x", "reach": 2, "clear_line": true,
           "tool_from_material": true, "done": "You cut through the {was}." },
         { "id": "repair", "name": "Repair", "key": "r", "reach": 1, "clear_of_items": true,
@@ -348,7 +343,11 @@ pub(crate) mod tests {
             weld.done_text("cracked hull", "hull plating"),
             "You weld the cracked hull into hull plating."
         );
-        assert_eq!(actions.get("open").unwrap().done_text("a", "b"), "");
+        assert_eq!(
+            actions.get("close").unwrap().done_text("open door", "door"),
+            "You close the door."
+        );
+        assert_eq!(actions.get("pick_up").unwrap().done_text("a", "b"), "");
     }
 
     #[test]
@@ -399,10 +398,10 @@ pub(crate) mod tests {
             error_of(&silent).starts_with(r#"action "repair": a recipe action needs a "done""#)
         );
         let chatty = TEST_ACTIONS.replace(
-            r#""seconds": 2, "on_bump": true"#,
-            r#""seconds": 2, "on_bump": true, "done": "x""#,
+            r#""effect": "pick_up", "seconds": 2"#,
+            r#""effect": "pick_up", "seconds": 2, "done": "x""#,
         );
-        assert!(error_of(&chatty).starts_with(r#"action "open": a recipe action needs"#));
+        assert!(error_of(&chatty).starts_with(r#"action "pick_up": a recipe action needs"#));
     }
 
     #[test]
@@ -449,13 +448,7 @@ pub(crate) mod tests {
             change(&mut changed[2]);
             assert_ne!(hash(&base), hash(&changed), "{:?}", changed[2]);
         }
-        let ids = [
-            Effect::Recipe,
-            Effect::PickUp,
-            Effect::OpenDoor,
-            Effect::CloseDoor,
-        ]
-        .map(Effect::hash_id);
-        assert_eq!(ids, [0, 1, 2, 3]);
+        let ids = [Effect::Recipe, Effect::PickUp].map(Effect::hash_id);
+        assert_eq!(ids, [0, 1]);
     }
 }

@@ -74,17 +74,15 @@ pub fn blocked(world: &World, at: Pos, action: u16) -> Option<Blocked> {
     }
 }
 
-/// Whether `action` makes sense at `at` at all: there's a recipe for it,
-/// there are items to pick up, or there's a door to open or shut.
+/// Whether `action` makes sense at `at` at all: there's a recipe for it
+/// (opening a door is one), or there are items to pick up.
 fn applies(world: &World, at: Pos, action: &Action) -> bool {
-    let Some(tile) = world.map().get(at) else {
+    if !world.map().in_bounds(at) {
         return false;
-    };
+    }
     match action.effect {
         Effect::Recipe => world.recipe_for(&action.id, at).is_some(),
         Effect::PickUp => world.items_at(at).next().is_some(),
-        Effect::OpenDoor => tile == Tile::DoorClosed,
-        Effect::CloseDoor => tile == Tile::DoorOpen,
     }
 }
 
@@ -229,7 +227,7 @@ mod tests {
         let json = format!(
             r##"{{ "id": "t", "name": "T",
                  "legend": {{ "#": "wall", ".": "floor", "+": "door",
-                             "'": {{ "structure": "door", "open": true }},
+                             "'": "open_door",
                              "H": {{ "structure": "wall", "material": "hard_alloy" }} }},
                  "decks": [ {{ "rows": {rows:?} }} ] }}"##
         );
@@ -384,12 +382,12 @@ mod tests {
     #[test]
     fn cutting_is_offered_wherever_there_is_a_cut_recipe() {
         let w = world();
-        // The test recipes cut doors and walls; floor has none. An open
-        // door is still the "door" structure, so it can be cut too.
+        // The test recipes cut doors and walls; floor and open doors (their
+        // own structure) have none.
         let cut_offered = |at| options_at(&w, at).iter().any(|o| o.action == CUT);
         assert!(cut_offered(Pos::new(1, 3, 0)), "a shut door");
         assert!(cut_offered(Pos::new(0, 1, 0)), "a wall");
-        assert!(cut_offered(Pos::new(2, 1, 0)), "an open door");
+        assert!(!cut_offered(Pos::new(2, 1, 0)), "an open door");
         assert!(!cut_offered(Pos::new(2, 2, 0)), "floor");
     }
 

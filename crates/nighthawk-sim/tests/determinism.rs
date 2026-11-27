@@ -22,7 +22,7 @@ const SEED: u64 = 0x4e49_4748_5448_4157; // "NIGHTHAW" in ASCII
 const TURNS: usize = 500;
 
 /// The stored fingerprints. See "If this test fails" above.
-const EXPECTED_STATE_HASH: u64 = 0x2a4a_aa8b_efa2_319d;
+const EXPECTED_STATE_HASH: u64 = 0x4d83_7303_4bd5_f1b4;
 const EXPECTED_AMBIENT_COUNT: usize = 74;
 
 fn start_world() -> World {
@@ -190,15 +190,15 @@ fn the_script_climbs_up_and_comes_back_down() {
 #[test]
 fn the_script_opens_and_closes_a_door() {
     // Guards the test itself, like the stairs check above.
-    let (_, events) = play();
-    assert!(
-        events.iter().any(|e| matches!(e, Event::DoorOpened { .. })),
-        "never opened a door"
-    );
-    assert!(
-        events.iter().any(|e| matches!(e, Event::DoorClosed { .. })),
-        "never closed a door"
-    );
+    let (world, events) = play();
+    let did = |id: &str| {
+        let number = world.content().action_index(id).unwrap();
+        events
+            .iter()
+            .any(|e| matches!(e, Event::Transformed { action, .. } if *action == number))
+    };
+    assert!(did("open"), "never opened a door");
+    assert!(did("close"), "never closed a door");
 }
 
 #[test]

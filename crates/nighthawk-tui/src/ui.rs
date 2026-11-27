@@ -314,7 +314,7 @@ fn item_glyph(world: &World, item: &Item) -> (String, Style) {
 /// it opens), in the colour for its kind of tile. Walls take their
 /// material's colour, so the hull stands out from the bulkheads inside.
 fn structure_glyph(world: &World, pos: Pos, tile: Tile) -> (String, Style) {
-    let glyph = world.structure_at(pos).map_or('?', |s| s.glyph_for(tile));
+    let glyph = world.structure_at(pos).map_or('?', |s| s.glyph);
     let own = world.structure_at(pos).and_then(|s| s.colour);
     let style = match (own, tile, world.material_at(pos)) {
         (Some(c), _, _) => tile_style(tile).fg(colour(c)),
@@ -615,17 +615,12 @@ fn air_here(world: &World, at: Pos, tile: Tile) -> Vec<Line<'static>> {
     vec![pressure, temperature_line(world.map().temperature(at))]
 }
 
-/// What to call the tile at `at`: its structure's name, and for a door,
-/// whether it's open.
+/// What to call the tile at `at`: its structure's name ("Open door" is a
+/// structure of its own).
 fn tile_name(world: &World, at: Pos, tile: Tile) -> String {
-    let name = world
+    world
         .structure_at(at)
-        .map_or_else(|| capitalised(tile.name()), |s| capitalised(&s.name));
-    match tile {
-        Tile::DoorOpen => format!("{name} (open)"),
-        Tile::DoorClosed => format!("{name} (shut)"),
-        _ => name,
-    }
+        .map_or_else(|| capitalised(tile.name()), |s| capitalised(&s.name))
 }
 
 /// "ladder up" → "Ladder up".
@@ -1434,7 +1429,7 @@ mod tests {
         // tiles west: too far to open or to cut.
         let lines = interact_texts(&world, Pos::new(6, 7, 0));
         assert_eq!(lines[0], "At    6, 7  deck 0");
-        assert_eq!(lines[1], "Door (shut)");
+        assert_eq!(lines[1], "Door");
         assert_eq!(lines[2], "Aluminium Alloy");
         assert_eq!(lines[4], "o  Open");
         assert_eq!(lines[5], "   too far: reach 1");

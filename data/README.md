@@ -71,7 +71,7 @@ usually following a recipe (below). The menu lists actions in file order.
 | `on_own_tile` | Optional. It can be done to the tile you stand on (picking up). Otherwise you're told to step out first. |
 | `clear_of_items` | Optional. Items lying on the tile block it (they'd end up inside a repair). |
 | `tool_from_material` | Optional. It needs a tool at the level the tile's **material** lists for this action in `worked_by` (an aluminium door: `LASER 1` to cut). A material that lists none can't have it done at all. |
-| `effect` | Optional. `recipe` (the default): follow this action's recipe for the structure there. Or a built-in: `pick_up`, and for now `open_door` and `close_door`. |
+| `effect` | Optional. `recipe` (the default): follow this action's recipe for the structure there. Or the built-in `pick_up`. (Opening and closing doors are recipes: `recipes/doors.json`.) |
 | `seconds` | Only for built-in effects: how long it takes (for picking up, per item). A recipe action takes its time from the recipe. |
 | `done` | Only for recipe actions, and required: the log line when it's done. `{was}` is the structure's name before, `{now}` after: "You cut through the {was}." |
 | `on_bump` | Optional. Walking into a solid tile does this action, if it can be done there (walking into a shut door opens it). |
@@ -115,13 +115,20 @@ Mistakes are reported precisely: a duplicate id, or a level out of range.
 
 ## Structures (`structures/*.json`)
 
+What each tile is. A shut door and an open one are two structures: a door
+opens and shuts by recipe (`recipes/doors.json`: the `open` action turns
+`door` into `door_open` in 2 seconds, `close` turns it back), like any
+other change.
+
 ```json
 {
   "structures": [
     { "id": "door", "name": "door",
-      "description": "A sliding pressure door. Shut, it holds air; open, it doesn't.",
-      "glyph": "+", "open_glyph": "'", "behaviour": "door",
-      "material": "aluminium_alloy" }
+      "description": "A sliding pressure door, shut. It holds air.",
+      "glyph": "+", "behaviour": "door", "material": "aluminium_alloy" },
+    { "id": "door_open", "name": "open door",
+      "description": "A sliding pressure door, open. Air passes through it.",
+      "glyph": "'", "behaviour": "open_door", "material": "aluminium_alloy" }
   ]
 }
 ```
@@ -131,8 +138,8 @@ Mistakes are reported precisely: a duplicate id, or a level out of range.
 | `id` | How map legends refer to it. |
 | `name`, `description` | Shown in look mode and in messages ("You bump into the hull plating."). |
 | `glyph` | The one character the map draws it with. |
-| `open_glyph` | Doors only, and every door needs one: the character for the door when open. |
-| `behaviour` | What it does in the simulation, one of: `floor` (walk on it; air passes), `wall` (solid, airtight), `stairs_up` / `stairs_down` (a ladder to the next deck; see [Stairs](#stairs)), `door` (opens and shuts; shut, it's airtight), `hull_crack` (solid, a 4 cm² leak to space), `hull_breach` (solid, a 400 cm² hole to space). |
+
+| `behaviour` | What it does in the simulation, one of: `floor` (walk on it; air passes), `wall` (solid, airtight), `stairs_up` / `stairs_down` (a ladder to the next deck; see [Stairs](#stairs)), `door` (a shut door: solid and airtight), `open_door` (an open door: walkable, air passes), `hull_crack` (solid, a 4 cm² leak to space), `hull_breach` (solid, a 400 cm² hole to space). |
 | `material` | The material it's made of, unless a map legend says otherwise. |
 | `colour` | Optional. Draw it in this colour (same names as materials) instead of the usual colour for its behaviour; a damaged door is red though it behaves like floor. |
 
@@ -224,7 +231,7 @@ once, and the legend says what it stands on (something walkable).
 |---|---|
 | `id` | Must match the file name (`closet.json` → `"closet"`) |
 | `name` | Shown as the map panel's title |
-| `legend` | One character → a structure's id, made of the structure's own material: `"#": "bulkhead"`. Or an object, to give it another material or place a door open: `"H": { "structure": "bulkhead", "material": "nanocarbon_alloy" }`, `"'": { "structure": "door", "open": true }`. Mistakes name the character: an unknown structure or material, `open` on something that isn't a door, or `@` standing on something solid. |
+| `legend` | One character → a structure's id, made of the structure's own material: `"#": "bulkhead"`. Or an object, to give it another material or lay items on it: `"H": { "structure": "bulkhead", "material": "nanocarbon_alloy" }`. An open door is its own structure: `"'": "door_open"`. Mistakes name the character: an unknown structure or material, or `@` standing on something solid. |
 | `legend[].items` | Optional, in the object form: items lying on that tile, like `"s": { "structure": "deck_plating", "items": [ { "item": "scrap", "count": 4 } ] }`. Each entry is an `item`, optionally a `material` other than its own, and a `count` (default 1). Items need a walkable tile. |
 | `player_wears` | Optional. What the player starts out wearing, as a list of items like `[ { "item": "jumpsuit" } ]`. Everything in it must be wearable. |
 | `decks` | Listed bottom to top: the first is deck 0. All decks must be the same size. |

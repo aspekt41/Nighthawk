@@ -6,7 +6,7 @@
 //! ```json
 //! {
 //!   "format": "nighthawk-save",
-//!   "version": 14,
+//!   "version": 15,
 //!   "world": { "deck_names": ["Stasis bay"], "seconds": 36, ... }
 //! }
 //! ```
@@ -33,7 +33,7 @@ pub const SAVE_FORMAT: &str = "nighthawk-save";
 
 /// The save layout this build reads and writes. Bump it when `World` (or
 /// anything inside it) changes shape, and update the save-format test.
-pub const SAVE_VERSION: u32 = 14;
+pub const SAVE_VERSION: u32 = 15;
 
 /// Everything that can be wrong with a save file.
 #[derive(Debug)]
@@ -189,13 +189,13 @@ mod tests {
     fn save_text_is_tagged_and_versioned() {
         let text = save_to_string(&small_world());
         assert!(text.contains(r#""format": "nighthawk-save""#));
-        assert!(text.contains(r#""version": 14"#));
+        assert!(text.contains(r#""version": 15"#));
     }
 
     /// The exact text of the tiny save in `the_save_format_is_stable`.
     const EXPECTED_SAVE: &str = r#"{
   "format": "nighthawk-save",
-  "version": 14,
+  "version": 15,
   "world": {
     "deck_names": [
       "Deck 0"
@@ -301,7 +301,6 @@ mod tests {
           "name": "deck plating",
           "description": "Plating.",
           "glyph": ".",
-          "open_glyph": null,
           "behaviour": "floor",
           "material": "steel",
           "colour": null
@@ -411,20 +410,21 @@ mod tests {
 
     #[test]
     fn a_save_without_a_version_is_not_a_save() {
-        let text = save_with("\"version\": 14,", "");
+        let text = save_with("\"version\": 15,", "");
         assert!(matches!(load_from_str(&text), Err(SaveError::NotASave)));
     }
 
     #[test]
     fn saves_from_other_versions_are_rejected_clearly() {
-        // A save from before actions were content: exactly what an old
-        // save file on disk looks like after this build is installed.
-        let text = save_with(r#""version": 14"#, r#""version": 13"#);
+        // A save from before open doors were their own structure: exactly
+        // what an old save file on disk looks like after this build is
+        // installed.
+        let text = save_with(r#""version": 15"#, r#""version": 14"#);
         let err = load_from_str(&text).unwrap_err();
-        assert!(matches!(err, SaveError::UnsupportedVersion { found: 13 }));
+        assert!(matches!(err, SaveError::UnsupportedVersion { found: 14 }));
         assert_eq!(
             err.to_string(),
-            "save file is version 13, but this build only reads version 14"
+            "save file is version 14, but this build only reads version 15"
         );
     }
 
@@ -523,7 +523,7 @@ mod tests {
     fn doors_are_saved_open_or_closed() {
         let rows = ["@+'"];
         let json = format!(
-            r#"{{ "id": "t", "name": "T", "legend": {{ "+": "door", "'": {{ "structure": "door", "open": true }} }},
+            r#"{{ "id": "t", "name": "T", "legend": {{ "+": "door", "'": "open_door" }},
                  "decks": [ {{ "rows": {rows:?} }} ] }}"#
         );
         let mut world = World::new(parse_map(&json).unwrap(), 3);

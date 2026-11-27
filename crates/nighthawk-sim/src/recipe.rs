@@ -334,7 +334,11 @@ pub(crate) mod tests {
             { "id": "fix_frame", "action": "repair", "from": "frame", "to": "door",
               "seconds": 20, "uses": [ { "item": "scrap", "count": 1 } ] },
             { "id": "weld_crack", "action": "weld", "from": "hull_crack", "to": "wall",
-              "seconds": 40, "needs": { "WELD": 2 } }
+              "seconds": 40, "needs": { "WELD": 2 } },
+            { "id": "open_door", "action": "open", "from": "door", "to": "open_door",
+              "seconds": 2 },
+            { "id": "close_door", "action": "close", "from": "open_door", "to": "door",
+              "seconds": 2 }
         ] }"#
             .to_string()
     }
@@ -359,7 +363,8 @@ pub(crate) mod tests {
     /// Test recipes: cut a door or a wall into floor (60 s); patch a hull
     /// crack with 2 scrap into a wall of the scrap's material (30 s); fix a
     /// frame with 1 scrap into a door (20 s); weld a hull crack shut into
-    /// a wall with WELD 2 (40 s).
+    /// a wall with WELD 2 (40 s); open a door into an open door, and close
+    /// it back (2 s each).
     pub(crate) fn test_recipes() -> Recipes {
         parse_test("test.json", &test_recipes_json()).expect("test recipes are valid")
     }
@@ -371,7 +376,7 @@ pub(crate) mod tests {
     #[test]
     fn a_valid_file_loads() {
         let recipes = test_recipes();
-        assert_eq!(recipes.list().len(), 5);
+        assert_eq!(recipes.list().len(), 7);
         let patch = &recipes.list()[2];
         assert_eq!(patch.action, "repair");
         assert_eq!(patch.uses[0].count, 2);

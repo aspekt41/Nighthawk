@@ -1,0 +1,18 @@
+{
+  "recipes": [
+    {
+      "id": "open_door",
+      "action": "open",
+      "from": "door",
+      "to": "door_open",
+      "seconds": 2
+    },
+    {
+      "id": "close_door",
+      "action": "close",
+      "from": "door_open",
+      "to": "door",
+      "seconds": 2
+    }
+  ]
+}

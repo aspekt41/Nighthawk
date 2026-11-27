@@ -417,7 +417,7 @@ class PlayOutputTests(unittest.TestCase):
         self.assertEqual(play.sh_quote("it's"), "'it'\\''s'")
 
 
-GAME = show.repo_root(Path(__file__).resolve().parent) / "target" / "debug" / "nighthawk-tui"
+ROOT = show.repo_root(Path(__file__).resolve().parent)
 
 
 class BlessTests(TempFile):
@@ -505,10 +505,15 @@ def run_with(module, argv, runner):
     return status, out.getvalue(), err.getvalue()
 
 
-@unittest.skipUnless(shutil.which("tmux") and GAME.exists(), "needs tmux and a built game")
+@unittest.skipUnless(
+    shutil.which("tmux") and shutil.which("cargo") and (ROOT / "Cargo.toml").exists(),
+    "needs tmux and cargo",
+)
 class PlayInTmuxTests(unittest.TestCase):
     def test_a_real_game_shows_its_screen_and_leaves_no_session_behind(self):
-        status, out, _ = run(play, ["--no-build", "lll", "--grep", "Pos"])
+        # play.py builds the game first (quick when nothing changed), so
+        # this never runs a stale binary that can't read today's data.
+        status, out, _ = run(play, ["lll", "--grep", "Pos"])
         self.assertEqual(status, 0, out)
         self.assertIn("Pos 13, 7", out)
         sessions = subprocess.run(
@@ -518,7 +523,7 @@ class PlayInTmuxTests(unittest.TestCase):
 
     def test_a_game_that_exits_says_so(self):
         with tempfile.TemporaryDirectory() as empty:
-            status, out, _ = run(play, ["--no-build", "--data", empty])
+            status, out, _ = run(play, ["--data", empty])
         self.assertEqual(status, 1)
         self.assertIn(play.EXITED, out)
 

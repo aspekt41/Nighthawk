@@ -5,18 +5,16 @@
       "name": "Open",
       "key": "o",
       "reach": 1,
-      "effect": "open_door",
-      "seconds": 2,
-      "on_bump": true
+      "on_bump": true,
+      "done": "You open the {was}."
     },
     {
       "id": "close",
       "name": "Close",
       "key": "c",
       "reach": 1,
-      "effect": "close_door",
-      "seconds": 2,
-      "shortcut": true
+      "shortcut": true,
+      "done": "You close the {now}."
     },
     {
       "id": "cut",
