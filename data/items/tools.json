@@ -22,6 +22,18 @@
       "volume_ml": 400,
       "solid_percent": 40,
       "light": 4
+    },
+    {
+      "id": "screwdriver",
+      "name": "screwdriver",
+      "description": "A ratcheting screwdriver with a fistful of bits in the handle. It will take most of the ship apart, given time.",
+      "glyph": ";",
+      "material": "steel",
+      "volume_ml": 120,
+      "solid_percent": 50,
+      "qualities": {
+        "SCREW": 1
+      }
     }
   ]
 }

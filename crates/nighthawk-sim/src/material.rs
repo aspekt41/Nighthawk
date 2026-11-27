@@ -88,6 +88,11 @@ pub struct Material {
     /// is enough. Empty means nothing can cut it.
     #[serde(default)]
     pub worked_by: BTreeMap<String, Levels>,
+    /// What kind of stuff it is, like `["metal"]`: a recipe can ask for
+    /// items of a material with a tag (only metal scrap patches the hull).
+    /// Optional: none.
+    #[serde(default)]
+    pub tags: Vec<String>,
 }
 
 impl Material {
@@ -106,6 +111,15 @@ impl Material {
             h.str(action);
             hash_levels(levels, h);
         }
+        h.u64(self.tags.len() as u64);
+        for tag in &self.tags {
+            h.str(tag);
+        }
+    }
+
+    /// Whether it has the tag `tag`.
+    pub fn has_tag(&self, tag: &str) -> bool {
+        self.tags.iter().any(|t| t == tag)
     }
 }
 
@@ -130,6 +144,19 @@ impl Materials {
     pub fn index_of(&self, id: &str) -> Option<u16> {
         let i = self.list.iter().position(|m| m.id == id)?;
         Some(u16::try_from(i).expect("material count was checked on load"))
+    }
+
+    /// Every tag any material has, each once, in the order they first
+    /// appear. Things that need to name a tag compactly (like the reason
+    /// you can't repair something) use its place in this list.
+    pub fn tags(&self) -> Vec<&str> {
+        let mut tags: Vec<&str> = Vec::new();
+        for tag in self.list.iter().flat_map(|m| &m.tags) {
+            if !tags.contains(&tag.as_str()) {
+                tags.push(tag);
+            }
+        }
+        tags
     }
 
     /// The list, changeable, for tests in other modules.
@@ -287,13 +314,17 @@ pub(crate) mod tests {
         )
     }
 
-    /// A small, valid materials file: steel (cut with LASER 2) and a hard
-    /// alloy (cut with LASER 5).
+    /// A small, valid materials file: steel (cut with LASER 2, tagged
+    /// metal) and a hard alloy (cut with LASER 5, tagged metal and hard).
+    /// (The tags ride along after `worked_by`, which the helper puts last.)
     pub(crate) fn test_materials_json() -> String {
         format!(
             r#"{{ "materials": [ {}, {} ] }}"#,
-            material("steel", r#"{ "cut": { "LASER": 2 } }"#),
-            material("hard_alloy", r#"{ "cut": { "LASER": 5 } }"#),
+            material("steel", r#"{ "cut": { "LASER": 2 } }, "tags": ["metal"]"#),
+            material(
+                "hard_alloy",
+                r#"{ "cut": { "LASER": 5 } }, "tags": ["metal", "hard"]"#
+            ),
         )
     }
 
@@ -319,6 +350,8 @@ pub(crate) mod tests {
     fn a_valid_file_loads() {
         let materials = test_materials();
         assert_eq!(materials.list().len(), 2);
+        assert_eq!(materials.tags(), ["metal", "hard"], "each once, in order");
+        assert!(materials.list()[1].has_tag("hard") && !materials.list()[0].has_tag("hard"));
         assert_eq!(materials.index_of("hard_alloy"), Some(1));
         assert_eq!(materials.index_of("cheese"), None);
         let alloy = &materials.list()[1];
@@ -433,7 +466,8 @@ pub(crate) mod tests {
             h.finish()
         };
         let base = test_materials().list()[1].clone();
-        let changes: [fn(&mut Material); 6] = [
+        let changes: [fn(&mut Material); 7] = [
+            |m| m.tags.push("glass".into()),
             |m| m.density += 1,
             |m| m.melting_point = None,
             |m| m.colour = Colour::Red,

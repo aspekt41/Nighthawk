@@ -1,0 +1,22 @@
+{
+  "$schema": "../schema/materials.schema.json",
+  "materials": [
+    {
+      "id": "glass",
+      "name": "Glass",
+      "description": "Toughened borosilicate glass: windows, lids and gauge faces. Hard, but it shatters.",
+      "colour": "cyan",
+      "density": 2230,
+      "melting_point": 820,
+      "specific_heat": 830,
+      "thermal_conductivity": 1140,
+      "hardness": 600,
+      "worked_by": {
+        "cut": {
+          "LASER": 2
+        }
+      },
+      "tags": ["glass"]
+    }
+  ]
+}

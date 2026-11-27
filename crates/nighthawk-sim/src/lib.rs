@@ -65,7 +65,7 @@ pub use map_file::{ItemSpecError, LegendError, LoadedMap, MapError, parse_map};
 pub use material::{Colour, Material, MaterialError};
 pub use pos::{Dir, Pos, Vertical};
 pub use quality::{LevelError, Levels, MAX_QUALITY_LEVEL, Quality, QualityError};
-pub use recipe::{Recipe, RecipeError, RecipeMaterial, Use};
+pub use recipe::{Count, Give, Recipe, RecipeError, RecipeMaterial, Use};
 pub use rng::{GameRng, Stream};
 pub use save::{SAVE_FORMAT, SAVE_VERSION, SaveError, load_from_str, save_to_string};
 pub use schema::data_schemas;

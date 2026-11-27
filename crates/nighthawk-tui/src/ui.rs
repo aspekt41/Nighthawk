@@ -15,7 +15,7 @@
 
 use nighthawk_sim::{
     ActionOption, BREATH_FULL, Colour, Item, ItemRef, Material, Mix, Piece, PocketType, Pos, Tile,
-    WARMTH_FULL, World, celsius_to_mk, mk_to_tenths_celsius, options_at,
+    Use, WARMTH_FULL, World, celsius_to_mk, mk_to_tenths_celsius, options_at,
 };
 use ratatui::Frame;
 use ratatui::buffer::Buffer;
@@ -849,16 +849,15 @@ fn option_lines(world: &World, at: Pos, option: ActionOption) -> Vec<Line<'stati
 }
 
 /// What the recipe for the action with id `action` at `at` uses up, like
-/// ": 2 scrap", or "" if it uses nothing or there's no recipe.
+/// ": 2 metal scrap", or "" if it uses nothing or there's no recipe.
 fn uses(world: &World, at: Pos, action: &str) -> String {
     let recipe = world.recipe_for(action, at);
+    let one = |u: &Use| {
+        let tag = u.tag.as_ref().map_or(String::new(), |t| format!("{t} "));
+        format!("{} {tag}{}", u.count, item_name(world, &u.item))
+    };
     let parts: Vec<String> = recipe
-        .map(|r| {
-            r.uses
-                .iter()
-                .map(|u| format!("{} {}", u.count, item_name(world, &u.item)))
-                .collect()
-        })
+        .map(|r| r.uses.iter().map(one).collect())
         .unwrap_or_default();
     if parts.is_empty() {
         return String::new();
@@ -1344,7 +1343,8 @@ mod tests {
         let about = seen_description(&world, locker);
         assert!(
             about.contains(
-                "Inside: basic laser cutter (Aluminium Alloy), hand lamp (Aluminium Alloy). Steel:"
+                "Inside: basic laser cutter (Aluminium Alloy), hand lamp (Aluminium Alloy), \
+                 screwdriver (Steel). Steel:"
             ),
             "{about}"
         );
@@ -1882,8 +1882,8 @@ mod tests {
         }
         assert_eq!(world.player(), Pos::new(23, 1, 1));
         let lines = interact_texts(&world, Pos::new(23, 0, 1));
-        assert_eq!(lines[4], "r  Repair: 1 scrap");
-        assert_eq!(lines[5], "   needs 1 scrap");
+        assert_eq!(lines[4], "r  Repair: 1 metal scrap");
+        assert_eq!(lines[5], "   needs 1 metal scrap");
     }
 
     #[test]
@@ -2010,7 +2010,7 @@ mod tests {
         let lines = inventory_lines(&world, 0);
         assert_eq!(
             lines[1].to_string(),
-            "  Left hip pocket  0.8/1.0 L  1.1/2.5 kg"
+            "  Left hip pocket  0.9/1.0 L  1.6/2.5 kg"
         );
         assert_eq!(
             lines[2].to_string(),

@@ -178,12 +178,13 @@ pub(crate) mod tests {
 
     const TEST_QUALITIES: &str = r#"{ "qualities": [
         { "id": "LASER", "name": "laser cutting", "description": "Cuts with light." },
-        { "id": "WELD", "name": "welding", "description": "Joins metal." } ] }"#;
+        { "id": "WELD", "name": "welding", "description": "Joins metal." },
+        { "id": "SCREW", "name": "screwing", "description": "Drives screws." } ] }"#;
 
     #[test]
     fn qualities_load_in_file_order_and_are_found_by_id() {
         let q = test_qualities();
-        assert_eq!(q.list().len(), 2);
+        assert_eq!(q.list().len(), 3);
         assert_eq!(q.index_of("LASER"), Some(0));
         assert_eq!(q.index_of("WELD"), Some(1));
         assert_eq!(q.index_of("laser"), None, "ids are exact");

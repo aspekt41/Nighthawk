@@ -95,6 +95,14 @@
           "format": "uint32",
           "minimum": 0
         },
+        "tags": {
+          "description": "What kind of stuff it is, like `[\"metal\"]`: a recipe can ask for\nitems of a material with a tag (only metal scrap patches the hull).\nOptional: none.",
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        },
         "thermal_conductivity": {
           "description": "Thermal conductivity in mW/(m·K) (thousandths, so insulators like\ncotton at 0.04 W/(m·K) aren't rounded to nothing): how well heat\npasses through.",
           "type": "integer",

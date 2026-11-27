@@ -134,6 +134,7 @@ Each material has real physical properties, in whole numbers:
 | `thermal_conductivity` | **mW**/(m·K), thousandths of a W/(m·K), so insulators like cotton (40) aren't rounded to zero. Steel is 45000. |
 | `hardness` | Vickers hardness (HV); 0 for soft things like fabric. |
 | `worked_by` | Optional. For each action with `tool_from_material`, the tool qualities that can do it to this material and the level each needs (1 to 10); any one is enough. `{ "cut": { "LASER": 2 } }`: cutting it needs `LASER 2`. Leave an action out and nothing can do it to this material. Actions must be from `actions/`, qualities from `qualities/`. |
+| `tags` | Optional. What kind of stuff it is, like `["metal"]`. A recipe can ask for items of a material with a tag (`"tag"` in `uses`): hull patches take metal scrap, so Scrap (Bone) won't do. Shipped tags: `metal` (steel, aluminium, nanocarbon, copper), `fabric` (cotton, polyester), `plastic` (polyester), `organic` (bone), `glass`. |
 
 Mistakes are reported precisely: a duplicate id, or a level out of range.
 
@@ -202,15 +203,23 @@ A game may have no furniture at all; the folder must still exist.
 
 ## Recipes (`recipes/*.json`)
 
-How one structure becomes another. The interact menu offers an action on a
-tile only when a recipe for it exists.
+How one structure becomes another, or how a piece of furniture is taken
+away (smashed or dismantled) for what it's made of. The interact menu offers
+an action on a tile only when a recipe for it exists: for the furniture
+standing there first, then for the structure.
 
 ```json
 {
   "recipes": [
     { "id": "cut_door", "action": "cut", "from": "door", "to": "damaged_door", "seconds": 120 },
     { "id": "patch_hull_crack", "action": "repair", "from": "hull_crack", "to": "hull_plating",
-      "seconds": 60, "uses": [ { "item": "scrap", "count": 1 } ], "material": "from_used" }
+      "seconds": 60, "uses": [ { "item": "scrap", "count": 1, "tag": "metal" } ],
+      "material": "from_used" },
+    { "id": "smash_chair", "action": "smash", "furniture": "chair", "seconds": 15,
+      "gives": [ { "item": "scrap", "material": "aluminium_alloy", "count": [0, 2] } ] },
+    { "id": "dismantle_chair", "action": "dismantle", "furniture": "chair", "seconds": 30,
+      "needs": { "SCREW": 1 },
+      "gives": [ { "item": "scrap", "material": "aluminium_alloy", "count": 2 } ] }
   ]
 }
 ```
@@ -218,12 +227,14 @@ tile only when a recipe for it exists.
 | Field | Meaning |
 |---|---|
 | `id` | Unique across all recipe files. |
-| `action` | The action that follows it, from `actions/`; its effect must be `recipe`. The action's rules (reach, line, tools from the material…) apply. Today: `cut` and `repair`. |
-| `from` | The structure it acts on. Only one recipe per action per structure. |
+| `action` | The action that follows it, from `actions/`; its effect must be `recipe`. The action's rules (reach, line, tools from the material…) apply. Today: `open`, `close`, `cut`, `repair`, `smash` and `dismantle`. |
+| `from` | The structure it acts on, with `to`. Only one recipe per action per structure. |
 | `to` | The structure it becomes. |
+| `furniture` | Instead of `from` and `to`: the kind of furniture it acts on, which it takes away (every tile of it); anything inside spills on the floor. Only one recipe per action per kind of furniture. |
 | `seconds` | How long it takes (at least 1). If the player blacks out partway, nothing changes and nothing is used. |
-| `uses` | Optional. Items it uses up from your pockets, as `{ "item": id, "count": n }` (n at least 1). The menu shows them ("Repair: 1 scrap") and says if you're short. |
-| `material` | Optional. `kept` (the default): the tile keeps its material. `from_used`: it becomes the material of the first item used (steel scrap makes a steel patch); needs `uses`. |
+| `uses` | Optional. Items it uses up from your pockets, as `{ "item": id, "count": n }` (n at least 1), and optionally `"tag"`: only items of a material with that tag count and get used. The menu shows them ("Repair: 1 metal scrap") and says if you're short. |
+| `gives` | Optional. Items it leaves on the floor where the work was done, as `{ "item": id, "material": id, "count": n }`: the material is optional (the item's own), and the count is a number or `[least, most]`, a range rolled each time (from the game's seed, so a replay rolls the same). Smashing gives ranges; dismantling gives everything. |
+| `material` | Optional. `kept` (the default): the tile keeps its material. `from_used`: it becomes the material of the first item used (steel scrap makes a steel patch); needs `uses`, and a structure. |
 | `needs` | Optional. Tool levels it needs, all of them, like `{ "WELD": 1 }`, whatever the material. Qualities from `qualities/`. |
 
 ## Items (`items/*.json`)

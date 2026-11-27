@@ -192,18 +192,21 @@ precise error and exits with code 1 before entering raw mode.
   complexity problem. Keep `'` out of raw strings in code it checks.
 - **Test maps and content.** In the sim's unit tests, import
   `crate::map_file::parse_map_for_tests as parse_map`: it parses with a
-  small test set (`Content::for_tests()`) of qualities (`LASER`, `WELD`),
-  actions (open, close, cut, repair, pick up, weld, take out; their
-  numbers are `OPEN`, `CLOSE`, `CUT`… `TAKE_OUT` in
-  `crate::action::tests`), materials,
+  small test set (`Content::for_tests()`) of qualities (`LASER`, `WELD`,
+  `SCREW`), actions (open, close, cut, repair, pick up, weld, take out,
+  smash, dismantle; their numbers are `OPEN`, `CLOSE`, `CUT`…
+  `DISMANTLE` in `crate::action::tests`), materials (steel and a hard
+  alloy, both tagged `metal`),
   structures (one for each kind of tile, named for it
   it: `"wall"`, `"floor"`, `"door"`, `"open_door"`…, plus `"frame"`, a
   floor, and `"lamp"`, a wall with light 20) and items
   (`"suit"` with two 1 L pockets, `"cutter"` with LASER 1, `"scrap"`,
   `"lamp"` with light 2) and
   recipes (cutting a `"door"` or a `"wall"` leaves `"floor"`, in 60 s;
-  repairing a `"hull_crack"` with 2 scrap makes a `"wall"` of the scrap's
-  material, in 30 s; repairing a `"frame"` with 1 scrap makes a `"door"`,
+  repairing a `"hull_crack"` with 2 metal scrap makes a `"wall"` of the
+  scrap's material, in 30 s; smashing a `"crate"` gives 0 to 2 scrap
+  and dismantling it (SCREW 1) gives 3 steel and 1 hard-alloy scrap;
+  smashing a `"cabinet"` gives nothing; repairing a `"frame"` with 1 scrap makes a `"door"`,
   in 20 s; welding a `"hull_crack"` with WELD 2 makes a `"wall"`, in 40 s;
   opening a `"door"` makes an `"open_door"` and closing turns it back, 2 s),
   and puts the player on

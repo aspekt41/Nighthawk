@@ -1,0 +1,175 @@
+{
+  "$schema": "../schema/recipes.schema.json",
+  "recipes": [
+    {
+      "id": "smash_stasis_chamber",
+      "action": "smash",
+      "furniture": "stasis_chamber",
+      "seconds": 90,
+      "gives": [
+        {
+          "item": "scrap",
+          "material": "steel",
+          "count": [1, 3]
+        },
+        {
+          "item": "scrap",
+          "material": "glass",
+          "count": [0, 2]
+        },
+        {
+          "item": "scrap",
+          "material": "polyester",
+          "count": [0, 1]
+        }
+      ]
+    },
+    {
+      "id": "dismantle_stasis_chamber",
+      "action": "dismantle",
+      "furniture": "stasis_chamber",
+      "seconds": 240,
+      "needs": { "SCREW": 1 },
+      "gives": [
+        {
+          "item": "scrap",
+          "material": "steel",
+          "count": 4
+        },
+        {
+          "item": "scrap",
+          "material": "glass",
+          "count": 2
+        },
+        {
+          "item": "scrap",
+          "material": "polyester",
+          "count": 2
+        },
+        {
+          "item": "scrap",
+          "material": "copper",
+          "count": 1
+        }
+      ]
+    },
+    {
+      "id": "smash_bunk",
+      "action": "smash",
+      "furniture": "bunk",
+      "seconds": 60,
+      "gives": [
+        {
+          "item": "scrap",
+          "material": "steel",
+          "count": [1, 2]
+        },
+        {
+          "item": "scrap",
+          "material": "polyester",
+          "count": [0, 2]
+        }
+      ]
+    },
+    {
+      "id": "dismantle_bunk",
+      "action": "dismantle",
+      "furniture": "bunk",
+      "seconds": 120,
+      "needs": { "SCREW": 1 },
+      "gives": [
+        {
+          "item": "scrap",
+          "material": "steel",
+          "count": 3
+        },
+        {
+          "item": "scrap",
+          "material": "polyester",
+          "count": 2
+        }
+      ]
+    },
+    {
+      "id": "smash_mess_table",
+      "action": "smash",
+      "furniture": "mess_table",
+      "seconds": 45,
+      "gives": [
+        {
+          "item": "scrap",
+          "material": "aluminium_alloy",
+          "count": [1, 3]
+        }
+      ]
+    },
+    {
+      "id": "dismantle_mess_table",
+      "action": "dismantle",
+      "furniture": "mess_table",
+      "seconds": 90,
+      "needs": { "SCREW": 1 },
+      "gives": [
+        {
+          "item": "scrap",
+          "material": "aluminium_alloy",
+          "count": 4
+        }
+      ]
+    },
+    {
+      "id": "smash_chair",
+      "action": "smash",
+      "furniture": "chair",
+      "seconds": 15,
+      "gives": [
+        {
+          "item": "scrap",
+          "material": "aluminium_alloy",
+          "count": [0, 2]
+        }
+      ]
+    },
+    {
+      "id": "dismantle_chair",
+      "action": "dismantle",
+      "furniture": "chair",
+      "seconds": 30,
+      "needs": { "SCREW": 1 },
+      "gives": [
+        {
+          "item": "scrap",
+          "material": "aluminium_alloy",
+          "count": 2
+        }
+      ]
+    },
+    {
+      "id": "smash_locker",
+      "action": "smash",
+      "furniture": "locker",
+      "seconds": 60,
+      "gives": [
+        {
+          "item": "scrap",
+          "material": "steel",
+          "count": [1, 3]
+        }
+      ]
+    },
+    {
+      "id": "dismantle_locker",
+      "action": "dismantle",
+      "furniture": "locker",
+      "seconds": 120,
+      "needs": { "SCREW": 1 },
+      "gives": [
+        {
+          "item": "scrap",
+          "material": "steel",
+          "count": 5
+        }
+      ]
+    }
+  ]
+}

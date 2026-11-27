@@ -50,6 +50,20 @@
       "reach": 1,
       "effect": "take_out",
       "seconds": 2
+    },
+    {
+      "id": "smash",
+      "name": "Smash",
+      "key": "s",
+      "reach": 1,
+      "done": "You smash the {was} to pieces."
+    },
+    {
+      "id": "dismantle",
+      "name": "Dismantle",
+      "key": "d",
+      "reach": 1,
+      "done": "You take the {was} apart."
     }
   ]
 }

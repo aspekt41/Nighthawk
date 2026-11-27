@@ -39,8 +39,15 @@ pub enum Blocked {
     /// The action doesn't apply to this tile (opening a wall, say).
     NotPossible,
     /// You don't carry enough of an item the recipe uses: `need` of item
-    /// type number `item`, and you have `have`.
-    Missing { item: u16, need: u32, have: u32 },
+    /// type number `item`, and you have `have`. If only items of a material
+    /// with a tag count, `tag` is its number in the world's list of
+    /// material tags (`Content::material_tags`).
+    Missing {
+        item: u16,
+        need: u32,
+        have: u32,
+        tag: Option<u16>,
+    },
     /// Items are lying on it, and would end up inside it.
     Cluttered,
 }
@@ -207,13 +214,17 @@ fn needs(world: &World, quality: &str, level: u8) -> Blocked {
 /// carry enough of.
 fn missing(world: &World, at: Pos, action: &Action) -> Option<Blocked> {
     let recipe = world.recipe_for(&action.id, at)?;
+    let tags = world.content().material_tags();
     recipe.uses.iter().find_map(|used| {
         let item = world.item_type_index(&used.item)?;
-        let have = world.carried_count(item);
+        let tag = used.tag.as_deref();
+        let have = world.carried_count_tagged(item, tag);
+        let tag = tag.and_then(|t| tags.iter().position(|&known| known == t));
         (have < used.count).then_some(Blocked::Missing {
             item,
             need: used.count,
             have,
+            tag: tag.and_then(|i| u16::try_from(i).ok()),
         })
     })
 }

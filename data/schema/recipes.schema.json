@@ -23,6 +23,52 @@
     "recipes"
   ],
   "$defs": {
+    "Count": {
+      "description": "How many of something: exactly a number, or a random number between two.\n\n`untagged` lets the JSON be just `3` or `[1, 3]`.",
+      "anyOf": [
+        {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "format": "uint32",
+            "minimum": 0
+          },
+          "maxItems": 2,
+          "minItems": 2
+        }
+      ]
+    },
+    "Give": {
+      "description": "Some items a recipe gives, left on the floor where the work was done.",
+      "type": "object",
+      "properties": {
+        "count": {
+          "description": "How many: a number, or `[least, most]` for a random number in\nbetween (both included), rolled each time.",
+          "$ref": "#/$defs/Count"
+        },
+        "item": {
+          "type": "string"
+        },
+        "material": {
+          "description": "Made of this material. Optional: the item's own.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "item",
+        "count"
+      ]
+    },
     "Recipe": {
       "description": "One recipe.",
       "type": "object",
@@ -32,8 +78,28 @@
           "type": "string"
         },
         "from": {
-          "description": "The id of the structure it acts on.",
-          "type": "string"
+          "description": "The id of the structure it acts on, with `to`. (Or give\n`furniture` instead.)",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "furniture": {
+          "description": "The id of the kind of furniture it acts on, which it takes away\n(smashing or dismantling it); anything inside spills on the floor.\nInstead of `from` and `to`.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "gives": {
+          "description": "The items it gives, left on the floor. Optional: none.",
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/Give"
+          }
         },
         "id": {
           "type": "string"
@@ -61,8 +127,12 @@
           "minimum": 0
         },
         "to": {
-          "description": "The id of the structure it becomes.",
-          "type": "string"
+          "description": "The id of the structure it becomes, with `from`.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
         },
         "uses": {
           "description": "The items it uses up. Optional: none if left out.",
@@ -77,8 +147,6 @@
       "required": [
         "id",
         "action",
-        "from",
-        "to",
         "seconds"
       ]
     },
@@ -98,7 +166,7 @@
       ]
     },
     "Use": {
-      "description": "Some items a recipe uses up: `count` of the item type `item`, made of\nany material.",
+      "description": "Some items a recipe uses up: `count` of the item type `item`, made of\nany material, or only of materials with the tag `tag`.",
       "type": "object",
       "properties": {
         "count": {
@@ -108,6 +176,14 @@
         },
         "item": {
           "type": "string"
+        },
+        "tag": {
+          "description": "Only items made of a material with this tag count, like `\"metal\"`:\nbone scrap won't patch the hull. Optional: any material.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
         }
       },
       "additionalProperties": false,

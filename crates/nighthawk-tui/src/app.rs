@@ -1147,14 +1147,14 @@ mod tests {
 
     // --- Inventory --------------------------------------------------------------
 
-    /// A new game having taken the cutter and lamp out of the gear locker
-    /// at (7, 4), then picked up the four scraps at (9, 9). In the
-    /// pockets: cutter, scrap, scrap; lamp, scrap, scrap.
+    /// A new game having taken the cutter, lamp and screwdriver out of the
+    /// gear locker at (7, 4), then picked up the four scraps at (9, 9). In
+    /// the pockets: cutter, screwdriver; lamp and the four scraps.
     fn carrying_everything() -> (App, tempfile::TempDir) {
         let (mut app, dir) = new_app(Some(7));
         press_all(&mut app, "yyeyt"); // to (8, 5); take out of the locker
         press_all(&mut app, "jjjeng"); // to (8, 8); pick up the scrap at (9, 9)
-        assert_eq!(world(&app).carried().len(), 6);
+        assert_eq!(world(&app).carried().len(), 7);
         (app, dir)
     }
 
@@ -1165,7 +1165,7 @@ mod tests {
         press_all(&mut app, "i");
         assert_eq!(app.inventory, Some(0));
         press_all(&mut app, "jjjjjjjj");
-        assert_eq!(app.inventory, Some(5), "stops at the last item");
+        assert_eq!(app.inventory, Some(6), "stops at the last item");
         press_all(&mut app, "kkkkkkkk");
         assert_eq!(app.inventory, Some(0), "and at the first");
         press_all(&mut app, ".l");
@@ -1178,12 +1178,12 @@ mod tests {
     fn d_drops_the_highlighted_item_where_you_stand() {
         let (mut app, _dir) = carrying_everything();
         let here = world(&app).player();
-        press_all(&mut app, "ijjjjjd"); // the last scrap
-        assert_eq!(world(&app).carried().len(), 5);
+        press_all(&mut app, "ijjjjjjd"); // the last scrap
+        assert_eq!(world(&app).carried().len(), 6);
         assert_eq!(world(&app).items_at(here).count(), 1);
-        assert_eq!(app.inventory, Some(4), "the highlight stays on the list");
+        assert_eq!(app.inventory, Some(5), "the highlight stays on the list");
         assert_eq!(last_log(&app), "You drop the scrap (Steel).");
-        press_all(&mut app, "ddddd");
+        press_all(&mut app, "dddddd");
         assert!(world(&app).carried().is_empty());
         press_all(&mut app, "d");
         assert_eq!(last_log(&app), "You have nothing to drop.");

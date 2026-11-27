@@ -30,6 +30,9 @@ use rand_pcg::rand_core::Rng as _;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Stream {
     Ambient = 1,
+    /// How much a recipe with a random yield gives, like smashing
+    /// furniture.
+    Salvage = 2,
 }
 
 /// A seeded random number generator for one [`Stream`].

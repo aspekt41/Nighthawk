@@ -350,6 +350,20 @@ impl Furnishings {
         self.pieces.get_mut(i)
     }
 
+    /// Takes away the piece covering the tile at `p`, if there is one, and
+    /// hands it back.
+    pub(crate) fn remove_at(
+        &mut self,
+        map: &Map,
+        p: Pos,
+        kinds: &[FurnitureType],
+    ) -> Option<Piece> {
+        let i = self.number_at(map, p)?;
+        let piece = self.pieces.remove(i);
+        self.rebuild(map, kinds);
+        Some(piece)
+    }
+
     /// The place in `pieces` of the piece covering the tile at `p`.
     fn number_at(&self, map: &Map, p: Pos) -> Option<usize> {
         let i = *self.cover.get(map.index_of(p)?)?;

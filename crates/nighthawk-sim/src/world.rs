@@ -20,6 +20,20 @@ use crate::rng::{GameRng, Stream};
 use crate::sight::{Remembered, Scene, View};
 use crate::structure::Structure;
 
+/// A test for items of type number `kind` made of a material with the tag
+/// `tag` (any material, without one). It borrows only `materials`, so it
+/// can be used while the player's pockets change.
+fn wanted_items<'a>(
+    materials: &'a [Material],
+    kind: u16,
+    tag: Option<&'a str>,
+) -> impl Fn(&Item) -> bool + 'a {
+    move |item| {
+        let material = materials.get(usize::from(item.material));
+        item.kind == kind && tag.is_none_or(|t| material.is_some_and(|m| m.has_tag(t)))
+    }
+}
+
 /// Puts each of `items` in the first pocket of `worn` it fits in, in
 /// order. Returns what didn't fit, and an event per item: `stowed` for one
 /// put away (like [`Event::PickedUp`]), [`Event::NoRoom`] for one left.
@@ -129,6 +143,17 @@ pub enum Event {
         action: u16,
         was: u16,
     },
+    /// The player followed a recipe for action number `action` on the
+    /// furniture at `at`, of kind number `was`, and took it away (smashed
+    /// it, took it apart).
+    Removed {
+        at: Pos,
+        action: u16,
+        was: u16,
+    },
+    /// This item fell to the floor: given by a recipe, or spilled out of
+    /// furniture taken away.
+    Fell(ItemRef),
 }
 
 /// Noises the dead ship makes. Pure atmosphere for now. Later, sounds will
@@ -189,6 +214,8 @@ pub struct World {
     /// The seed this game started from. Same seed + same commands = same game.
     seed: u64,
     ambient_rng: GameRng,
+    /// Rolls how much a recipe with a random yield gives.
+    salvage_rng: GameRng,
     /// The player's breath meter, 0 to [`BREATH_FULL`].
     breath: u32,
     /// The player's warmth meter, 0 to [`WARMTH_FULL`].
@@ -223,6 +250,7 @@ impl World {
             seconds: 0,
             seed,
             ambient_rng: GameRng::new(seed, Stream::Ambient),
+            salvage_rng: GameRng::new(seed, Stream::Salvage),
             breath: BREATH_FULL,
             warmth: WARMTH_FULL,
             content: loaded.content,
@@ -388,10 +416,17 @@ impl World {
 
     /// How many items of type number `kind` the player carries.
     pub fn carried_count(&self, kind: u16) -> u32 {
+        self.carried_count_tagged(kind, None)
+    }
+
+    /// How many items of type number `kind` the player carries, counting
+    /// only those made of a material tagged `tag`, if there is one.
+    pub fn carried_count_tagged(&self, kind: u16, tag: Option<&str>) -> u32 {
+        let wanted = wanted_items(self.content.materials(), kind, tag);
         let n = self
             .carried()
             .iter()
-            .filter(|(_, item)| item.kind == kind)
+            .filter(|(_, item)| wanted(item))
             .count();
         u32::try_from(n).unwrap_or(u32::MAX)
     }
@@ -548,7 +583,6 @@ impl World {
     /// same material (an aluminium door cut open leaves an aluminium frame),
     /// or of the first item used (a crack patched with steel scrap).
     fn follow_recipe(&mut self, at: Pos, action: u16) -> Vec<Event> {
-        let was = self.map.structure_index(at).unwrap_or(0);
         let id = &self.content.actions()[usize::from(action)].id;
         let recipe = self
             .recipe_for(id, at)
@@ -560,21 +594,84 @@ impl World {
             return events;
         }
         let used = self.use_up(&recipe);
+        // The done line comes after everything heard while working, so
+        // it's what the log ends on (then anything that fell).
+        match &recipe.to {
+            Some(to) => {
+                let was = self.transform(at, to, &recipe, &used);
+                events.push(Event::Transformed { at, action, was });
+            }
+            None => events.extend(self.take_away(at, action)),
+        }
+        let given = self.roll_gives(&recipe);
+        events.extend(self.drop_at(at, given));
+        events
+    }
+
+    /// Turns the tile at `at` into the structure `to`: of the same
+    /// material, or of the first item `used` if the recipe says so.
+    /// Returns the number of the structure it was.
+    fn transform(&mut self, at: Pos, to: &str, recipe: &Recipe, used: &[Item]) -> u16 {
+        let was = self.map.structure_index(at).unwrap_or(0);
         if recipe.material == RecipeMaterial::FromUsed
             && let Some(first) = used.first()
         {
             self.map.set_material(at, first.material);
         }
-        let to = self.structure_index_of(&recipe.to);
+        let to = self.structure_index_of(to);
         let tile = self.structures()[usize::from(to)].tile();
         self.map.place(at, to, tile);
-        // Last, after everything heard while working, so it's the line the
-        // log ends on.
-        events.push(Event::Transformed { at, action, was });
+        was
+    }
+
+    /// Takes away the furniture at `at` (which the recipe checked is
+    /// there), spilling what was inside it on the floor.
+    fn take_away(&mut self, at: Pos, action: u16) -> Vec<Event> {
+        let kinds = self.content.furniture();
+        let piece = self.furniture.remove_at(&self.map, at, kinds);
+        let (was, inside) = piece.map(|p| (p.kind, p.contents)).unwrap_or_default();
+        let mut events = vec![Event::Removed { at, action, was }];
+        events.extend(self.drop_at(at, inside));
         events
     }
 
-    /// Takes the items `recipe` uses out of the player's pockets.
+    /// What `recipe` gives this time: every item it lists, in the material
+    /// it says (or the item's own), as many as it says or as the salvage
+    /// dice roll for a range.
+    fn roll_gives(&mut self, recipe: &Recipe) -> Vec<Item> {
+        let mut given = Vec::new();
+        for give in &recipe.gives {
+            let types = self.content.item_types();
+            let kind = self
+                .content
+                .item_type_index(&give.item)
+                .expect("recipes give real items");
+            let material_id = give
+                .material
+                .as_deref()
+                .unwrap_or(&types[usize::from(kind)].material);
+            let material = self
+                .content
+                .material_index(material_id)
+                .expect("recipes give real materials");
+            let (least, most) = give.count.range();
+            let count = least + self.salvage_rng.below(most - least + 1);
+            let one = Item::new(kind, material, types);
+            given.extend(std::iter::repeat_n(one, count as usize));
+        }
+        given
+    }
+
+    /// Lays `items` on the floor at `at`, one `Fell` event each.
+    fn drop_at(&mut self, at: Pos, items: Vec<Item>) -> Vec<Event> {
+        let events = items.iter().map(|item| Event::Fell(item.id())).collect();
+        self.floor_items
+            .extend(items.into_iter().map(|item| FloorItem { at, item }));
+        events
+    }
+
+    /// Takes the items `recipe` uses out of the player's pockets: of each
+    /// kind it names, only those of a material with the tag it asks for.
     fn use_up(&mut self, recipe: &Recipe) -> Vec<Item> {
         let mut used = Vec::new();
         for needed in &recipe.uses {
@@ -582,7 +679,8 @@ impl World {
                 .item_type_index(&needed.item)
                 .expect("recipes name real items");
             let count = usize::try_from(needed.count).unwrap_or(usize::MAX);
-            used.extend(item::take_kind(&mut self.worn, kind, count));
+            let wanted = wanted_items(self.content.materials(), kind, needed.tag.as_deref());
+            used.extend(item::take_matching(&mut self.worn, count, wanted));
         }
         used
     }
@@ -595,14 +693,20 @@ impl World {
             .expect("recipes name real structures")
     }
 
-    /// The recipe for the action with id `action` on whatever structure is
-    /// at `at`, if there is one.
+    /// The recipe for the action with id `action` at `at`, if there is
+    /// one: for the furniture standing there first, then for the structure
+    /// (so a crate on a doorframe doesn't hide the frame's repair).
     pub fn recipe_for(&self, action: &str, at: Pos) -> Option<&Recipe> {
-        let structure = self.structure_at(at)?;
-        self.content
-            .recipes()
-            .iter()
-            .find(|r| r.action == action && r.from == structure.id)
+        let recipes = self.content.recipes();
+        let for_action = || recipes.iter().filter(move |r| r.action == action);
+        let furniture = self.furniture_kind_at(at).map(|k| k.id.as_str());
+        let structure = self.structure_at(at).map(|s| s.id.as_str());
+        let on_furniture =
+            furniture.and_then(|k| for_action().find(|r| r.furniture.as_deref() == Some(k)));
+        on_furniture.or_else(|| {
+            let structure = structure?;
+            for_action().find(|r| r.from.as_deref() == Some(structure))
+        })
     }
 
     /// The best level of `quality` among everything the player wears or
@@ -928,6 +1032,7 @@ impl World {
         h.u64(self.seconds)
             .u64(self.seed)
             .u64(self.ambient_rng.fingerprint())
+            .u64(self.salvage_rng.fingerprint())
             .u64(u64::from(self.breath))
             .u64(u64::from(self.warmth));
         self.content.hash_into(&mut h);
@@ -949,7 +1054,7 @@ impl World {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::action::tests::{CLOSE, CUT, OPEN, PICK_UP, REPAIR, TAKE_OUT};
+    use crate::action::tests::{CLOSE, CUT, DISMANTLE, OPEN, PICK_UP, REPAIR, SMASH, TAKE_OUT};
     use crate::map_file::parse_map_for_tests as parse_map;
 
     const TEST_SEED: u64 = 1234;
@@ -2059,9 +2164,14 @@ mod tests {
         assert_eq!(world.furniture_at(CABINET).unwrap().contents.len(), 1);
 
         let empty = cabinet_world("[]");
-        assert!(
-            interact::options_at(&empty, CABINET).is_empty(),
-            "nothing to take out, and nothing else to do to a cabinet"
+        let offered: Vec<u16> = interact::options_at(&empty, CABINET)
+            .iter()
+            .map(|o| o.action)
+            .collect();
+        assert_eq!(
+            offered,
+            [SMASH],
+            "nothing to take out, but it can be smashed"
         );
         assert_eq!(
             interact::blocked(&empty, CABINET, TAKE_OUT),
@@ -2091,6 +2201,140 @@ mod tests {
         let mut odd = cutter();
         odd.kind = 99;
         assert!(with(vec![odd]).is_err(), "an item that doesn't exist");
+    }
+
+    // --- Smashing and dismantling ----------------------------------------------
+
+    /// A lit room where you stand beside a crate at (2, 1), wearing the
+    /// test suit, with `seed` for the dice:
+    ///
+    /// ```text
+    /// #*###
+    /// #@&.#
+    /// #####
+    /// ```
+    fn crate_world(seed: u64) -> World {
+        let rows = ["#*###", "#@&.#", "#####"];
+        let json = format!(
+            r##"{{ "id": "t", "name": "T", "player_wears": [ {{ "item": "suit" }} ],
+                  "legend": {{ "#": "wall", ".": "floor", "*": "lamp",
+                     "&": {{ "structure": "floor", "furniture": "crate" }} }},
+                  "decks": [ {{ "rows": {rows:?} }} ] }}"##
+        );
+        World::new(parse_map(&json).expect("test map is valid"), seed)
+    }
+
+    const CRATE: Pos = Pos::new(2, 1, 0);
+
+    /// How many `Fell` events there are.
+    fn fell(events: &[Event]) -> usize {
+        events
+            .iter()
+            .filter(|e| matches!(e, Event::Fell(_)))
+            .count()
+    }
+
+    #[test]
+    fn smashing_takes_the_crate_away_and_leaves_a_rolled_share_of_scrap() {
+        let mut world = crate_world(TEST_SEED);
+        let events = without_ambient(world.apply(Command::Interact {
+            at: CRATE,
+            action: SMASH,
+        }));
+        let crate_kind = world.content().furniture_index("crate").unwrap();
+        let removed = Event::Removed {
+            at: CRATE,
+            action: SMASH,
+            was: crate_kind,
+        };
+        assert_eq!(events[0], removed, "the done line, then what fell");
+        assert_eq!(world.seconds(), 10);
+        assert_eq!(world.furniture_at(CRATE), None, "gone");
+        assert_eq!(world.items_at(CRATE).count(), fell(&events));
+        // Over many games the share runs from none to two scrap, and the
+        // same seed always rolls the same.
+        let share = |seed| {
+            let mut world = crate_world(seed);
+            fell(&world.apply(Command::Interact {
+                at: CRATE,
+                action: SMASH,
+            }))
+        };
+        let shares: Vec<usize> = (0..40).map(share).collect();
+        assert!((0..=2).all(|n| shares.contains(&n)), "{shares:?}");
+        assert!(shares.iter().all(|&n| n <= 2));
+        assert_eq!(share(7), share(7));
+    }
+
+    #[test]
+    fn dismantling_needs_a_screwdriver_and_gives_everything() {
+        let mut world = crate_world(TEST_SEED);
+        let screw = world.content().quality_index("SCREW").unwrap();
+        assert_eq!(
+            interact::blocked(&world, CRATE, DISMANTLE),
+            Some(Blocked::Needs {
+                quality: screw,
+                level: 1
+            })
+        );
+        // Give the cutter SCREW 1 for this test, and carry one.
+        let cutter = &mut world.content.item_types.list_mut()[1];
+        cutter.qualities.insert("SCREW".into(), 1);
+        let tool = Item::new(1, 0, world.item_types());
+        world.worn[0].pockets[0].push(tool);
+        let events = without_ambient(world.apply(Command::Interact {
+            at: CRATE,
+            action: DISMANTLE,
+        }));
+        assert_eq!(world.seconds(), 30);
+        assert_eq!(fell(&events), 4, "every time: 3 steel scrap, 1 hard alloy");
+        let materials: Vec<u16> = world.items_at(CRATE).map(|i| i.material).collect();
+        assert_eq!(materials, [0, 0, 0, 1]);
+    }
+
+    #[test]
+    fn what_was_inside_spills_out_when_its_container_is_taken_away() {
+        let mut world = cabinet_world(r#"[ { "item": "scrap", "count": 2 } ]"#);
+        let events = without_ambient(world.apply(Command::Interact {
+            at: CABINET,
+            action: SMASH,
+        }));
+        assert!(matches!(events[0], Event::Removed { .. }));
+        assert_eq!(fell(&events), 2, "smashing a cabinet gives nothing itself");
+        assert_eq!(world.items_at(CABINET).count(), 2);
+    }
+
+    #[test]
+    fn only_items_of_a_material_with_the_tag_count_and_get_used() {
+        // Two scraps, enough to patch the crack, but made of a material
+        // that isn't metal: they don't count, and the patch can't be made.
+        let mut world = repair_world(2);
+        let mut bone = world.materials()[0].clone();
+        bone.id = "bone".into();
+        bone.tags = vec!["organic".into()];
+        world.content.materials_mut().push(bone);
+        for scrap in &mut world.worn[0].pockets[0] {
+            scrap.material = 2;
+        }
+        assert_eq!(world.carried_count(2), 2);
+        assert_eq!(world.carried_count_tagged(2, Some("metal")), 0);
+        assert_eq!(
+            interact::blocked(&world, CRACK, REPAIR),
+            Some(Blocked::Missing {
+                item: 2,
+                need: 2,
+                have: 0,
+                tag: Some(0)
+            })
+        );
+        // With metal ones as well, only the metal ones are used.
+        for _ in 0..2 {
+            let steel = Item::new(2, 0, world.item_types());
+            world.worn[0].pockets[1].push(steel);
+        }
+        repair(&mut world, CRACK);
+        assert_eq!(world.carried_count(2), 2, "the two non-metal ones are left");
+        assert_eq!(world.carried_count_tagged(2, Some("organic")), 2);
     }
 
     // --- Sight -----------------------------------------------------------------
@@ -2651,7 +2895,8 @@ mod tests {
                 blocked: Blocked::Missing {
                     item: 2,
                     need: 2,
-                    have: 1
+                    have: 1,
+                    tag: Some(0)
                 }
             }]
         );

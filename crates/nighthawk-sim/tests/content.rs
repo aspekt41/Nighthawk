@@ -109,7 +109,9 @@ fn passable(loaded: &LoadedMap, p: Pos) -> bool {
         content.structures()[usize::from(to)].walkable
     };
     content.recipes().iter().any(|r| {
-        &r.from == id && content.action(&r.action).is_some_and(|a| a.on_bump) && walkable(&r.to)
+        r.from.as_ref() == Some(id)
+            && content.action(&r.action).is_some_and(|a| a.on_bump)
+            && r.to.as_deref().is_some_and(walkable)
     })
 }
 
@@ -235,7 +237,7 @@ fn every_shipped_structure_is_on_the_starting_map_or_made_by_a_recipe() {
         .positions()
         .map(|p| world.structure_at(p).unwrap().id.as_str())
         .collect();
-    used.extend(content.recipes().iter().map(|r| r.to.as_str()));
+    used.extend(content.recipes().iter().filter_map(|r| r.to.as_deref()));
     for structure in world.structures() {
         assert!(
             used.contains(structure.id.as_str()),
@@ -416,7 +418,7 @@ fn fetch_the_gear(world: &mut World) {
 }
 
 #[test]
-fn the_gear_locker_in_view_of_the_start_holds_the_cutter_and_the_lamp() {
+fn the_gear_locker_in_view_of_the_start_holds_a_cutter_a_lamp_and_a_screwdriver() {
     let mut world = common::start_world(1);
     assert!(world.is_visible(GEAR_LOCKER));
     let inside: Vec<&str> = world
@@ -426,11 +428,79 @@ fn the_gear_locker_in_view_of_the_start_holds_the_cutter_and_the_lamp() {
         .iter()
         .map(|item| world.item_types()[usize::from(item.kind)].id.as_str())
         .collect();
-    assert_eq!(inside, ["basic_laser_cutter", "hand_lamp"]);
+    assert_eq!(inside, ["basic_laser_cutter", "hand_lamp", "screwdriver"]);
     fetch_the_gear(&mut world);
     let lamp = world.item_type_index("hand_lamp").unwrap();
     assert_eq!(world.carried_count(lamp), 1);
     assert!(world.furniture_at(GEAR_LOCKER).unwrap().contents.is_empty());
+}
+
+#[test]
+fn every_kind_of_furniture_can_be_smashed_or_dismantled_with_a_screwdriver() {
+    let world = common::start_world(1);
+    let recipes = world.content().recipes();
+    for furniture in world.content().furniture() {
+        let id = Some(furniture.id.as_str());
+        let recipe = |action: &str| {
+            recipes
+                .iter()
+                .find(|r| r.action == action && r.furniture.as_deref() == id)
+                .unwrap_or_else(|| panic!("no {action} recipe for {}", furniture.id))
+        };
+        assert!(recipe("smash").needs.is_empty(), "smashing needs no tool");
+        assert_eq!(recipe("dismantle").needs.get("SCREW"), Some(&1));
+        let most = |action| {
+            recipe(action)
+                .gives
+                .iter()
+                .map(|g| g.count.range().1)
+                .sum::<u32>()
+        };
+        assert!(most("dismantle") >= most("smash"), "{}", furniture.id);
+    }
+}
+
+#[test]
+fn only_metal_scrap_patches_the_hull_or_mends_a_door() {
+    let world = common::start_world(1);
+    for recipe in world
+        .content()
+        .recipes()
+        .iter()
+        .filter(|r| r.action == "repair")
+    {
+        let tags: Vec<_> = recipe.uses.iter().map(|u| u.tag.as_deref()).collect();
+        assert!(tags.iter().all(|&t| t == Some("metal")), "{}", recipe.id);
+    }
+    let bone = world.content().material_index("bone").unwrap();
+    assert!(!world.materials()[usize::from(bone)].has_tag("metal"));
+}
+
+#[test]
+fn dismantling_your_own_stasis_chamber_gives_steel_glass_padding_and_copper() {
+    let mut world = common::start_world(1);
+    fetch_the_gear(&mut world); // the screwdriver too
+    world.apply(Command::Move(Dir::East));
+    world.apply(Command::Move(Dir::East));
+    let yours = Pos::new(11, 6, 0);
+    let before = world.seconds();
+    world.apply(Command::Interact {
+        at: yours,
+        action: action(&world, "dismantle"),
+    });
+    assert_eq!(world.seconds() - before, 240, "four minutes");
+    assert!(world.furniture_at(yours).is_none());
+    assert!(
+        world.furniture_at(Pos::new(12, 6, 0)).is_none(),
+        "both halves"
+    );
+    let mut made_of: Vec<&str> = world
+        .items_at(yours)
+        .map(|i| world.materials()[usize::from(i.material)].id.as_str())
+        .collect();
+    made_of.dedup();
+    assert_eq!(made_of, ["steel", "glass", "polyester", "copper"]);
+    assert_eq!(world.items_at(yours).count(), 9);
 }
 
 #[test]

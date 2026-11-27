@@ -274,15 +274,20 @@ pub(crate) fn take(worn: &mut [Item], path: ItemPath) -> Option<Item> {
     (path.index < pocket.len()).then(|| pocket.remove(path.index))
 }
 
-/// Takes `count` items of type `kind` out of the pockets of `worn`, the
-/// last-pocketed first, and returns them in the order they were found. If
-/// there are fewer than `count`, takes all there are.
-pub(crate) fn take_kind(worn: &mut [Item], kind: u16, count: usize) -> Vec<Item> {
+/// Takes `count` carried items that `wanted` says yes to (like "scrap
+/// made of metal") out of the pockets of `worn`, the last-pocketed first,
+/// and returns them in the order they were found. If there are fewer than
+/// `count`, takes all there are.
+pub(crate) fn take_matching(
+    worn: &mut [Item],
+    count: usize,
+    wanted: impl Fn(&Item) -> bool,
+) -> Vec<Item> {
     let paths: Vec<ItemPath> = worn
         .iter()
         .enumerate()
         .flat_map(|(w, wearing)| pocketed(w, wearing))
-        .filter(|(_, item)| item.kind == kind)
+        .filter(|(_, item)| wanted(item))
         .map(|(path, _)| path)
         .collect();
     let chosen = &paths[paths.len().saturating_sub(count)..];
@@ -756,7 +761,7 @@ pub(crate) mod tests {
 }
 
 #[cfg(test)]
-mod take_kind_tests {
+mod take_matching_tests {
     use super::tests::test_items;
     use super::*;
 
@@ -769,7 +774,7 @@ mod take_kind_tests {
         worn[0].pockets[0].push(Item::new(2, 0, items.list()));
         worn[0].pockets[1].push(Item::new(2, 1, items.list()));
         worn[0].pockets[1].push(Item::new(2, 2, items.list()));
-        let taken = take_kind(&mut worn, 2, 2);
+        let taken = take_matching(&mut worn, 2, |i| i.kind == 2);
         let materials: Vec<u16> = taken.iter().map(|i| i.material).collect();
         assert_eq!(materials, vec![1, 2], "in the order they were found");
         assert_eq!(
@@ -784,8 +789,10 @@ mod take_kind_tests {
     fn asking_for_more_than_there_are_takes_all_there_are() {
         let items = test_items();
         let mut worn = vec![Item::new(0, 0, items.list())];
+        worn[0].pockets[0].push(Item::new(1, 0, items.list())); // a cutter
         worn[0].pockets[1].push(Item::new(2, 0, items.list()));
-        assert_eq!(take_kind(&mut worn, 2, 5).len(), 1);
-        assert!(take_kind(&mut worn, 2, 1).is_empty());
+        assert_eq!(take_matching(&mut worn, 5, |i| i.kind == 2).len(), 1);
+        assert!(take_matching(&mut worn, 1, |i| i.kind == 2).is_empty());
+        assert_eq!(worn[0].pockets[0].len(), 1, "the cutter wasn't wanted");
     }
 }

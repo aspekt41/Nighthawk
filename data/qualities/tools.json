@@ -1,0 +1,10 @@
+{
+  "$schema": "../schema/qualities.schema.json",
+  "qualities": [
+    {
+      "id": "SCREW",
+      "name": "screwing",
+      "description": "Driving and drawing screws: what it takes to take things apart properly instead of smashing them."
+    }
+  ]
+}

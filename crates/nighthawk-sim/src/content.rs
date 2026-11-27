@@ -166,7 +166,9 @@ impl Content {
         let refs = RecipeRefs {
             actions: &actions,
             qualities: &qualities,
+            materials: &materials,
             structures: &structures,
+            furniture: &furniture,
             items: &item_types,
         };
         let recipes = parse_recipes(&recipes, &refs).map_err(ContentError::Recipes)?;
@@ -210,6 +212,12 @@ impl Content {
     /// Every structure, in the order tiles refer to them.
     pub fn structures(&self) -> &[Structure] {
         self.structures.list()
+    }
+
+    /// Every tag any material has, each once, in order; see
+    /// `Materials::tags`.
+    pub fn material_tags(&self) -> Vec<&str> {
+        self.materials.tags()
     }
 
     /// Every kind of furniture, in the order pieces refer to them.

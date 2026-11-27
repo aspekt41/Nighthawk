@@ -283,8 +283,8 @@ pub(crate) mod tests {
 
     /// The test actions, in menu order: open, close, cut (reach 2, clear
     /// line, tool from the material), repair (clear of items), pick up
-    /// (your own tile too, 2 s per item), weld (a second tool action) and
-    /// take out (from furniture, 2 s per item).
+    /// (your own tile too, 2 s per item), weld (a second tool action),
+    /// take out (from furniture, 2 s per item), smash and dismantle.
     pub(crate) const TEST_ACTIONS: &str = r#"{ "actions": [
         { "id": "open", "name": "Open", "key": "o", "reach": 1, "on_bump": true,
           "done": "You open the {was}." },
@@ -299,7 +299,11 @@ pub(crate) mod tests {
         { "id": "weld", "name": "Weld", "key": "w", "reach": 1,
           "done": "You weld the {was} into {now}." },
         { "id": "take_out", "name": "Take out", "key": "t", "reach": 1,
-          "effect": "take_out", "seconds": 2 }
+          "effect": "take_out", "seconds": 2 },
+        { "id": "smash", "name": "Smash", "key": "s", "reach": 1,
+          "done": "You smash the {was}." },
+        { "id": "dismantle", "name": "Dismantle", "key": "d", "reach": 1,
+          "done": "You take the {was} apart." }
     ] }"#;
 
     /// The test actions' numbers, for tests that name one.
@@ -310,6 +314,8 @@ pub(crate) mod tests {
     pub(crate) const PICK_UP: u16 = 4;
     pub(crate) const WELD: u16 = 5;
     pub(crate) const TAKE_OUT: u16 = 6;
+    pub(crate) const SMASH: u16 = 7;
+    pub(crate) const DISMANTLE: u16 = 8;
 
     #[test]
     fn the_named_numbers_match_the_test_actions() {
@@ -339,7 +345,15 @@ pub(crate) mod tests {
         assert_eq!(
             ids,
             [
-                "open", "close", "cut", "repair", "pick_up", "weld", "take_out"
+                "open",
+                "close",
+                "cut",
+                "repair",
+                "pick_up",
+                "weld",
+                "take_out",
+                "smash",
+                "dismantle"
             ]
         );
         assert_eq!(actions.index_of("cut"), Some(2));

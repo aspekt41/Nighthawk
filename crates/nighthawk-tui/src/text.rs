@@ -22,7 +22,9 @@ pub fn describe_in(world: &World, event: Event) -> Option<String> {
             Some(item_text(event, &item_name(world, id)))
         }
         Event::TookOut { item, from } => Some(took_out_text(world, item, from)),
+        Event::Fell(id) => Some(item_text(event, &item_name(world, id))),
         Event::Transformed { at, action, was } => Some(done_text(world, at, action, was)),
+        Event::Removed { action, was, .. } => Some(removed_text(world, action, was)),
         Event::Unable { action, blocked } => Some(blocked_text(blocked, action, Some(world))),
         _ => describe(event),
     }
@@ -44,6 +46,14 @@ fn done_text(world: &World, at: Pos, action: u16, was: u16) -> String {
         || "Done.".into(),
         |a| a.done_text(structure_name(world, was), now),
     )
+}
+
+/// The action's `done` log line for furniture taken away, naming it:
+/// "You smash the bunk to pieces."
+fn removed_text(world: &World, action: u16, was: u16) -> String {
+    let furniture = world.content().furniture().get(usize::from(was));
+    let name = furniture.map_or("thing", |f| f.name.as_str());
+    action_of(Some(world), action).map_or_else(|| "Done.".into(), |a| a.done_text(name, ""))
 }
 
 /// The name of structure number `index`, or "thing" if there's no such one.
@@ -70,6 +80,7 @@ fn item_text(event: Event, name: &str) -> String {
     match event {
         Event::PickedUp(_) => format!("You pick up the {name}."),
         Event::TookOut { .. } => format!("You take out the {name}."),
+        Event::Fell(_) => format!("The {name} falls to the floor."),
         Event::NoRoom(_) => format!("There's no room in your pockets for the {name}."),
         Event::Dropped(_) => format!("You drop the {name}."),
         _ => "There's nothing there to drop.".into(),
@@ -90,10 +101,11 @@ pub fn describe(event: Event) -> Option<String> {
         Event::Unable { action, blocked } => blocked_text(blocked, action, None),
         Event::PickedUp(_)
         | Event::TookOut { .. }
+        | Event::Fell(_)
         | Event::NoRoom(_)
         | Event::Dropped(_)
         | Event::NothingToDrop => item_text(event, "item"),
-        Event::Transformed { .. } => "Done.".into(),
+        Event::Transformed { .. } | Event::Removed { .. } => "Done.".into(),
         Event::AirEscaping | Event::Breath(_) | Event::Warmth(_) | Event::BlackedOut(_) => {
             survival_text(event).into()
         }
@@ -183,6 +195,20 @@ fn item_type_name(world: Option<&World>, item: u16) -> String {
         .map_or_else(|| "item".into(), |t| t.name.clone())
 }
 
+/// The name of item type number `item`, after the material tag number
+/// `tag` if there is one: "metal scrap".
+fn tagged_item_name(world: Option<&World>, item: u16, tag: Option<u16>) -> String {
+    let tags = world
+        .map(|w| w.content().material_tags())
+        .unwrap_or_default();
+    let tag = tag.and_then(|t| tags.get(usize::from(t)).copied());
+    let name = item_type_name(world, item);
+    match tag {
+        Some(tag) => format!("{tag} {name}"),
+        None => name,
+    }
+}
+
 /// The id of quality number `quality`, like "LASER", if there's a world
 /// to ask and it has one.
 fn quality_id(world: Option<&World>, quality: u16) -> Option<&str> {
@@ -196,8 +222,10 @@ fn quality_id(world: Option<&World>, quality: u16) -> Option<&str> {
 /// are cut). `world`, if given, names the action, items and qualities.
 pub fn blocked_short(blocked: Blocked, action: u16, world: Option<&World>) -> String {
     let short = match blocked {
-        Blocked::Missing { item, need, .. } => {
-            format!("needs {need} {}", item_type_name(world, item))
+        Blocked::Missing {
+            item, need, tag, ..
+        } => {
+            format!("needs {need} {}", tagged_item_name(world, item, tag))
         }
         Blocked::Needs { quality, level } => match quality_id(world, quality) {
             Some(id) => format!("needs {id} {level}"),
@@ -234,9 +262,14 @@ pub fn blocked_text(blocked: Blocked, action: u16, world: Option<&World>) -> Str
             Some(id) => format!("You need a tool with {id} {level} for that."),
             None => "You need a better tool for that.".into(),
         },
-        Blocked::Missing { item, need, have } => format!(
+        Blocked::Missing {
+            item,
+            need,
+            have,
+            tag,
+        } => format!(
             "You need {need} {} for that; you have {have}.",
-            item_type_name(world, item)
+            tagged_item_name(world, item, tag)
         ),
         Blocked::Cluttered => "Something is lying on it. Move it out of the way first.".into(),
         _ => blocked_text_fixed(blocked),
@@ -445,6 +478,7 @@ mod tests {
                 item: 0,
                 need: 2,
                 have: 1,
+                tag: None,
             },
             Blocked::Cluttered,
         ]
@@ -551,6 +585,39 @@ mod tests {
         let names: Vec<&str> = (0..5).map(|n| action_name(&world, n)).collect();
         assert_eq!(names, ["Open", "Close", "Cut", "Repair", "Pick up"]);
         assert_eq!(action_name(&world, 999), "?");
+    }
+
+    #[test]
+    fn furniture_taken_away_and_what_falls_out_are_logged() {
+        let world = real_world();
+        let (smash, dismantle) = (number(&world, "smash"), number(&world, "dismantle"));
+        let bunk = world.content().furniture_index("bunk").unwrap();
+        let at = Pos::new(0, 0, 0);
+        let removed = |action, was| {
+            describe_in(&world, Event::Removed { at, action, was }).unwrap_or_default()
+        };
+        assert_eq!(removed(smash, bunk), "You smash the bunk to pieces.");
+        assert_eq!(removed(dismantle, bunk), "You take the bunk apart.");
+        assert_eq!(removed(smash, 999), "You smash the thing to pieces.");
+        assert_eq!(removed(999, bunk), "Done.", "an action that isn't there");
+        let scrap = ItemRef {
+            kind: world.item_type_index("scrap").unwrap(),
+            material: world.content().material_index("glass").unwrap(),
+        };
+        assert_eq!(
+            describe_in(&world, Event::Fell(scrap)).as_deref(),
+            Some("The scrap (Glass) falls to the floor.")
+        );
+        assert_eq!(
+            describe(Event::Fell(scrap)).as_deref(),
+            Some("The item falls to the floor.")
+        );
+        let unnamed = Event::Removed {
+            at,
+            action: smash,
+            was: bunk,
+        };
+        assert_eq!(describe(unnamed).as_deref(), Some("Done."));
     }
 
     #[test]
@@ -697,6 +764,7 @@ mod tests {
             item: scrap,
             need: 3,
             have: 1,
+            tag: None,
         };
         let repair = number(&world, "repair");
         assert_eq!(
@@ -720,6 +788,30 @@ mod tests {
             describe_in(&world, unable).as_deref(),
             Some("You need 3 scrap for that; you have 1.")
         );
+        let metal = world
+            .content()
+            .material_tags()
+            .iter()
+            .position(|&t| t == "metal");
+        let metal_only = Blocked::Missing {
+            item: scrap,
+            need: 3,
+            have: 0,
+            tag: metal.and_then(|i| u16::try_from(i).ok()),
+        };
+        assert_eq!(
+            blocked_text(metal_only, repair, Some(&world)),
+            "You need 3 metal scrap for that; you have 0."
+        );
+        assert_eq!(
+            blocked_short(metal_only, repair, Some(&world)),
+            "needs 3 metal scrap"
+        );
+        assert_eq!(
+            blocked_text(metal_only, repair, None),
+            "You need 3 item for that; you have 0.",
+            "without a world, no tag either"
+        );
     }
 
     #[test]
@@ -731,6 +823,7 @@ mod tests {
                 item: laser,
                 need: 1,
                 have: 0,
+                tag: None,
             },
             number(&world, "repair"),
             Some(&world),

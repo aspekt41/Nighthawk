@@ -15,7 +15,8 @@
         "cut": {
           "LASER": 2
         }
-      }
+      },
+      "tags": ["metal"]
     },
     {
       "id": "aluminium_alloy",
@@ -31,7 +32,8 @@
         "cut": {
           "LASER": 1
         }
-      }
+      },
+      "tags": ["metal"]
     },
     {
       "id": "nanocarbon_alloy",
@@ -47,7 +49,25 @@
         "cut": {
           "LASER": 5
         }
-      }
+      },
+      "tags": ["metal"]
+    },
+    {
+      "id": "copper",
+      "name": "Copper",
+      "description": "Soft, reddish and the best conductor aboard: wiring, bus bars and heat sinks.",
+      "colour": "light_red",
+      "density": 8960,
+      "melting_point": 1085,
+      "specific_heat": 385,
+      "thermal_conductivity": 401000,
+      "hardness": 50,
+      "worked_by": {
+        "cut": {
+          "LASER": 1
+        }
+      },
+      "tags": ["metal"]
     }
   ]
 }
