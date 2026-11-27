@@ -193,8 +193,9 @@ precise error and exits with code 1 before entering raw mode.
 - **Test maps and content.** In the sim's unit tests, import
   `crate::map_file::parse_map_for_tests as parse_map`: it parses with a
   small test set (`Content::for_tests()`) of qualities (`LASER`, `WELD`),
-  actions (open, close, cut, repair, pick up, weld; their numbers are
-  `OPEN`, `CLOSE`, `CUT`… in `crate::action::tests`), materials,
+  actions (open, close, cut, repair, pick up, weld, take out; their
+  numbers are `OPEN`, `CLOSE`, `CUT`… `TAKE_OUT` in
+  `crate::action::tests`), materials,
   structures (one for each kind of tile, named for it
   it: `"wall"`, `"floor"`, `"door"`, `"open_door"`…, plus `"frame"`, a
   floor, and `"lamp"`, a wall with light 20) and items
@@ -208,7 +209,7 @@ precise error and exits with code 1 before entering raw mode.
   and puts the player on
   `"floor"` if the legend doesn't say what `@` is. Test furniture: a
   `"crate"` in the way, a `"bench"` two tiles across, a walkable `"stool"`
-  and a `"cabinet"` that blocks sight. Test rooms are dark
+  and a `"cabinet"` that blocks sight and holds 1 L. Test rooms are dark
   (you see only the tiles beside you) unless their map has a light: put a
   `*` in a wall with `"*": "lamp"` in the legend. Integration tests share
   `crates/nighthawk-sim/tests/common/mod.rs`, which loads the real `data/`;

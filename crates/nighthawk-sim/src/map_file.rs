@@ -33,9 +33,9 @@ use serde::Deserialize;
 
 use crate::air::Mix;
 use crate::content::Content;
-use crate::furniture::Piece;
+use crate::furniture::{FurnitureType, Piece};
 use crate::heat::{MAX_CELSIUS, MIN_CELSIUS, celsius_to_mk};
-use crate::item::{FloorItem, Item};
+use crate::item::{FloorItem, Item, ItemContext};
 use crate::map::{Map, StairsError, Tile};
 use crate::pos::Pos;
 
@@ -115,10 +115,16 @@ pub enum LegendError {
     ItemsInSolid { glyph: char },
     /// An entry naming furniture that isn't defined.
     UnknownFurniture { glyph: char, furniture: String },
-    /// Furniture standing on something solid.
-    FurnitureInSolid { glyph: char },
-    /// `"turned": true` on an entry with no furniture to turn.
-    NothingToTurn { glyph: char },
+    /// Furniture fields that don't go together: furniture on something
+    /// solid, or `turned` or `contents` with no furniture.
+    Furniture { glyph: char, problem: &'static str },
+    /// Contents bigger than the furniture holds.
+    TooFull {
+        glyph: char,
+        furniture: String,
+        holds_ml: u32,
+        contents_ml: u64,
+    },
 }
 
 impl fmt::Display for LegendError {
@@ -141,21 +147,25 @@ impl fmt::Display for LegendError {
                 f,
                 "legend entry {glyph:?} puts items on something solid; they need a floor"
             ),
+            LegendError::StartInsideSomething { structure } => write!(
+                f,
+                "'{PLAYER_START}' marks where the player starts, so it must stand for something walkable, not {structure:?}"
+            ),
             LegendError::UnknownFurniture { glyph, furniture } => write!(
                 f,
                 "legend entry {glyph:?} has furniture {furniture:?}, which isn't furniture"
             ),
-            LegendError::FurnitureInSolid { glyph } => write!(
+            LegendError::Furniture { glyph, problem } => {
+                write!(f, "legend entry {glyph:?} {problem}")
+            }
+            LegendError::TooFull {
+                glyph,
+                furniture,
+                holds_ml,
+                contents_ml,
+            } => write!(
                 f,
-                "legend entry {glyph:?} stands furniture on something solid; it needs a floor"
-            ),
-            LegendError::NothingToTurn { glyph } => write!(
-                f,
-                "legend entry {glyph:?} is turned, but has no furniture to turn"
-            ),
-            LegendError::StartInsideSomething { structure } => write!(
-                f,
-                "'{PLAYER_START}' marks where the player starts, so it must stand for something walkable, not {structure:?}"
+                "legend entry {glyph:?}: its contents take {contents_ml} ml, but a {furniture} holds {holds_ml} ml"
             ),
         }
     }
@@ -367,6 +377,11 @@ struct Placed {
     /// a bed two tiles across becomes two tiles down. Optional.
     #[serde(default)]
     turned: bool,
+    /// Items inside the furniture, if it's a container like a locker:
+    /// every piece drawn with this character holds its own copies.
+    /// Optional.
+    #[serde(default)]
+    contents: Vec<ItemSpec>,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -484,7 +499,8 @@ fn cut_into_pieces(
     let drawn: HashMap<Pos, char> = furnished.iter().map(|&(p, c, _)| (p, c)).collect();
     let mut claimed = HashSet::new();
     let mut pieces = Vec::new();
-    for &(at, glyph, furnish) in furnished {
+    for (at, glyph, furnish) in furnished {
+        let (at, glyph) = (*at, *glyph);
         if claimed.contains(&at) {
             continue;
         }
@@ -494,6 +510,7 @@ fn cut_into_pieces(
             material: furnish.material,
             at,
             turned: furnish.turned,
+            contents: furnish.contents.clone(),
         };
         // `HashSet::insert` returns false if the tile was already there.
         if let Some(needs) = piece
@@ -569,11 +586,12 @@ struct Placement {
 }
 
 /// The furniture a legend entry stands on its tiles.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 struct Furnish {
     kind: u16,
     material: u16,
     turned: bool,
+    contents: Vec<Item>,
 }
 
 /// The items an item list in a map stands for: `count` new items each.
@@ -702,6 +720,13 @@ fn place(glyph: char, entry: &LegendEntry, content: &Content) -> Result<Placemen
     })
 }
 
+/// What's wrong with furniture on something solid.
+const ON_SOLID: &str = "stands furniture on something solid; it needs a floor";
+/// What's wrong with `"turned": true` and no furniture.
+const NOTHING_TO_TURN: &str = "is turned, but has no furniture to turn";
+/// What's wrong with `"contents"` and no furniture.
+const NOTHING_TO_HOLD: &str = "has contents, but no furniture to hold them";
+
 /// The furniture a legend entry stands on its tiles, if it names any. It
 /// needs `tile` to be walkable, and the player can't start inside
 /// furniture that's in the way.
@@ -712,9 +737,16 @@ fn furnish(
     content: &Content,
 ) -> Result<Option<Furnish>, LegendError> {
     let Some(id) = &placed.furniture else {
-        return match placed.turned {
-            true => Err(LegendError::NothingToTurn { glyph }),
-            false => Ok(None),
+        return match (placed.turned, placed.contents.is_empty()) {
+            (true, _) => Err(LegendError::Furniture {
+                glyph,
+                problem: NOTHING_TO_TURN,
+            }),
+            (_, false) => Err(LegendError::Furniture {
+                glyph,
+                problem: NOTHING_TO_HOLD,
+            }),
+            _ => Ok(None),
         };
     };
     let kind = content
@@ -726,7 +758,10 @@ fn furnish(
         })?;
     let made = &content.furniture.list()[usize::from(kind)];
     if !tile.is_walkable() {
-        return Err(LegendError::FurnitureInSolid { glyph });
+        return Err(LegendError::Furniture {
+            glyph,
+            problem: ON_SOLID,
+        });
     }
     if glyph == PLAYER_START && !made.walkable {
         return Err(LegendError::StartInsideSomething {
@@ -737,11 +772,39 @@ fn furnish(
         .materials
         .index_of(&made.material)
         .expect("furniture materials were checked on load");
+    let contents = contents_of(glyph, placed, made, content)?;
     Ok(Some(Furnish {
         kind,
         material,
         turned: placed.turned,
+        contents,
     }))
+}
+
+/// The items a legend entry puts inside its furniture, which must fit:
+/// all together, no bigger than what `made` holds.
+fn contents_of(
+    glyph: char,
+    placed: &Placed,
+    made: &FurnitureType,
+    content: &Content,
+) -> Result<Vec<Item>, LegendError> {
+    let items = make_items(&placed.contents, content)
+        .map_err(|error| LegendError::Item { glyph, error })?;
+    let ctx = ItemContext {
+        types: content.item_types.list(),
+        materials: content.materials.list(),
+    };
+    let contents_ml: u64 = items.iter().map(|i| ctx.volume_ml(i)).sum();
+    if contents_ml > u64::from(made.holds_ml) {
+        return Err(LegendError::TooFull {
+            glyph,
+            furniture: made.id.clone(),
+            holds_ml: made.holds_ml,
+            contents_ml,
+        });
+    }
+    Ok(items)
 }
 
 /// Checks every deck is the same rectangle and returns its `(width, height)`.
@@ -1477,6 +1540,52 @@ mod furniture_tests {
         assert_eq!(
             one(r#"{ "structure": "floor", "turned": true }"#),
             "legend entry 'x' is turned, but has no furniture to turn"
+        );
+    }
+
+    #[test]
+    fn a_container_drawn_on_the_map_holds_what_its_entry_says() {
+        let json = |contents: &str| {
+            format!(
+                r##"{{ "id": "t", "name": "T", "legend": {{ ".": "floor",
+                     "c": {{ "structure": "floor", "furniture": "cabinet", "contents": {contents} }} }},
+                     "decks": [ {{ "rows": ["@cc"] }} ] }}"##
+            )
+        };
+        let loaded = parse_map(&json(r#"[ { "item": "scrap", "count": 2 } ]"#)).unwrap();
+        assert_eq!(loaded.furniture.len(), 2);
+        for piece in &loaded.furniture {
+            assert_eq!(piece.contents.len(), 2, "each cabinet gets its own");
+        }
+        let error = |contents: &str| parse_map(&json(contents)).unwrap_err().to_string();
+        assert_eq!(
+            error(r#"[ { "item": "cutter", "count": 2 } ]"#),
+            "legend entry 'c': its contents take 1600 ml, but a cabinet holds 1000 ml"
+        );
+        assert_eq!(
+            error(r#"[ { "item": "toga" } ]"#),
+            r#"legend entry 'c': "toga" isn't an item"#
+        );
+    }
+
+    #[test]
+    fn contents_need_furniture_and_only_containers_hold_any() {
+        let one = |entry: &str| {
+            let json = format!(
+                r##"{{ "id": "t", "name": "T", "legend": {{ ".": "floor", "x": {entry} }},
+                     "decks": [ {{ "rows": ["@x"] }} ] }}"##
+            );
+            parse_map(&json).unwrap_err().to_string()
+        };
+        assert_eq!(
+            one(r#"{ "structure": "floor", "contents": [ { "item": "scrap" } ] }"#),
+            "legend entry 'x' has contents, but no furniture to hold them"
+        );
+        assert_eq!(
+            one(
+                r#"{ "structure": "floor", "furniture": "crate", "contents": [ { "item": "scrap" } ] }"#
+            ),
+            "legend entry 'x': its contents take 100 ml, but a crate holds 0 ml"
         );
     }
 

@@ -31,7 +31,8 @@
       "description": "A tall steel locker with a vented door, taller than you are.",
       "glyph": "{",
       "material": "steel",
-      "blocks_sight": true
+      "blocks_sight": true,
+      "holds_ml": 60000
     }
   ]
 }

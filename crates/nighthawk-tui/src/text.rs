@@ -21,10 +21,19 @@ pub fn describe_in(world: &World, event: Event) -> Option<String> {
         Event::PickedUp(id) | Event::NoRoom(id) | Event::Dropped(id) => {
             Some(item_text(event, &item_name(world, id)))
         }
+        Event::TookOut { item, from } => Some(took_out_text(world, item, from)),
         Event::Transformed { at, action, was } => Some(done_text(world, at, action, was)),
         Event::Unable { action, blocked } => Some(blocked_text(blocked, action, Some(world))),
         _ => describe(event),
     }
+}
+
+/// "You take the hand lamp (Aluminium Alloy) out of the locker."
+fn took_out_text(world: &World, item: ItemRef, from: u16) -> String {
+    let furniture = world.content().furniture().get(usize::from(from));
+    let container = furniture.map_or("container", |f| f.name.as_str());
+    let name = item_name(world, item);
+    format!("You take the {name} out of the {container}.")
 }
 
 /// The action's `done` log line (from `data/actions/`), naming the
@@ -60,6 +69,7 @@ pub fn item_name(world: &World, id: ItemRef) -> String {
 fn item_text(event: Event, name: &str) -> String {
     match event {
         Event::PickedUp(_) => format!("You pick up the {name}."),
+        Event::TookOut { .. } => format!("You take out the {name}."),
         Event::NoRoom(_) => format!("There's no room in your pockets for the {name}."),
         Event::Dropped(_) => format!("You drop the {name}."),
         _ => "There's nothing there to drop.".into(),
@@ -78,9 +88,11 @@ pub fn describe(event: Event) -> Option<String> {
         Event::Bumped { .. } => "You bump into something solid.".into(),
         Event::Ambient(sound) => sound_text(sound).into(),
         Event::Unable { action, blocked } => blocked_text(blocked, action, None),
-        Event::PickedUp(_) | Event::NoRoom(_) | Event::Dropped(_) | Event::NothingToDrop => {
-            item_text(event, "item")
-        }
+        Event::PickedUp(_)
+        | Event::TookOut { .. }
+        | Event::NoRoom(_)
+        | Event::Dropped(_)
+        | Event::NothingToDrop => item_text(event, "item"),
         Event::Transformed { .. } => "Done.".into(),
         Event::AirEscaping | Event::Breath(_) | Event::Warmth(_) | Event::BlackedOut(_) => {
             survival_text(event).into()
@@ -583,12 +595,9 @@ mod tests {
     #[test]
     fn item_events_name_the_item_and_its_material() {
         let world = nighthawk_sim::World::new(crate::content::load_start_map().unwrap(), 1);
-        let cutter = world.item_type_index("basic_laser_cutter").unwrap();
-        let lying = world.floor_items().iter();
-        let laser = lying
-            .map(|f| f.item.id())
-            .find(|id| id.kind == cutter)
-            .unwrap();
+        // The cutter, first in the gear locker.
+        let locker = world.furniture_at(Pos::new(7, 4, 0)).unwrap();
+        let laser = locker.contents[0].id();
         let lines: Vec<String> = [
             Event::PickedUp(laser),
             Event::NoRoom(laser),
@@ -613,6 +622,24 @@ mod tests {
             describe(Event::PickedUp(laser)).as_deref(),
             Some("You pick up the item.")
         );
+        let locker = world.content().furniture_index("locker").unwrap();
+        let took = Event::TookOut {
+            item: laser,
+            from: locker,
+        };
+        assert_eq!(
+            describe_in(&world, took).as_deref(),
+            Some("You take the basic laser cutter (Aluminium Alloy) out of the locker.")
+        );
+        let from_nothing = Event::TookOut {
+            item: laser,
+            from: 999,
+        };
+        assert_eq!(
+            describe_in(&world, from_nothing).as_deref(),
+            Some("You take the basic laser cutter (Aluminium Alloy) out of the container.")
+        );
+        assert_eq!(describe(took).as_deref(), Some("You take out the item."));
     }
 
     #[test]

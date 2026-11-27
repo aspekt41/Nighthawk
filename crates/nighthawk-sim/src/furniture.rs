@@ -21,6 +21,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::content::{ContentFile, FileError, first_duplicate, read_all};
 use crate::hash::Fnv64;
+use crate::item::Item;
 use crate::map::{Map, Tile};
 use crate::material::{Colour, Materials};
 use crate::pos::Pos;
@@ -56,6 +57,10 @@ pub struct FurnitureType {
     /// Optional: you can see over it.
     #[serde(default)]
     pub blocks_sight: bool,
+    /// How much it holds, in millilitres, if it's a container like a
+    /// locker. Optional: it holds nothing.
+    #[serde(default)]
+    pub holds_ml: u32,
 }
 
 /// The default size: one tile. Serde's `default = "..."` names a function.
@@ -79,7 +84,8 @@ impl FurnitureType {
             .u8(self.size[0])
             .u8(self.size[1])
             .u8(u8::from(self.walkable))
-            .u8(u8::from(self.blocks_sight));
+            .u8(u8::from(self.blocks_sight))
+            .u64(u64::from(self.holds_ml));
     }
 }
 
@@ -226,6 +232,8 @@ pub struct Piece {
     pub at: Pos,
     /// Turned a quarter, so its width and height are swapped.
     pub turned: bool,
+    /// What's inside it, if it's a container.
+    pub contents: Vec<Item>,
 }
 
 impl Piece {
@@ -245,7 +253,11 @@ impl Piece {
             .i32(self.at.x)
             .i32(self.at.y)
             .i32(self.at.z)
-            .u8(u8::from(self.turned));
+            .u8(u8::from(self.turned))
+            .u64(self.contents.len() as u64);
+        for item in &self.contents {
+            item.hash_into(h);
+        }
     }
 }
 
@@ -329,8 +341,19 @@ impl Furnishings {
 
     /// The piece covering the tile at `p`, if any.
     pub(crate) fn at(&self, map: &Map, p: Pos) -> Option<&Piece> {
+        self.pieces.get(self.number_at(map, p)?)
+    }
+
+    /// The piece covering the tile at `p`, if any, to change.
+    pub(crate) fn at_mut(&mut self, map: &Map, p: Pos) -> Option<&mut Piece> {
+        let i = self.number_at(map, p)?;
+        self.pieces.get_mut(i)
+    }
+
+    /// The place in `pieces` of the piece covering the tile at `p`.
+    fn number_at(&self, map: &Map, p: Pos) -> Option<usize> {
         let i = *self.cover.get(map.index_of(p)?)?;
-        self.pieces.get(usize::try_from(i).ok()?)
+        usize::try_from(i).ok()
     }
 
     /// Checks loaded furniture makes sense: every piece is a known kind
@@ -374,7 +397,7 @@ pub(crate) mod tests {
 
     /// Test furniture, all steel: a one-tile `"crate"` in the way, a
     /// `"bench"` two tiles across, a `"stool"` you can walk through and a
-    /// `"cabinet"` that hides what's behind it.
+    /// `"cabinet"` that hides what's behind it and holds a litre.
     pub(crate) fn test_furniture_json() -> String {
         r#"{ "furniture": [
             { "id": "crate", "name": "crate", "description": "A crate.",
@@ -384,7 +407,8 @@ pub(crate) mod tests {
             { "id": "stool", "name": "stool", "description": "A stool.",
               "glyph": "h", "material": "steel", "walkable": true },
             { "id": "cabinet", "name": "cabinet", "description": "A cabinet.",
-              "glyph": "{", "material": "steel", "blocks_sight": true, "colour": "red" }
+              "glyph": "{", "material": "steel", "blocks_sight": true, "colour": "red",
+              "holds_ml": 1000 }
         ] }"#
             .into()
     }
@@ -411,6 +435,7 @@ pub(crate) mod tests {
         assert_eq!(crate_.size, [1, 1]);
         assert!(!crate_.walkable && !crate_.blocks_sight && crate_.colour.is_none());
         assert!(all.list()[2].walkable && all.list()[3].blocks_sight);
+        assert_eq!((crate_.holds_ml, all.list()[3].holds_ml), (0, 1000));
     }
 
     #[test]
@@ -435,6 +460,7 @@ pub(crate) mod tests {
             material: 0,
             at: Pos::new(3, 4, 1),
             turned: false,
+            contents: Vec::new(),
         };
         let tiles: Vec<Pos> = along.tiles(bench).collect();
         assert_eq!(tiles, [Pos::new(3, 4, 1), Pos::new(4, 4, 1)]);
@@ -479,7 +505,8 @@ pub(crate) mod tests {
             h.finish()
         };
         let base = test_furniture();
-        let changes: [fn(&mut FurnitureType); 9] = [
+        let changes: [fn(&mut FurnitureType); 10] = [
+            |f| f.holds_ml = 5,
             |f| f.id.push('!'),
             |f| f.name.push('!'),
             |f| f.description.push('!'),
@@ -511,6 +538,7 @@ pub(crate) mod tests {
             material: 0,
             at: Pos::new(x, 1, 0),
             turned,
+            contents: Vec::new(),
         };
         let pieces = vec![bench(1, false), bench(4, true)];
         let furnishings = Furnishings::new(pieces, &map, test_furniture().list());
@@ -574,7 +602,11 @@ pub(crate) mod tests {
         };
         let (map, furnishings) = furnished();
         let kinds = test_furniture();
-        let changes: [fn(&mut Piece); 4] = [
+        let changes: [fn(&mut Piece); 5] = [
+            |p| {
+                p.contents
+                    .push(Item::new(0, 0, crate::item::tests::test_items().list()))
+            },
             |p| p.kind = 0,
             |p| p.material = 1,
             |p| p.at.y = 2,

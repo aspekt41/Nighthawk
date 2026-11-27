@@ -988,17 +988,20 @@ mod tests {
 
     // --- Interact menu -----------------------------------------------------------
 
-    /// A new game standing beside a crew-deck door with the hand lamp, so
-    /// there's light to see by: at (22, 6) with the cabin door at (22, 7)
-    /// just south, and another door at (22, 4) two tiles north.
+    /// A new game standing beside a crew-deck door with the hand lamp
+    /// from the gear locker, so there's light to see by, but no cutter: at
+    /// (22, 6) with the cabin door at (22, 7) just south, and another door
+    /// at (22, 4) two tiles north.
     fn by_a_door() -> (App, tempfile::TempDir) {
         let (mut app, dir) = new_app(Some(7));
-        // Pick up the lamp at (11, 8) first: step onto it, then `e` `g`;
-        // then a step west, to go north past the stasis chamber at (11, 6).
-        let route = ['n', 'e', 'g', 'h']
-            .into_iter()
-            .chain(std::iter::repeat_n('k', 6))
-            .chain(std::iter::repeat_n('l', 23))
+        // Two steps north-west to (8, 5), beside the gear locker at
+        // (7, 4); `e`, the cursor north-west onto it, `t` to take out.
+        // Then drop the cutter, the first thing in the inventory.
+        press_all(&mut app, "yyeyt");
+        press_all(&mut app, "id");
+        app.handle_key(key(KeyCode::Esc));
+        let route = std::iter::repeat_n('k', 3)
+            .chain(std::iter::repeat_n('l', 25))
             .chain(['>'])
             .chain(std::iter::repeat_n('j', 4))
             .chain(std::iter::repeat_n('h', 11));
@@ -1144,13 +1147,14 @@ mod tests {
 
     // --- Inventory --------------------------------------------------------------
 
-    /// A new game standing beside the laser cutter at (6, 7), having picked
-    /// it up, then beside the scrap at (3, 9), having picked that up too.
+    /// A new game having taken the cutter and lamp out of the gear locker
+    /// at (7, 4), then picked up the four scraps at (9, 9). In the
+    /// pockets: cutter, scrap, scrap; lamp, scrap, scrap.
     fn carrying_everything() -> (App, tempfile::TempDir) {
         let (mut app, dir) = new_app(Some(7));
-        press_all(&mut app, "lelg"); // to (5, 7); pick up the cutter at (6, 7)
-        press_all(&mut app, "bebg"); // to (4, 8); pick up the scrap at (3, 9)
-        assert_eq!(world(&app).carried().len(), 5);
+        press_all(&mut app, "yyeyt"); // to (8, 5); take out of the locker
+        press_all(&mut app, "jjjeng"); // to (8, 8); pick up the scrap at (9, 9)
+        assert_eq!(world(&app).carried().len(), 6);
         (app, dir)
     }
 
@@ -1161,7 +1165,7 @@ mod tests {
         press_all(&mut app, "i");
         assert_eq!(app.inventory, Some(0));
         press_all(&mut app, "jjjjjjjj");
-        assert_eq!(app.inventory, Some(4), "stops at the last item");
+        assert_eq!(app.inventory, Some(5), "stops at the last item");
         press_all(&mut app, "kkkkkkkk");
         assert_eq!(app.inventory, Some(0), "and at the first");
         press_all(&mut app, ".l");
@@ -1174,12 +1178,12 @@ mod tests {
     fn d_drops_the_highlighted_item_where_you_stand() {
         let (mut app, _dir) = carrying_everything();
         let here = world(&app).player();
-        press_all(&mut app, "ijjjjd"); // the last scrap
-        assert_eq!(world(&app).carried().len(), 4);
+        press_all(&mut app, "ijjjjjd"); // the last scrap
+        assert_eq!(world(&app).carried().len(), 5);
         assert_eq!(world(&app).items_at(here).count(), 1);
-        assert_eq!(app.inventory, Some(3), "the highlight stays on the list");
+        assert_eq!(app.inventory, Some(4), "the highlight stays on the list");
         assert_eq!(last_log(&app), "You drop the scrap (Steel).");
-        press_all(&mut app, "dddd");
+        press_all(&mut app, "ddddd");
         assert!(world(&app).carried().is_empty());
         press_all(&mut app, "d");
         assert_eq!(last_log(&app), "You have nothing to drop.");

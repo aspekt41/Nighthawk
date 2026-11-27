@@ -79,6 +79,13 @@
           "maxLength": 1,
           "minLength": 1
         },
+        "holds_ml": {
+          "description": "How much it holds, in millilitres, if it's a container like a\nlocker. Optional: it holds nothing.",
+          "type": "integer",
+          "format": "uint32",
+          "default": 0,
+          "minimum": 0
+        },
         "id": {
           "description": "How maps refer to it, like `\"stasis_chamber\"`.",
           "type": "string"

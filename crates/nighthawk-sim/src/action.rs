@@ -28,6 +28,9 @@ pub enum Effect {
     Recipe,
     /// Pick up the items lying there.
     PickUp,
+    /// Take out what's inside the furniture there, like a locker's
+    /// contents.
+    TakeOut,
 }
 
 impl Effect {
@@ -38,6 +41,7 @@ impl Effect {
         match self {
             Effect::Recipe => 0,
             Effect::PickUp => 1,
+            Effect::TakeOut => 4,
         }
     }
 }
@@ -279,7 +283,8 @@ pub(crate) mod tests {
 
     /// The test actions, in menu order: open, close, cut (reach 2, clear
     /// line, tool from the material), repair (clear of items), pick up
-    /// (your own tile too, 2 s per item) and weld (a second tool action).
+    /// (your own tile too, 2 s per item), weld (a second tool action) and
+    /// take out (from furniture, 2 s per item).
     pub(crate) const TEST_ACTIONS: &str = r#"{ "actions": [
         { "id": "open", "name": "Open", "key": "o", "reach": 1, "on_bump": true,
           "done": "You open the {was}." },
@@ -292,7 +297,9 @@ pub(crate) mod tests {
         { "id": "pick_up", "name": "Pick up", "key": "g", "reach": 1, "on_own_tile": true,
           "effect": "pick_up", "seconds": 2 },
         { "id": "weld", "name": "Weld", "key": "w", "reach": 1,
-          "done": "You weld the {was} into {now}." }
+          "done": "You weld the {was} into {now}." },
+        { "id": "take_out", "name": "Take out", "key": "t", "reach": 1,
+          "effect": "take_out", "seconds": 2 }
     ] }"#;
 
     /// The test actions' numbers, for tests that name one.
@@ -302,6 +309,7 @@ pub(crate) mod tests {
     pub(crate) const REPAIR: u16 = 3;
     pub(crate) const PICK_UP: u16 = 4;
     pub(crate) const WELD: u16 = 5;
+    pub(crate) const TAKE_OUT: u16 = 6;
 
     #[test]
     fn the_named_numbers_match_the_test_actions() {
@@ -328,7 +336,12 @@ pub(crate) mod tests {
     fn actions_load_in_menu_order_with_their_rules() {
         let actions = test_actions();
         let ids: Vec<&str> = actions.list().iter().map(|a| a.id.as_str()).collect();
-        assert_eq!(ids, ["open", "close", "cut", "repair", "pick_up", "weld"]);
+        assert_eq!(
+            ids,
+            [
+                "open", "close", "cut", "repair", "pick_up", "weld", "take_out"
+            ]
+        );
         assert_eq!(actions.index_of("cut"), Some(2));
         assert_eq!(actions.index_of("dance"), None);
         let cut = actions.get("cut").unwrap();
@@ -453,7 +466,7 @@ pub(crate) mod tests {
             change(&mut changed[2]);
             assert_ne!(hash(&base), hash(&changed), "{:?}", changed[2]);
         }
-        let ids = [Effect::Recipe, Effect::PickUp].map(Effect::hash_id);
-        assert_eq!(ids, [0, 1]);
+        let ids = [Effect::Recipe, Effect::PickUp, Effect::TakeOut].map(Effect::hash_id);
+        assert_eq!(ids, [0, 1, 4], "2 and 3 are retired");
     }
 }

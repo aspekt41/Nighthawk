@@ -128,6 +128,13 @@
     "Placed": {
       "type": "object",
       "properties": {
+        "contents": {
+          "description": "Items inside the furniture, if it's a container like a locker:\nevery piece drawn with this character holds its own copies.\nOptional.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ItemSpec"
+          }
+        },
         "furniture": {
           "description": "Furniture standing on it, by id. Draw every tile the furniture\ncovers with this entry's character. Optional.",
           "type": [

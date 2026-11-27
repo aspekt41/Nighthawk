@@ -95,8 +95,8 @@ usually following a recipe (below). The menu lists actions in file order.
 | `on_own_tile` | Optional. It can be done to the tile you stand on (picking up). Otherwise you're told to step out first. |
 | `clear_of_items` | Optional. Items lying on the tile block it (they'd end up inside a repair). |
 | `tool_from_material` | Optional. It needs a tool at the level the tile's **material** lists for this action in `worked_by` (an aluminium door: `LASER 1` to cut). A material that lists none can't have it done at all. |
-| `effect` | Optional. `recipe` (the default): follow this action's recipe for the structure there. Or the built-in `pick_up`. (Opening and closing doors are recipes: `recipes/doors.json`.) |
-| `seconds` | Only for built-in effects: how long it takes (for picking up, per item). A recipe action takes its time from the recipe. |
+| `effect` | Optional. `recipe` (the default): follow this action's recipe for the structure there. Or a built-in one: `pick_up` (the items lying there) or `take_out` (what's inside the furniture there, like a locker's contents). (Opening and closing doors are recipes: `recipes/doors.json`.) |
+| `seconds` | Only for built-in effects: how long it takes (for picking up and taking out, per item). A recipe action takes its time from the recipe. |
 | `done` | Only for recipe actions, and required: the log line when it's done. `{was}` is the structure's name before, `{now}` after: "You cut through the {was}." |
 | `on_bump` | Optional. Walking into a solid tile does this action, if it can be done there (walking into a shut door opens it). |
 | `shortcut` | Optional. Its key also works while playing, followed by a direction (`c` then `l` closes the door to the east). It may not be a key the game already uses while playing (`a t V e i S q Q`). |
@@ -196,6 +196,7 @@ tile, and it's still one thing: a stasis chamber is two tiles long.
 | `size` | Optional. Its width and height in tiles, 1 to 4 each, as it stands unturned: `[2, 1]` is two across and one down. Default `[1, 1]`. A map can turn a piece a quarter (see `turned` under [Maps](#maps-mapsjson)), which swaps them. |
 | `walkable` | Optional. You can walk through it, like a chair. Left out, it's in the way: walking into it bumps it. Air always flows past furniture. |
 | `blocks_sight` | Optional. It's tall enough to hide what's behind it (and to cast a shadow), like a locker. Left out, you can see over it. |
+| `holds_ml` | Optional. It's a container holding this many millilitres, like a locker (60000, 60 L). Maps can put items inside it (`contents`, under [Maps](#maps-mapsjson)), look mode lists what's inside, and the `take_out` action (`t` in the interact menu) takes them out into your pockets. Left out, it holds nothing. |
 
 A game may have no furniture at all; the folder must still exist.
 
@@ -292,6 +293,7 @@ once, and the legend says what it stands on (something walkable).
 | `legend[].items` | Optional, in the object form: items lying on that tile, like `"s": { "structure": "deck_plating", "items": [ { "item": "scrap", "count": 4 } ] }`. Each entry is an `item`, optionally a `material` other than its own (`"material": "bone"` makes Scrap (Bone)), and a `count` (default 1). Items need a walkable tile. |
 | `legend[].furniture` | Optional, in the object form: furniture standing on that tile, like `"C": { "structure": "deck_plating", "furniture": "stasis_chamber" }`. Draw **every tile the furniture covers** with that character: `CC` is one chamber two tiles long, and `CCCC` is two side by side. The loader cuts the drawing into pieces in reading order (the first tile of a piece it meets is its top-left), and a drawing that doesn't fit says where, like `deck 0, row 1, column 22: the stasis_chamber 'C' starting here also needs row 1, column 23 drawn as 'C'`. Furniture needs a walkable structure under it, and `@` can only stand on furniture you can walk through. |
 | `legend[].turned` | Optional, with `furniture`: turns it a quarter, swapping its width and height, so a chamber two tiles across runs two tiles down: `"c": { "structure": "deck_plating", "furniture": "stasis_chamber", "turned": true }`. |
+| `legend[].contents` | Optional, with `furniture` that holds things (`holds_ml`): items inside it, written like `items`: `"G": { "structure": "deck_plating", "furniture": "locker", "contents": [ { "item": "hand_lamp" } ] }`. Every piece drawn with that character gets its own. They must fit: `legend entry 'G': its contents take 900 ml, but a crate holds 0 ml`. |
 | `player_wears` | Optional. What the player starts out wearing, as a list of items like `[ { "item": "jumpsuit" } ]`. Everything in it must be wearable. |
 | `decks` | Listed bottom to top: the first is deck 0. All decks must be the same size. |
 | `decks[].name` | Optional. Shown as the map panel's title on that deck. Without it the deck is "Deck 0", "Deck 1" and so on. |

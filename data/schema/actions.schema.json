@@ -121,6 +121,11 @@
           "description": "Pick up the items lying there.",
           "type": "string",
           "const": "pick_up"
+        },
+        {
+          "description": "Take out what's inside the furniture there, like a locker's\ncontents.",
+          "type": "string",
+          "const": "take_out"
         }
       ]
     }

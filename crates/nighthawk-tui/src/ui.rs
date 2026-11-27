@@ -898,7 +898,24 @@ fn seen_description(world: &World, at: Pos) -> String {
     let material = material_here(world, at)
         .map_or(String::new(), |m| format!("{}: {}", m.name, m.description));
     let items = items_here(world, at);
-    format!("{items}{standing} {material}")
+    let inside = inside_here(world, at);
+    format!("{items}{standing} {inside}{material}")
+}
+
+/// For a container standing at `at`: "Inside: basic laser cutter
+/// (Aluminium Alloy), hand lamp (Aluminium Alloy). ", or "It's empty. ".
+/// Nothing for anything else.
+fn inside_here(world: &World, at: Pos) -> String {
+    let container = world.furniture_kind_at(at).is_some_and(|k| k.holds_ml > 0);
+    let contents = world.furniture_at(at).map_or(&[][..], |p| &p.contents[..]);
+    match (container, contents) {
+        (false, _) => String::new(),
+        (true, []) => "It's empty. ".into(),
+        (true, items) => format!(
+            "Inside: {}. ",
+            counted_names(world, items.iter()).join(", ")
+        ),
+    }
 }
 
 /// The About text for a tile out of sight: the description of the
@@ -922,24 +939,34 @@ fn remembered_description(world: &World, at: Pos) -> String {
 /// (Steel). ", or nothing if the floor is bare. Identical items are
 /// counted together, in the order they first appear.
 fn items_here(world: &World, at: Pos) -> String {
+    let names = counted_names(world, world.items_at(at));
+    if names.is_empty() {
+        return String::new();
+    }
+    format!("On the floor: {}. ", names.join(", "))
+}
+
+/// The names of `items`, with identical ones counted together in the
+/// order they first appear: "basic laser cutter (Aluminium Alloy)",
+/// "4 × scrap (Steel)".
+///
+/// `'a` is a lifetime: it says the items are borrowed from somewhere that
+/// lives at least as long as the iterator does.
+fn counted_names<'a>(world: &World, items: impl Iterator<Item = &'a Item>) -> Vec<String> {
     let mut counted: Vec<(ItemRef, usize)> = Vec::new();
-    for item in world.items_at(at) {
+    for item in items {
         match counted.iter_mut().find(|(id, _)| *id == item.id()) {
             Some((_, n)) => *n += 1,
             None => counted.push((item.id(), 1)),
         }
     }
-    if counted.is_empty() {
-        return String::new();
-    }
-    let names: Vec<String> = counted
+    counted
         .iter()
         .map(|&(id, n)| match n {
             1 => text::item_name(world, id),
             _ => format!("{n} × {}", text::item_name(world, id)),
         })
-        .collect();
-    format!("On the floor: {}. ", names.join(", "))
+        .collect()
 }
 
 /// The inventory screen: what you're wearing, each of its pockets with how
@@ -1311,6 +1338,33 @@ mod tests {
     }
 
     #[test]
+    fn look_mode_says_what_is_inside_a_container() {
+        let mut world = real_world();
+        let locker = Pos::new(7, 4, 0);
+        let about = seen_description(&world, locker);
+        assert!(
+            about.contains(
+                "Inside: basic laser cutter (Aluminium Alloy), hand lamp (Aluminium Alloy). Steel:"
+            ),
+            "{about}"
+        );
+        world.apply(Command::Move(Dir::NorthWest));
+        world.apply(Command::Move(Dir::NorthWest));
+        world.apply(Command::Interact {
+            at: locker,
+            action: number(&world, "take_out"),
+        });
+        assert!(seen_description(&world, locker).contains("It's empty. "));
+        assert_eq!(
+            inside_here(&world, Pos::new(11, 6, 0)),
+            "",
+            "a chamber holds nothing"
+        );
+        let options = interact_texts(&world, Pos::new(12, 6, 0));
+        assert_eq!(options[1], "Stasis chamber");
+    }
+
+    #[test]
     fn remembered_furniture_is_drawn_and_described_from_memory() {
         let world = upstairs_world();
         let chamber = Pos::new(11, 6, 0);
@@ -1322,11 +1376,11 @@ mod tests {
     #[test]
     fn remembered_items_show_where_they_were_last_seen() {
         let world = upstairs_world();
-        let cutter = Pos::new(12, 7, 0);
-        let kind = world.items_at(cutter).next().unwrap().kind;
+        let scraps = Pos::new(9, 9, 0);
+        let kind = world.items_at(scraps).next().unwrap().kind;
         let glyph = world.item_types()[usize::from(kind)].glyph;
-        assert_eq!(glyph_at(&world, cutter, None), (glyph.into(), REMEMBERED));
-        let lines = look_texts(&world, cutter);
+        assert_eq!(glyph_at(&world, scraps, None), (glyph.into(), REMEMBERED));
+        let lines = look_texts(&world, scraps);
         let name = &world.item_types()[usize::from(kind)].name;
         assert_eq!(lines[2], "Deck plating");
         assert_eq!(lines[3], "Last seen here:");
@@ -1579,7 +1633,7 @@ mod tests {
 
     #[test]
     fn the_air_overlay_shows_thin_air_upstairs_and_is_labelled() {
-        let mut world = with_the_lamp();
+        let mut world = with_the_gear();
         let full = draw_screen(80, 24, |f| render_game(&world, &[], air(), f));
         assert!(full.contains("[air overlay]"));
         assert!(full.contains("███"), "the stasis bay is at full pressure");
@@ -1587,12 +1641,9 @@ mod tests {
         // Climb to the crew deck, which starts at 60% pressure.
         use nighthawk_sim::Command::{Climb, Move};
         // The corridor soon fills from the shaft, so go along it and open
-        // a cabin door to look in by the lamp's light. (A step west first,
-        // to go north past the stasis chamber.)
-        let route = [Move(Dir::West)]
-            .into_iter()
-            .chain(std::iter::repeat_n(Move(Dir::North), 6))
-            .chain(std::iter::repeat_n(Move(Dir::East), 23))
+        // a cabin door to look in by the lamp's light.
+        let route = std::iter::repeat_n(Move(Dir::North), 3)
+            .chain(std::iter::repeat_n(Move(Dir::East), 25))
             .chain([Climb(nighthawk_sim::Vertical::Up)])
             .chain(std::iter::repeat_n(Move(Dir::South), 3))
             .chain(std::iter::repeat_n(Move(Dir::West), 11))
@@ -1623,14 +1674,16 @@ mod tests {
         World::new(crate::content::load_start_map().unwrap(), 1)
     }
 
-    /// The real world, after picking up the hand lamp at (11, 8) beside
-    /// the start: the player stands there, with light to see by anywhere.
-    fn with_the_lamp() -> World {
+    /// The real world, after taking the gear (the cutter and the lamp)
+    /// out of the gear locker at (7, 4): the player stands beside it at
+    /// (8, 5), with light to see by anywhere.
+    fn with_the_gear() -> World {
         let mut world = real_world();
-        world.apply(Command::Move(Dir::SouthEast));
+        world.apply(Command::Move(Dir::NorthWest));
+        world.apply(Command::Move(Dir::NorthWest));
         world.apply(Command::Interact {
-            at: Pos::new(11, 8, 0),
-            action: number(&world, "pick_up"),
+            at: Pos::new(7, 4, 0),
+            action: number(&world, "take_out"),
         });
         let lamp = world.item_type_index("hand_lamp").unwrap();
         assert_eq!(world.carried_count(lamp), 1);
@@ -1900,13 +1953,18 @@ mod tests {
     #[test]
     fn items_on_the_floor_draw_over_it_in_their_materials_colour() {
         let world = real_world();
-        let (laser, style) = glyph_at(&world, Pos::new(12, 7, 0), None);
-        assert_eq!(laser, "(");
-        assert_eq!(style.fg, Some(Color::White), "aluminium is white");
+        let (scrap, style) = glyph_at(&world, Pos::new(9, 9, 0), None);
+        assert_eq!(scrap, "*");
+        assert_eq!(style.fg, Some(Color::Gray), "steel is grey");
         assert!(style.add_modifier.contains(Modifier::BOLD));
-        assert_eq!(glyph_at(&world, Pos::new(9, 9, 0), None).0, "*");
+        let (bones, style) = glyph_at(&world, Pos::new(22, 11, 0), None);
         assert_eq!(
-            glyph_at(&world, Pos::new(12, 7, 0), Some(Overlay::Air)).0,
+            (bones.as_str(), style.fg),
+            ("*", Some(Color::White)),
+            "bone is white"
+        );
+        assert_eq!(
+            glyph_at(&world, Pos::new(9, 9, 0), Some(Overlay::Air)).0,
             "█",
             "an overlay shades the floor instead"
         );
@@ -1920,8 +1978,8 @@ mod tests {
             "On the floor: 4 × scrap (Steel). "
         );
         assert_eq!(
-            items_here(&world, Pos::new(12, 7, 0)),
-            "On the floor: basic laser cutter (Aluminium Alloy). "
+            items_here(&world, Pos::new(14, 2, 0)),
+            "On the floor: 2 × scrap (Bone). "
         );
         assert_eq!(items_here(&world, Pos::new(5, 5, 0)), "");
     }
@@ -1948,13 +2006,7 @@ mod tests {
 
     #[test]
     fn carried_items_show_under_their_pocket_with_the_chosen_one_reversed() {
-        let mut world = real_world();
-        // Step beside the laser cutter and pick it up.
-        world.apply(Command::Move(Dir::East));
-        world.apply(Command::Interact {
-            at: Pos::new(12, 7, 0),
-            action: number(&world, "pick_up"),
-        });
+        let world = with_the_gear();
         let lines = inventory_lines(&world, 0);
         assert_eq!(
             lines[1].to_string(),
@@ -2004,15 +2056,9 @@ mod tests {
 
     #[test]
     fn a_cut_door_draws_as_a_red_frame() {
-        let mut world = real_world();
-        world.apply(Command::Move(Dir::East));
-        world.apply(Command::Interact {
-            at: Pos::new(12, 7, 0),
-            action: number(&world, "pick_up"),
-        });
-        for _ in 0..3 {
-            world.apply(Command::Move(Dir::West));
-        }
+        let mut world = with_the_gear();
+        world.apply(Command::Move(Dir::South));
+        world.apply(Command::Move(Dir::South)); // to (8, 7), two from the door
         world.apply(Command::Interact {
             at: Pos::new(6, 7, 0),
             action: number(&world, "cut"),

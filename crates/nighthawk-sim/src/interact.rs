@@ -92,6 +92,9 @@ fn applies(world: &World, at: Pos, action: &Action) -> bool {
     match action.effect {
         Effect::Recipe => world.recipe_for(&action.id, at).is_some(),
         Effect::PickUp => world.items_at(at).next().is_some(),
+        Effect::TakeOut => world
+            .furniture_at(at)
+            .is_some_and(|piece| !piece.contents.is_empty()),
     }
 }
 

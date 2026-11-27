@@ -20,6 +20,33 @@ use crate::rng::{GameRng, Stream};
 use crate::sight::{Remembered, Scene, View};
 use crate::structure::Structure;
 
+/// Puts each of `items` in the first pocket of `worn` it fits in, in
+/// order. Returns what didn't fit, and an event per item: `stowed` for one
+/// put away (like [`Event::PickedUp`]), [`Event::NoRoom`] for one left.
+///
+/// `impl Fn(ItemRef) -> Event` means "any function from an item to an
+/// event"; an enum variant like `Event::PickedUp` is one.
+fn stow_all(
+    worn: &mut [Item],
+    items: Vec<Item>,
+    ctx: ItemContext,
+    stowed: impl Fn(ItemRef) -> Event,
+) -> (Vec<Item>, Vec<Event>) {
+    let mut left = Vec::new();
+    let mut events = Vec::new();
+    for item in items {
+        let id = item.id();
+        match item::stow(worn, item, ctx) {
+            Ok(()) => events.push(stowed(id)),
+            Err(item) => {
+                left.push(item);
+                events.push(Event::NoRoom(id));
+            }
+        }
+    }
+    (left, events)
+}
+
 /// Something the player wants to do. Front-ends turn key presses into these.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Command {
@@ -82,6 +109,12 @@ pub enum Event {
     },
     /// The player picked this item up and put it in a pocket.
     PickedUp(ItemRef),
+    /// The player took this item out of a piece of furniture (of kind
+    /// number `from`, like a locker) and put it in a pocket.
+    TookOut {
+        item: ItemRef,
+        from: u16,
+    },
     /// This item fits in none of the player's pockets, so it stays put.
     NoRoom(ItemRef),
     /// The player dropped this item where they stand.
@@ -503,6 +536,7 @@ impl World {
         match effect {
             Effect::Recipe => self.follow_recipe(at, action),
             Effect::PickUp => self.pick_up(at, seconds),
+            Effect::TakeOut => self.take_out(at, seconds),
         }
     }
 
@@ -600,22 +634,35 @@ impl World {
             types: self.content.item_types(),
             materials: self.content.materials(),
         };
-        let mut events = Vec::new();
-        let mut picked = 0;
-        for FloorItem { item, .. } in here {
-            let id = item.id();
-            match item::stow(&mut self.worn, item, ctx) {
-                Ok(()) => {
-                    picked += 1;
-                    events.push(Event::PickedUp(id));
-                }
-                Err(item) => {
-                    self.floor_items.push(FloorItem { at, item });
-                    events.push(Event::NoRoom(id));
-                }
-            }
+        let items = here.into_iter().map(|f| f.item).collect();
+        let (left, mut events) = stow_all(&mut self.worn, items, ctx, Event::PickedUp);
+        let picked = events.len() - left.len();
+        let left = left.into_iter().map(|item| FloorItem { at, item });
+        self.floor_items.extend(left);
+        self.pass_time(seconds_each * picked as u64, &mut events);
+        events
+    }
+
+    /// Takes everything out of the furniture at `at` that fits in a
+    /// pocket, one item at a time, taking `seconds_each` per item taken;
+    /// anything that doesn't fit stays inside.
+    fn take_out(&mut self, at: Pos, seconds_each: u64) -> Vec<Event> {
+        let ctx = ItemContext {
+            types: self.content.item_types(),
+            materials: self.content.materials(),
+        };
+        // `blocked` checked there's a piece here with something in it.
+        let piece = self.furniture.at_mut(&self.map, at);
+        let (from, inside) = piece
+            .map(|p| (p.kind, std::mem::take(&mut p.contents)))
+            .unwrap_or_default();
+        let took = |item| Event::TookOut { item, from };
+        let (left, mut events) = stow_all(&mut self.worn, inside, ctx, took);
+        let taken = events.len() - left.len();
+        if let Some(piece) = self.furniture.at_mut(&self.map, at) {
+            piece.contents = left;
         }
-        self.pass_time(seconds_each * picked, &mut events);
+        self.pass_time(seconds_each * taken as u64, &mut events);
         events
     }
 
@@ -839,6 +886,26 @@ impl World {
                 ));
             }
         }
+        self.check_contents(ctx)
+    }
+
+    /// Checks everything inside furniture makes sense and fits in it.
+    fn check_contents(&self, ctx: ItemContext) -> Result<(), String> {
+        let kinds = self.content.furniture();
+        for piece in self.furniture.pieces() {
+            piece
+                .contents
+                .iter()
+                .try_for_each(|i| item::check_item(i, ctx))?;
+            let holds = kinds.get(usize::from(piece.kind)).map_or(0, |k| k.holds_ml);
+            let volume: u64 = piece.contents.iter().map(|i| ctx.volume_ml(i)).sum();
+            if volume > u64::from(holds) {
+                return Err(format!(
+                    "furniture at {:?} holds {holds} ml but has {volume} ml inside",
+                    piece.at
+                ));
+            }
+        }
         Ok(())
     }
 
@@ -882,7 +949,7 @@ impl World {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::action::tests::{CLOSE, CUT, OPEN, PICK_UP, REPAIR};
+    use crate::action::tests::{CLOSE, CUT, OPEN, PICK_UP, REPAIR, TAKE_OUT};
     use crate::map_file::parse_map_for_tests as parse_map;
 
     const TEST_SEED: u64 = 1234;
@@ -1923,6 +1990,107 @@ mod tests {
                 .unwrap_err()
                 .contains("isn't on the floor")
         );
+    }
+
+    /// A lit room where you stand beside a cabinet (which holds a litre)
+    /// at (2, 1) with three scraps inside, wearing the test suit:
+    ///
+    /// ```text
+    /// #*###
+    /// #@c.#
+    /// #####
+    /// ```
+    fn cabinet_world(contents: &str) -> World {
+        let rows = ["#*###", "#@c.#", "#####"];
+        let json = format!(
+            r##"{{ "id": "t", "name": "T", "player_wears": [ {{ "item": "suit" }} ],
+                  "legend": {{ "#": "wall", ".": "floor", "*": "lamp",
+                     "c": {{ "structure": "floor", "furniture": "cabinet",
+                             "contents": {contents} }} }},
+                  "decks": [ {{ "rows": {rows:?} }} ] }}"##
+        );
+        World::new(parse_map(&json).expect("test map is valid"), TEST_SEED)
+    }
+
+    const CABINET: Pos = Pos::new(2, 1, 0);
+
+    #[test]
+    fn taking_out_puts_what_is_inside_in_your_pockets_two_seconds_each() {
+        let mut world = cabinet_world(r#"[ { "item": "scrap", "count": 3 } ]"#);
+        let events = world.apply(Command::Interact {
+            at: CABINET,
+            action: TAKE_OUT,
+        });
+        let cabinet = world.content().furniture_index("cabinet").unwrap();
+        let scrap = world
+            .item_types()
+            .iter()
+            .position(|t| t.id == "scrap")
+            .unwrap();
+        let took = Event::TookOut {
+            item: ItemRef {
+                kind: u16::try_from(scrap).unwrap(),
+                material: 0,
+            },
+            from: cabinet,
+        };
+        assert_eq!(without_ambient(events), vec![took; 3]);
+        assert_eq!(world.seconds(), 3 * PICK_UP_SECONDS);
+        assert!(world.furniture_at(CABINET).unwrap().contents.is_empty());
+        assert_eq!(carried(&world), 3);
+    }
+
+    #[test]
+    fn what_does_not_fit_stays_inside_and_an_empty_one_offers_nothing() {
+        // Two cutters (800 ml each) can't share a 1 L pocket: one fits in
+        // each pocket, so put a cutter in each first and the cabinet's
+        // stays put.
+        let mut world = cabinet_world(r#"[ { "item": "cutter" } ]"#);
+        for p in 0..2 {
+            let cutter = Item::new(1, 0, world.item_types());
+            world.worn[0].pockets[p].push(cutter);
+        }
+        let events = world.apply(Command::Interact {
+            at: CABINET,
+            action: TAKE_OUT,
+        });
+        assert!(matches!(without_ambient(events)[..], [Event::NoRoom(_)]));
+        assert_eq!(world.seconds(), 0);
+        assert_eq!(world.furniture_at(CABINET).unwrap().contents.len(), 1);
+
+        let empty = cabinet_world("[]");
+        assert!(
+            interact::options_at(&empty, CABINET).is_empty(),
+            "nothing to take out, and nothing else to do to a cabinet"
+        );
+        assert_eq!(
+            interact::blocked(&empty, CABINET, TAKE_OUT),
+            Some(Blocked::NotPossible)
+        );
+    }
+
+    #[test]
+    fn a_loaded_container_must_hold_real_items_that_fit() {
+        let world = cabinet_world(r#"[ { "item": "scrap" } ]"#);
+        let with = |extra: Vec<Item>| {
+            let mut changed = world.clone();
+            let kinds = changed.content.furniture().to_vec();
+            let mut pieces = changed.furniture().to_vec();
+            pieces[0].contents.extend(extra);
+            changed.furniture = Furnishings::new(pieces, &changed.map, &kinds);
+            changed.check_consistent()
+        };
+        let cutter = || Item::new(1, 0, world.item_types());
+        assert_eq!(with(vec![cutter()]), Ok(()), "900 ml of 1000");
+        assert_eq!(
+            with(vec![cutter(), cutter()]),
+            Err(
+                "furniture at Pos { x: 2, y: 1, z: 0 } holds 1000 ml but has 1700 ml inside".into()
+            )
+        );
+        let mut odd = cutter();
+        odd.kind = 99;
+        assert!(with(vec![odd]).is_err(), "an item that doesn't exist");
     }
 
     // --- Sight -----------------------------------------------------------------

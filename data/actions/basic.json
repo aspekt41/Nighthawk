@@ -42,6 +42,14 @@
       "on_own_tile": true,
       "effect": "pick_up",
       "seconds": 2
+    },
+    {
+      "id": "take_out",
+      "name": "Take out",
+      "key": "t",
+      "reach": 1,
+      "effect": "take_out",
+      "seconds": 2
     }
   ]
 }

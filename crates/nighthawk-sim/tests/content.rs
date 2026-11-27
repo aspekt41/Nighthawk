@@ -287,7 +287,7 @@ fn you_start_in_a_jumpsuit_with_four_one_litre_pockets() {
 }
 
 #[test]
-fn a_laser_cutter_a_hand_lamp_and_four_steel_scraps_lie_near_the_start() {
+fn four_steel_scraps_lie_near_the_start() {
     let world = common::start_world(1);
     let ctx = world.item_context();
     let near: Vec<(&str, &str, u64)> = world
@@ -303,8 +303,6 @@ fn a_laser_cutter_a_hand_lamp_and_four_steel_scraps_lie_near_the_start() {
     assert_eq!(
         near,
         vec![
-            ("basic_laser_cutter", "aluminium_alloy", 1080),
-            ("hand_lamp", "aluminium_alloy", 432),
             ("scrap", "steel", 785),
             ("scrap", "steel", 785),
             ("scrap", "steel", 785),
@@ -397,22 +395,51 @@ fn emergency_lights_light_the_stasis_bay_and_one_end_of_the_crew_hall() {
     assert!(!lit(&world, 23, 2, 1) && !lit(&world, 10, 10, 1), "cabins");
 }
 
+/// The gear locker, in view of where you wake.
+const GEAR_LOCKER: Pos = Pos::new(7, 4, 0);
+
+/// From the start, two steps north-west to the gear locker; take
+/// everything out of it; then two steps south, to (8, 7), two tiles from
+/// the side room's door.
+fn fetch_the_gear(world: &mut World) {
+    world.apply(Command::Move(Dir::NorthWest));
+    world.apply(Command::Move(Dir::NorthWest));
+    world.apply(Command::Interact {
+        at: GEAR_LOCKER,
+        action: action(world, "take_out"),
+    });
+    world.apply(Command::Move(Dir::South));
+    world.apply(Command::Move(Dir::South));
+    assert_eq!(world.player(), Pos::new(8, 7, 0));
+    let cutter = world.item_type_index("basic_laser_cutter").unwrap();
+    assert_eq!(world.carried_count(cutter), 1);
+}
+
+#[test]
+fn the_gear_locker_in_view_of_the_start_holds_the_cutter_and_the_lamp() {
+    let mut world = common::start_world(1);
+    assert!(world.is_visible(GEAR_LOCKER));
+    let inside: Vec<&str> = world
+        .furniture_at(GEAR_LOCKER)
+        .unwrap()
+        .contents
+        .iter()
+        .map(|item| world.item_types()[usize::from(item.kind)].id.as_str())
+        .collect();
+    assert_eq!(inside, ["basic_laser_cutter", "hand_lamp"]);
+    fetch_the_gear(&mut world);
+    let lamp = world.item_type_index("hand_lamp").unwrap();
+    assert_eq!(world.carried_count(lamp), 1);
+    assert!(world.furniture_at(GEAR_LOCKER).unwrap().contents.is_empty());
+}
+
 #[test]
 fn the_basic_laser_cuts_the_side_room_door_into_a_damaged_door() {
-    // Pick up the laser cutter two steps east, walk back to two tiles from
-    // the side room's door at (6, 7), and cut it.
-    use nighthawk_sim::{Command, Event};
+    // Fetch the laser cutter from the gear locker, and from two tiles
+    // away, cut the side room's door at (6, 7).
+    use nighthawk_sim::Event;
     let mut world = common::start_world(1);
-    let laser = Pos::new(12, 7, 0);
-    world.apply(Command::Move(Dir::East));
-    world.apply(Command::Interact {
-        at: laser,
-        action: action(&world, "pick_up"),
-    });
-    for _ in 0..3 {
-        world.apply(Command::Move(Dir::West));
-    }
-    assert_eq!(world.player(), Pos::new(8, 7, 0));
+    fetch_the_gear(&mut world);
     let door = Pos::new(6, 7, 0);
     let before = world.seconds();
     let cut = action(&world, "cut");
@@ -435,7 +462,7 @@ fn the_basic_laser_cuts_the_side_room_door_into_a_damaged_door() {
 
 #[test]
 fn two_scraps_repair_the_cut_side_room_door() {
-    use nighthawk_sim::{Command, Event};
+    use nighthawk_sim::Event;
     let mut world = common::start_world(1);
     let door = Pos::new(6, 7, 0);
     let (pick_up, cut, repair) = (
@@ -443,16 +470,9 @@ fn two_scraps_repair_the_cut_side_room_door() {
         action(&world, "cut"),
         action(&world, "repair"),
     );
-    // Pick up the laser, cut the door from two tiles away (as above), then
+    // Fetch the laser, cut the door from two tiles away (as above), then
     // fetch the scrap at (9, 9) and come back to stand beside the door.
-    world.apply(Command::Move(Dir::East));
-    world.apply(Command::Interact {
-        at: Pos::new(12, 7, 0),
-        action: pick_up,
-    });
-    for _ in 0..3 {
-        world.apply(Command::Move(Dir::West));
-    }
+    fetch_the_gear(&mut world);
     world.apply(Command::Interact {
         at: door,
         action: cut,
