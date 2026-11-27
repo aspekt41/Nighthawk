@@ -10,6 +10,7 @@
 
 use std::fmt;
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::content::{ContentFile, FileError, first_duplicate, read_all};
@@ -17,7 +18,7 @@ use crate::hash::Fnv64;
 
 /// What doing an action does: a small, fixed list, so the sim knows how to
 /// carry each one out. Everything else about an action is data.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum Effect {
     /// Follow this action's recipe for the structure there: take its time,
@@ -45,7 +46,7 @@ impl Effect {
 ///
 /// The `bool` fields all default to `false` (`#[serde(default)]`), so a
 /// data file only mentions the ones that are true.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Action {
     /// How recipes and materials refer to it, like `"cut"`.
@@ -216,9 +217,13 @@ impl fmt::Display for ActionError {
 
 impl std::error::Error for ActionError {}
 
-#[derive(Deserialize)]
+#[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-struct ActionsFile {
+pub(crate) struct ActionsFile {
+    /// Optional: the JSON Schema this file follows, so editors can check
+    /// it as you type (`"$schema": "../schema/actions.schema.json"`).
+    #[serde(rename = "$schema", default)]
+    _schema: Option<String>,
     actions: Vec<Action>,
 }
 

@@ -1,0 +1,155 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "MapFile",
+  "description": "The JSON shape, exactly as written in the file. `deny_unknown_fields`\nmakes a misspelled field (`\"legnd\"`) an error instead of silently ignored.",
+  "type": "object",
+  "properties": {
+    "$schema": {
+      "description": "Optional: the JSON Schema this file follows, so editors can check\nit as you type (`\"$schema\": \"../schema/map.schema.json\"`).",
+      "type": [
+        "string",
+        "null"
+      ],
+      "default": null
+    },
+    "decks": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/DeckFile"
+      }
+    },
+    "id": {
+      "type": "string"
+    },
+    "legend": {
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/LegendEntry"
+      }
+    },
+    "name": {
+      "type": "string"
+    },
+    "player_wears": {
+      "description": "What the player starts out wearing.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/ItemSpec"
+      }
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "id",
+    "name",
+    "legend",
+    "decks"
+  ],
+  "$defs": {
+    "DeckFile": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "description": "Shown as the map panel's title while you're on this deck. Optional:\nwithout it the deck is called \"Deck 0\", \"Deck 1\" and so on.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "pressure": {
+          "description": "The deck's starting air pressure as a percentage of normal ship air\n(101.3 kPa), from 0 (vacuum) to 200. Optional: 100 if left out. The\nmix is always normal ship air, just thinner or denser.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "default": null,
+          "minimum": 0
+        },
+        "rows": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "temperature": {
+          "description": "The deck's starting air temperature in whole °C, from −270 (deep\nspace) to 200. Optional: 20 °C if left out.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "int32",
+          "default": null
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "rows"
+      ]
+    },
+    "ItemSpec": {
+      "description": "Some items, in a map: a type, optionally a material other than its own,\nand how many (1 if left out).",
+      "type": "object",
+      "properties": {
+        "count": {
+          "type": "integer",
+          "format": "uint32",
+          "default": 1,
+          "minimum": 0
+        },
+        "item": {
+          "type": "string"
+        },
+        "material": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "item"
+      ]
+    },
+    "LegendEntry": {
+      "description": "What a legend character stands for: just a structure's id\n(`\"bulkhead\"`), made of the structure's own material; or a structure\nwith a different material, or items lying on it\n(`{ \"structure\": \"door\", \"material\": \"steel\" }`). An open door is its\nown structure (`\"'\": \"open_door\"`).\n\n`untagged` means serde tries each form in turn and takes the first that\nfits, so the JSON needs no extra label saying which form it is.",
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "$ref": "#/$defs/Placed"
+        }
+      ]
+    },
+    "Placed": {
+      "type": "object",
+      "properties": {
+        "items": {
+          "description": "Items lying on it.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ItemSpec"
+          }
+        },
+        "material": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "structure": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "structure"
+      ]
+    }
+  }
+}

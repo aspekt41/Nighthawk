@@ -1,4 +1,5 @@
 {
+  "$schema": "../schema/recipes.schema.json",
   "recipes": [
     {
       "id": "open_door",

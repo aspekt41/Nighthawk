@@ -23,6 +23,7 @@
 use std::collections::HashMap;
 use std::fmt;
 
+use schemars::JsonSchema;
 use serde::Deserialize;
 
 use crate::air::Mix;
@@ -256,9 +257,13 @@ impl std::error::Error for MapError {}
 
 /// The JSON shape, exactly as written in the file. `deny_unknown_fields`
 /// makes a misspelled field (`"legnd"`) an error instead of silently ignored.
-#[derive(Deserialize)]
+#[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-struct MapFile {
+pub(crate) struct MapFile {
+    /// Optional: the JSON Schema this file follows, so editors can check
+    /// it as you type (`"$schema": "../schema/map.schema.json"`).
+    #[serde(rename = "$schema", default)]
+    _schema: Option<String>,
     id: String,
     name: String,
     legend: HashMap<String, LegendEntry>,
@@ -270,7 +275,7 @@ struct MapFile {
 
 /// Some items, in a map: a type, optionally a material other than its own,
 /// and how many (1 if left out).
-#[derive(Deserialize)]
+#[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct ItemSpec {
     item: String,
@@ -293,14 +298,14 @@ fn one() -> u32 {
 ///
 /// `untagged` means serde tries each form in turn and takes the first that
 /// fits, so the JSON needs no extra label saying which form it is.
-#[derive(Deserialize)]
+#[derive(Deserialize, JsonSchema)]
 #[serde(untagged)]
 enum LegendEntry {
     Id(String),
     Placed(Placed),
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct Placed {
     structure: String,
@@ -311,7 +316,7 @@ struct Placed {
     items: Vec<ItemSpec>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct DeckFile {
     /// Shown as the map panel's title while you're on this deck. Optional:

@@ -23,6 +23,7 @@
 use std::collections::BTreeMap;
 use std::fmt;
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::action::Actions;
@@ -32,7 +33,7 @@ use crate::quality::{LevelError, Levels, Qualities, hash_levels};
 
 /// The colours a material can be drawn in. A short fixed list rather than
 /// any colour at all, so every terminal can show them (decision D16).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum Colour {
     White,
@@ -58,7 +59,7 @@ impl Colour {
 }
 
 /// One material and its properties.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Material {
     /// How data files refer to it, like `"steel"`.
@@ -202,9 +203,13 @@ impl fmt::Display for MaterialError {
 impl std::error::Error for MaterialError {}
 
 /// The JSON shape of one file in `data/materials/`.
-#[derive(Deserialize)]
+#[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-struct MaterialsFile {
+pub(crate) struct MaterialsFile {
+    /// Optional: the JSON Schema this file follows, so editors can check
+    /// it as you type (`"$schema": "../schema/materials.schema.json"`).
+    #[serde(rename = "$schema", default)]
+    _schema: Option<String>,
     materials: Vec<Material>,
 }
 

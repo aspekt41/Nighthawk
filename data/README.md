@@ -21,6 +21,27 @@ The folders load in this order, and each may refer to the ones before it:
 Every tile on a map is a **structure** (what it is: a bulkhead, a door)
 made of a **material** (what it's made of: steel, Nanocarbon Alloy).
 
+**Everything about a thing is here, not in Rust** (decision D43): which
+structures, materials, items, tool qualities, actions and recipes exist,
+what they're called, what keys do what, how long things take and what the
+log says. The game's code only knows what each *field* means. See [How to
+add things](#how-to-add-things) for worked examples.
+
+### Schemas: your editor can check these files
+
+Each file starts with a line like `"$schema": "../schema/materials.schema.json"`,
+pointing at a [JSON Schema](https://json-schema.org/) in `schema/`. Editors
+that understand schemas (VS Code, JetBrains IDEs, Zed, Neovim with a JSON
+language server) then autocomplete field names, show each field's meaning
+on hover, and underline a misspelt or missing field as you type. The schemas
+are generated from the Rust types that load the files, so they always match
+what the game accepts; a test fails if one is out of date. To regenerate
+them after changing a content type:
+
+```sh
+NIGHTHAWK_WRITE_SCHEMAS=1 cargo test -p nighthawk-sim --test schemas
+```
+
 ## Qualities (`qualities/*.json`)
 
 What tools can do (decision D9). A tool has a quality at a level from 1 to
@@ -259,3 +280,78 @@ Mistakes are caught when the game loads, with the exact place named, for example
 It also checks that **every open tile can be reached from `@`**, across
 decks by stairs and through doors (closed doors count, since the player can
 open them), so a room sealed off by mistake fails too.
+
+## How to add things
+
+None of these needs Rust or recompiling: add the JSON, restart the game.
+Put new entries in a new file if you like (every `.json` file in a folder
+is loaded); `cargo test` then checks them along with everything else.
+
+### A new kind of door
+
+A heavy steel hatch that's slow to open: two structures (shut and open)
+and three recipes. In `structures/hatches.json`:
+
+```json
+{ "$schema": "../schema/structures.schema.json", "structures": [
+  { "id": "hatch", "name": "hatch", "description": "A heavy steel hatch, shut.",
+    "glyph": "=", "material": "steel", "colour": "light_red" },
+  { "id": "hatch_open", "name": "open hatch", "description": "A heavy steel hatch, open.",
+    "glyph": "_", "material": "steel", "colour": "light_red", "walkable": true } ] }
+```
+
+And in `recipes/hatches.json`:
+
+```json
+{ "$schema": "../schema/recipes.schema.json", "recipes": [
+  { "id": "open_hatch", "action": "open", "from": "hatch", "to": "hatch_open", "seconds": 6 },
+  { "id": "close_hatch", "action": "close", "from": "hatch_open", "to": "hatch", "seconds": 6 },
+  { "id": "cut_hatch", "action": "cut", "from": "hatch", "to": "damaged_door", "seconds": 300 } ] }
+```
+
+Use it in a map's legend (`"=": "hatch"`). Walking into it opens it,
+because the `open` action is `on_bump`; `c` closes it; and it can be cut
+open, needing `LASER 2`, because the `cut` action takes its level from the
+material, steel.
+
+### A new tool, verb and recipe: welding
+
+What the proof test `crates/nighthawk-sim/tests/new_content.rs` adds: one
+entry in each of four folders. A quality, what a tool can do (in
+`qualities/`):
+
+```json
+{ "id": "WELD", "name": "welding", "description": "Joining metal with heat." }
+```
+
+A tool that does it (in `items/`):
+
+```json
+{ "id": "welding_torch", "name": "welding torch", "description": "A small gas torch.",
+  "glyph": "!", "material": "steel", "volume_ml": 300, "solid_percent": 50,
+  "qualities": { "WELD": 1 } }
+```
+
+The verb, with its key and rules (in `actions/`):
+
+```json
+{ "id": "weld", "name": "Weld", "key": "w", "reach": 1, "clear_of_items": true,
+  "done": "You weld the {was} shut." }
+```
+
+And what it does to what (in `recipes/`):
+
+```json
+{ "id": "weld_hull_crack", "action": "weld", "from": "hull_crack", "to": "hull_plating",
+  "seconds": 90, "needs": { "WELD": 1 }, "uses": [ { "item": "scrap", "count": 1 } ],
+  "material": "from_used" }
+```
+
+The interact menu then offers `w  Weld: 1 scrap` on every hull crack,
+greyed with "needs WELD 1" until you carry the torch.
+
+### A new kind of tile
+
+A floor grate is a walkable structure; a weak, leaky panel is a solid one
+with a `leak_cm2`. Properties are all there is to a tile's simulation:
+`walkable`, `leak_cm2` and `climb` (see [Structures](#structures-structuresjson)).

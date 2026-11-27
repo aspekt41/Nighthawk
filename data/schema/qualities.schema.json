@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "QualitiesFile",
+  "type": "object",
+  "properties": {
+    "$schema": {
+      "description": "Optional: the JSON Schema this file follows, so editors can check\nit as you type (`\"$schema\": \"../schema/qualities.schema.json\"`).",
+      "type": [
+        "string",
+        "null"
+      ],
+      "default": null
+    },
+    "qualities": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/Quality"
+      }
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "qualities"
+  ],
+  "$defs": {
+    "Quality": {
+      "description": "One quality a tool can have.",
+      "type": "object",
+      "properties": {
+        "description": {
+          "description": "A sentence or two about it.",
+          "type": "string"
+        },
+        "id": {
+          "description": "How data files refer to it, and how the game shows it next to a\nlevel, like `\"LASER\"` in \"LASER 2\".",
+          "type": "string"
+        },
+        "name": {
+          "description": "What it is in words, like \"laser cutting\".",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "name",
+        "description"
+      ]
+    }
+  }
+}

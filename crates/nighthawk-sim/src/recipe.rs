@@ -16,6 +16,7 @@
 
 use std::fmt;
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::action::{Actions, Effect};
@@ -27,7 +28,7 @@ use crate::structure::Structures;
 
 /// Some items a recipe uses up: `count` of the item type `item`, made of
 /// any material.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Use {
     pub item: String,
@@ -35,7 +36,7 @@ pub struct Use {
 }
 
 /// What material the new structure is made of.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum RecipeMaterial {
     /// The same as before (a door cut open is still aluminium).
@@ -47,7 +48,7 @@ pub enum RecipeMaterial {
 }
 
 /// One recipe.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Recipe {
     pub id: String,
@@ -205,9 +206,13 @@ impl RecipeError {
 
 impl std::error::Error for RecipeError {}
 
-#[derive(Deserialize)]
+#[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-struct RecipesFile {
+pub(crate) struct RecipesFile {
+    /// Optional: the JSON Schema this file follows, so editors can check
+    /// it as you type (`"$schema": "../schema/recipes.schema.json"`).
+    #[serde(rename = "$schema", default)]
+    _schema: Option<String>,
     recipes: Vec<Recipe>,
 }
 

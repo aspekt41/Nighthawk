@@ -1,0 +1,120 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "RecipesFile",
+  "type": "object",
+  "properties": {
+    "$schema": {
+      "description": "Optional: the JSON Schema this file follows, so editors can check\nit as you type (`\"$schema\": \"../schema/recipes.schema.json\"`).",
+      "type": [
+        "string",
+        "null"
+      ],
+      "default": null
+    },
+    "recipes": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/Recipe"
+      }
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "recipes"
+  ],
+  "$defs": {
+    "Recipe": {
+      "description": "One recipe.",
+      "type": "object",
+      "properties": {
+        "action": {
+          "description": "The id of the action that follows it, like `\"cut\"`.",
+          "type": "string"
+        },
+        "from": {
+          "description": "The id of the structure it acts on.",
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "material": {
+          "description": "What the result is made of. Optional: `kept` if left out.",
+          "$ref": "#/$defs/RecipeMaterial",
+          "default": "kept"
+        },
+        "needs": {
+          "description": "Tool levels it needs, all of them, like `{ \"WELD\": 1 }`. Optional:\nnone if left out.",
+          "type": "object",
+          "additionalProperties": {
+            "type": "integer",
+            "format": "uint8",
+            "maximum": 255,
+            "minimum": 0
+          },
+          "default": {}
+        },
+        "seconds": {
+          "description": "How long it takes, in seconds.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "to": {
+          "description": "The id of the structure it becomes.",
+          "type": "string"
+        },
+        "uses": {
+          "description": "The items it uses up. Optional: none if left out.",
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/Use"
+          }
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "action",
+        "from",
+        "to",
+        "seconds"
+      ]
+    },
+    "RecipeMaterial": {
+      "description": "What material the new structure is made of.",
+      "oneOf": [
+        {
+          "description": "The same as before (a door cut open is still aluminium).",
+          "type": "string",
+          "const": "kept"
+        },
+        {
+          "description": "The material of the first item used (a crack patched with steel\nscrap is patched with steel).",
+          "type": "string",
+          "const": "from_used"
+        }
+      ]
+    },
+    "Use": {
+      "description": "Some items a recipe uses up: `count` of the item type `item`, made of\nany material.",
+      "type": "object",
+      "properties": {
+        "count": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "item": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "item",
+        "count"
+      ]
+    }
+  }
+}

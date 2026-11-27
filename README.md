@@ -4,7 +4,7 @@ A terminal-native survival and base-building game where the systems run deep. It
 the Dwarf Fortress / Cataclysm: DDA tradition and is built around the explore → find →
 craft → build loop of Subnautica, Abiotic Factor and Minecraft.
 
-**Status:** M1.7d. A title menu, save and load, a clock in real seconds, air (O2, N2 and CO2) that evens out across every connected space each second, hull breaches that vent it to space, heat that moves with the air and leaks out through the hull, breath and warmth meters that run down in thin or cold air, structures (bulkheads, doors, hull plating) made of materials with real properties, items to pick up and carry in your jumpsuit's four pockets, a laser cutter that cuts through aluminium doors, scrap to patch hull cracks and mend cut doors with (look at any tile with `V`, act on one with `e`), and two decks to explore, the Stasis bay (with a small side room behind a shut door) and the Crew quarters above it (with doors to open and close), joined by a ladder (loaded from [`data/maps/aft_ring.json`](data/maps/aft_ring.json)), while the ship creaks around you. Every game comes from a seed, so the same seed and moves replay exactly. See [Running it](#running-it).
+**Status:** M1.7d, then a refactor so that everything in the game is data: new structures, tools, actions and recipes need only JSON (see [`data/README.md`](data/README.md#how-to-add-things)). A title menu, save and load, a clock in real seconds, air (O2, N2 and CO2) that evens out across every connected space each second, hull breaches that vent it to space, heat that moves with the air and leaks out through the hull, breath and warmth meters that run down in thin or cold air, structures (bulkheads, doors, hull plating) made of materials with real properties, items to pick up and carry in your jumpsuit's four pockets, a laser cutter that cuts through aluminium doors, scrap to patch hull cracks and mend cut doors with (look at any tile with `V`, act on one with `e`), and two decks to explore, the Stasis bay (with a small side room behind a shut door) and the Crew quarters above it (with doors to open and close), joined by a ladder (loaded from [`data/maps/aft_ring.json`](data/maps/aft_ring.json)), while the ship creaks around you. Every game comes from a seed, so the same seed and moves replay exactly. See [Running it](#running-it).
 
 ## Documents
 
@@ -93,7 +93,9 @@ How to install and use each tool is in [TOOLING.md](TOOLING.md).
 crates/
   nighthawk-sim/   the game: world state, rules, no I/O (deterministic, testable)
   nighthawk-tui/   the terminal front-end: input, drawing, message log, file loading
-data/              game content as JSON (see data/README.md)
+data/              game content as JSON, all of it: structures, materials, items,
+                   tool qualities, actions and recipes (see data/README.md, which
+                   has a how-to; data/schema/ lets editors check the files)
 docs/              research, scoping and the decision log
 scripts/check.sh   every quality check in one command
 agent-tools/       helper scripts for AI agents (see agent-tools/tool-descriptions.md)

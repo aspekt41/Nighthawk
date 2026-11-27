@@ -9,6 +9,7 @@
 use std::collections::BTreeMap;
 use std::fmt;
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::content::{ContentFile, FileError, first_duplicate, read_all};
@@ -18,7 +19,7 @@ use crate::hash::Fnv64;
 pub const MAX_QUALITY_LEVEL: u8 = 10;
 
 /// One quality a tool can have.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Quality {
     /// How data files refer to it, and how the game shows it next to a
@@ -135,9 +136,13 @@ impl fmt::Display for QualityError {
 
 impl std::error::Error for QualityError {}
 
-#[derive(Deserialize)]
+#[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-struct QualitiesFile {
+pub(crate) struct QualitiesFile {
+    /// Optional: the JSON Schema this file follows, so editors can check
+    /// it as you type (`"$schema": "../schema/qualities.schema.json"`).
+    #[serde(rename = "$schema", default)]
+    _schema: Option<String>,
     qualities: Vec<Quality>,
 }
 

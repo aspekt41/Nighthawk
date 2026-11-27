@@ -14,6 +14,7 @@
 
 use std::fmt;
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::content::{ContentFile, FileError, first_duplicate, read_all};
@@ -24,7 +25,7 @@ use crate::quality::{LevelError, Levels, Qualities, hash_levels};
 
 /// One pocket of a wearable item, as content: its name and how much it
 /// holds.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct PocketType {
     /// Like "left hip pocket".
@@ -36,14 +37,14 @@ pub struct PocketType {
 }
 
 /// What wearing an item gives you. For now, just its pockets.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Wear {
     pub pockets: Vec<PocketType>,
 }
 
 /// A kind of item, from `data/items/`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ItemType {
     /// How maps refer to it, like `"basic_laser_cutter"`.
@@ -373,9 +374,13 @@ impl fmt::Display for ItemError {
 
 impl std::error::Error for ItemError {}
 
-#[derive(Deserialize)]
+#[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-struct ItemsFile {
+pub(crate) struct ItemsFile {
+    /// Optional: the JSON Schema this file follows, so editors can check
+    /// it as you type (`"$schema": "../schema/items.schema.json"`).
+    #[serde(rename = "$schema", default)]
+    _schema: Option<String>,
     items: Vec<ItemType>,
 }
 

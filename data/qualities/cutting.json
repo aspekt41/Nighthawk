@@ -1,4 +1,5 @@
 {
+  "$schema": "../schema/qualities.schema.json",
   "qualities": [
     {
       "id": "LASER",

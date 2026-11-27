@@ -1,4 +1,5 @@
 {
+  "$schema": "../schema/actions.schema.json",
   "actions": [
     {
       "id": "open",

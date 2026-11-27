@@ -34,6 +34,7 @@ mod quality;
 mod recipe;
 mod rng;
 mod save;
+mod schema;
 mod structure;
 mod world;
 
@@ -61,6 +62,7 @@ pub use quality::{LevelError, Levels, MAX_QUALITY_LEVEL, Quality, QualityError};
 pub use recipe::{Recipe, RecipeError, RecipeMaterial, Use};
 pub use rng::{GameRng, Stream};
 pub use save::{SAVE_FORMAT, SAVE_VERSION, SaveError, load_from_str, save_to_string};
+pub use schema::data_schemas;
 pub use structure::{Structure, StructureError};
 pub use world::{
     CLIMB_SECONDS, Command, DIAGONAL_STEP_SECONDS, DROP_SECONDS, Event, STEP_SECONDS, Sound,

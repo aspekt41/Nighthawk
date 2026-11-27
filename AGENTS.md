@@ -50,7 +50,13 @@ rather than accepting a skipped step.
    with `parse_map(&str, &content)`. They pass the seed in
    (`World::new(map, seed)`). A new kind of content is added in
    `crates/nighthawk-sim/src/content.rs` (and its own module) only; no
-   front-end or test helper changes (D43).
+   front-end or test helper changes (D43). Its file shape derives
+   `JsonSchema` and gets a schema in `src/schema.rs`; after changing any
+   content type, regenerate `data/schema/` with
+   `NIGHTHAWK_WRITE_SCHEMAS=1 cargo test -p nighthawk-sim --test schemas`.
+   Never give Rust code knowledge of a particular piece of content (an id
+   like `"door"` or `"weld"`): `tests/new_content.rs` fails if non-test
+   code mentions welding, and the same rule holds for everything else.
 2. **The sim is deterministic (D22).** Randomness only via `GameRng`
    (`crates/nighthawk-sim/src/rng.rs`): add a new `Stream` variant with a
    new number for each new system; never renumber or reuse one; never use

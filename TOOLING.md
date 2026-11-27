@@ -127,7 +127,11 @@ Where tests live:
 - **Integration tests** live in a crate's `tests/` folder, for example
   `crates/nighthawk-sim/tests/content.rs`. They use the crate only through its
   public API, the way other code does. The content test there loads every
-  file in `data/maps/`, so a broken map fails `cargo test`.
+  file in `data/maps/`, so a broken map fails `cargo test`. `schemas.rs`
+  checks the JSON Schemas in `data/schema/` match the content types
+  (regenerate them with `NIGHTHAWK_WRITE_SCHEMAS=1 cargo test -p
+  nighthawk-sim --test schemas`), and `new_content.rs` adds welding as pure
+  content and plays it, proving new content needs no Rust (D48).
 - **Screen tests** draw the UI into ratatui's `TestBackend`, a fake
   terminal held in memory, and check the text on it. See the tests in
   `crates/nighthawk-tui/src/ui.rs`.

@@ -1,0 +1,132 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "StructuresFile",
+  "description": "The JSON shape of one file in `data/structures/`.",
+  "type": "object",
+  "properties": {
+    "$schema": {
+      "description": "Optional: the JSON Schema this file follows, so editors can check\nit as you type (`\"$schema\": \"../schema/structures.schema.json\"`).",
+      "type": [
+        "string",
+        "null"
+      ],
+      "default": null
+    },
+    "structures": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/Structure"
+      }
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "structures"
+  ],
+  "$defs": {
+    "Colour": {
+      "description": "The colours a material can be drawn in. A short fixed list rather than\nany colour at all, so every terminal can show them (decision D16).",
+      "oneOf": [
+        {
+          "type": "string",
+          "enum": [
+            "white",
+            "grey",
+            "dark_grey",
+            "red",
+            "yellow",
+            "green",
+            "cyan",
+            "blue",
+            "magenta"
+          ]
+        },
+        {
+          "description": "Doors, so they stand out from the walls around them.",
+          "type": "string",
+          "const": "light_red"
+        }
+      ]
+    },
+    "Structure": {
+      "description": "One kind of structure.",
+      "type": "object",
+      "properties": {
+        "climb": {
+          "description": "A ladder, going `\"up\"` or `\"down\"`. Only for walkable structures.\nOptional: not a ladder.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Vertical"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "colour": {
+          "description": "Optional: the colour to draw it in, instead of the usual colour for\nwhat it is (a damaged door is red, though you walk through it).",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Colour"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "description": {
+          "description": "A sentence or two for look mode.",
+          "type": "string"
+        },
+        "glyph": {
+          "description": "The character the map draws it with.",
+          "type": "string",
+          "maxLength": 1,
+          "minLength": 1
+        },
+        "id": {
+          "description": "How maps refer to it, like `\"bulkhead\"`.",
+          "type": "string"
+        },
+        "leak_cm2": {
+          "description": "A hole to space, in cm² (a hull crack is 4, a breach 400): the space\nbeside it leaks. Only for solid structures. Optional: none.",
+          "type": "integer",
+          "format": "uint32",
+          "default": 0,
+          "minimum": 0
+        },
+        "material": {
+          "description": "The id of the material it's made of, unless a map says otherwise.",
+          "type": "string"
+        },
+        "name": {
+          "description": "How it's shown to the player, like \"bulkhead\".",
+          "type": "string"
+        },
+        "walkable": {
+          "description": "You can walk on it, and air fills it. Optional: left out, it's\nsolid and airtight, like a wall or a shut door.",
+          "type": "boolean",
+          "default": false
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "name",
+        "description",
+        "glyph",
+        "material"
+      ]
+    },
+    "Vertical": {
+      "description": "Up or down between decks. Up is `z + 1`: higher decks have higher numbers.\nIn data files it's `\"up\"` or `\"down\"` (a ladder's `climb`).",
+      "type": "string",
+      "enum": [
+        "up",
+        "down"
+      ]
+    }
+  }
+}

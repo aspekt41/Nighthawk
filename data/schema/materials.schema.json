@@ -1,0 +1,132 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "MaterialsFile",
+  "description": "The JSON shape of one file in `data/materials/`.",
+  "type": "object",
+  "properties": {
+    "$schema": {
+      "description": "Optional: the JSON Schema this file follows, so editors can check\nit as you type (`\"$schema\": \"../schema/materials.schema.json\"`).",
+      "type": [
+        "string",
+        "null"
+      ],
+      "default": null
+    },
+    "materials": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/Material"
+      }
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "materials"
+  ],
+  "$defs": {
+    "Colour": {
+      "description": "The colours a material can be drawn in. A short fixed list rather than\nany colour at all, so every terminal can show them (decision D16).",
+      "oneOf": [
+        {
+          "type": "string",
+          "enum": [
+            "white",
+            "grey",
+            "dark_grey",
+            "red",
+            "yellow",
+            "green",
+            "cyan",
+            "blue",
+            "magenta"
+          ]
+        },
+        {
+          "description": "Doors, so they stand out from the walls around them.",
+          "type": "string",
+          "const": "light_red"
+        }
+      ]
+    },
+    "Material": {
+      "description": "One material and its properties.",
+      "type": "object",
+      "properties": {
+        "colour": {
+          "description": "The colour walls made of it are drawn in.",
+          "$ref": "#/$defs/Colour"
+        },
+        "density": {
+          "description": "Density in kg/m³.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "description": {
+          "description": "A sentence or two for look mode.",
+          "type": "string"
+        },
+        "hardness": {
+          "description": "Vickers hardness (HV): how hard it is to scratch, drill or grind.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "id": {
+          "description": "How data files refer to it, like `\"steel\"`.",
+          "type": "string"
+        },
+        "melting_point": {
+          "description": "Melting point in °C, or `None` for something that doesn't melt\n(cotton chars and burns instead).",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "int32",
+          "default": null
+        },
+        "name": {
+          "description": "How it's shown to the player, like \"Steel\".",
+          "type": "string"
+        },
+        "specific_heat": {
+          "description": "Specific heat in J/(kg·K): how much heat it takes to warm.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "thermal_conductivity": {
+          "description": "Thermal conductivity in mW/(m·K) (thousandths, so insulators like\ncotton at 0.04 W/(m·K) aren't rounded to nothing): how well heat\npasses through.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "worked_by": {
+          "description": "The tool qualities that cut it, and the level each needs. Any one\nis enough. Empty means nothing can cut it.",
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "integer",
+              "format": "uint8",
+              "maximum": 255,
+              "minimum": 0
+            }
+          },
+          "default": {}
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "name",
+        "description",
+        "colour",
+        "density",
+        "specific_heat",
+        "thermal_conductivity",
+        "hardness"
+      ]
+    }
+  }
+}

@@ -1,4 +1,5 @@
 {
+  "$schema": "../schema/structures.schema.json",
   "structures": [
     {
       "id": "door",

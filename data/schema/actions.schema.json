@@ -1,0 +1,128 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ActionsFile",
+  "type": "object",
+  "properties": {
+    "$schema": {
+      "description": "Optional: the JSON Schema this file follows, so editors can check\nit as you type (`\"$schema\": \"../schema/actions.schema.json\"`).",
+      "type": [
+        "string",
+        "null"
+      ],
+      "default": null
+    },
+    "actions": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/Action"
+      }
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "actions"
+  ],
+  "$defs": {
+    "Action": {
+      "description": "One thing the player can do to a tile.\n\nThe `bool` fields all default to `false` (`#[serde(default)]`), so a\ndata file only mentions the ones that are true.",
+      "type": "object",
+      "properties": {
+        "clear_line": {
+          "description": "A solid tile on the straight line to the target blocks it.",
+          "type": "boolean",
+          "default": false
+        },
+        "clear_of_items": {
+          "description": "Items lying on the tile block it (they'd end up inside).",
+          "type": "boolean",
+          "default": false
+        },
+        "done": {
+          "description": "The log line when a recipe action is done. `{was}` is replaced with\nthe structure's name before, and `{now}` with its name after, as in\n\"You cut through the {was}.\"",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "effect": {
+          "description": "What doing it does.",
+          "$ref": "#/$defs/Effect",
+          "default": "recipe"
+        },
+        "id": {
+          "description": "How recipes and materials refer to it, like `\"cut\"`.",
+          "type": "string"
+        },
+        "key": {
+          "description": "The key that does it in the interact menu.",
+          "type": "string",
+          "maxLength": 1,
+          "minLength": 1
+        },
+        "name": {
+          "description": "How the menu shows it, like \"Cut\".",
+          "type": "string"
+        },
+        "on_bump": {
+          "description": "Walking into a solid tile does this action, if it can be done there\n(walking into a shut door opens it).",
+          "type": "boolean",
+          "default": false
+        },
+        "on_own_tile": {
+          "description": "It can be done to the tile you're standing on.",
+          "type": "boolean",
+          "default": false
+        },
+        "reach": {
+          "description": "How far away it works, in steps (diagonals count as one), at least 1.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "seconds": {
+          "description": "How long it takes, for effects without a recipe to say: for picking\nup, the time per item.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "default": null,
+          "minimum": 0
+        },
+        "shortcut": {
+          "description": "Its key also works while playing, followed by a direction, to do it\nto the tile that way (`c` then a direction closes a door).",
+          "type": "boolean",
+          "default": false
+        },
+        "tool_from_material": {
+          "description": "It needs a tool at whatever level the target's material lists for\nthis action in its `worked_by`; a material that lists none can't\nhave it done at all.",
+          "type": "boolean",
+          "default": false
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "name",
+        "key",
+        "reach"
+      ]
+    },
+    "Effect": {
+      "description": "What doing an action does: a small, fixed list, so the sim knows how to\ncarry each one out. Everything else about an action is data.",
+      "oneOf": [
+        {
+          "description": "Follow this action's recipe for the structure there: take its time,\nuse up its items, and turn the tile into what it makes. The usual\neffect, so it's the default (`#[default]`).",
+          "type": "string",
+          "const": "recipe"
+        },
+        {
+          "description": "Pick up the items lying there.",
+          "type": "string",
+          "const": "pick_up"
+        }
+      ]
+    }
+  }
+}

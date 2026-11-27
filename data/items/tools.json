@@ -1,4 +1,5 @@
 {
+  "$schema": "../schema/items.schema.json",
   "items": [
     {
       "id": "basic_laser_cutter",

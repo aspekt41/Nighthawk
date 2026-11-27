@@ -1,4 +1,5 @@
 {
+  "$schema": "../schema/materials.schema.json",
   "materials": [
     {
       "id": "cotton_fabric",

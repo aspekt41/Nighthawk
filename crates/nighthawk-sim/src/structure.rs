@@ -14,6 +14,7 @@
 
 use std::fmt;
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::content::{ContentFile, FileError, first_duplicate, read_all};
@@ -23,7 +24,7 @@ use crate::material::{Colour, Materials};
 use crate::pos::Vertical;
 
 /// One kind of structure.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Structure {
     /// How maps refer to it, like `"bulkhead"`.
@@ -161,9 +162,13 @@ impl fmt::Display for StructureError {
 impl std::error::Error for StructureError {}
 
 /// The JSON shape of one file in `data/structures/`.
-#[derive(Deserialize)]
+#[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-struct StructuresFile {
+pub(crate) struct StructuresFile {
+    /// Optional: the JSON Schema this file follows, so editors can check
+    /// it as you type (`"$schema": "../schema/structures.schema.json"`).
+    #[serde(rename = "$schema", default)]
+    _schema: Option<String>,
     structures: Vec<Structure>,
 }
 

@@ -1,0 +1,143 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ItemsFile",
+  "type": "object",
+  "properties": {
+    "$schema": {
+      "description": "Optional: the JSON Schema this file follows, so editors can check\nit as you type (`\"$schema\": \"../schema/items.schema.json\"`).",
+      "type": [
+        "string",
+        "null"
+      ],
+      "default": null
+    },
+    "items": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/ItemType"
+      }
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "items"
+  ],
+  "$defs": {
+    "ItemType": {
+      "description": "A kind of item, from `data/items/`.",
+      "type": "object",
+      "properties": {
+        "description": {
+          "type": "string"
+        },
+        "glyph": {
+          "description": "The character the map draws it with, lying on the floor.",
+          "type": "string",
+          "maxLength": 1,
+          "minLength": 1
+        },
+        "id": {
+          "description": "How maps refer to it, like `\"basic_laser_cutter\"`.",
+          "type": "string"
+        },
+        "material": {
+          "description": "The id of the material it's made of, unless a map says otherwise.",
+          "type": "string"
+        },
+        "name": {
+          "description": "How it's shown to the player, like \"basic laser cutter\".",
+          "type": "string"
+        },
+        "qualities": {
+          "description": "The tool qualities it has, like `{ \"LASER\": 1 }`.",
+          "type": "object",
+          "additionalProperties": {
+            "type": "integer",
+            "format": "uint8",
+            "maximum": 255,
+            "minimum": 0
+          },
+          "default": {}
+        },
+        "solid_percent": {
+          "description": "How much of its volume is solid material, in percent (1 to 100).",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "volume_ml": {
+          "description": "How much room it takes up, in millilitres.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "wear": {
+          "description": "If it can be worn, what wearing it gives.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Wear"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "name",
+        "description",
+        "glyph",
+        "material",
+        "volume_ml",
+        "solid_percent"
+      ]
+    },
+    "PocketType": {
+      "description": "One pocket of a wearable item, as content: its name and how much it\nholds.",
+      "type": "object",
+      "properties": {
+        "max_mass_g": {
+          "description": "How much weight it holds, in grams.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "name": {
+          "description": "Like \"left hip pocket\".",
+          "type": "string"
+        },
+        "volume_ml": {
+          "description": "How much fits, in millilitres.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "volume_ml",
+        "max_mass_g"
+      ]
+    },
+    "Wear": {
+      "description": "What wearing an item gives you. For now, just its pockets.",
+      "type": "object",
+      "properties": {
+        "pockets": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/PocketType"
+          }
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "pockets"
+      ]
+    }
+  }
+}

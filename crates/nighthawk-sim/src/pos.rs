@@ -1,5 +1,6 @@
 //! Positions and directions.
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 /// A position in the world, in tiles.
@@ -73,7 +74,7 @@ impl Pos {
 
 /// Up or down between decks. Up is `z + 1`: higher decks have higher numbers.
 /// In data files it's `"up"` or `"down"` (a ladder's `climb`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum Vertical {
     Up,
