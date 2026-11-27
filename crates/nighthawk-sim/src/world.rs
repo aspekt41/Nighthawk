@@ -6,6 +6,7 @@ use crate::action::Effect;
 use crate::body::{self, BREATH_FULL, BreathLevel, Cause, WARMTH_FULL, WarmthLevel};
 use crate::calendar::{DateTime, SHIP_START};
 use crate::content::Content;
+use crate::craft::{Craft, CraftMaterial};
 use crate::furniture::{Furnishings, FurnitureType, Piece};
 use crate::hash::Fnv64;
 use crate::interact::{self, Blocked};
@@ -15,7 +16,7 @@ use crate::map::{Map, Tile};
 use crate::map_file::LoadedMap;
 use crate::material::Material;
 use crate::pos::{Dir, Pos, Vertical};
-use crate::recipe::{Recipe, RecipeMaterial};
+use crate::recipe::{Recipe, RecipeMaterial, Use};
 use crate::rng::{GameRng, Stream};
 use crate::sight::{Remembered, Scene, View};
 use crate::structure::Structure;
@@ -77,6 +78,9 @@ pub enum Command {
     },
     /// Drop a carried item onto the floor where you stand.
     Drop(ItemPath),
+    /// Make something by craft number `craft` (its place in the world's
+    /// list of crafts), from what's in your pockets (D56).
+    Craft(u16),
 }
 
 /// Something that happened, for the front-end to show or log.
@@ -151,9 +155,21 @@ pub enum Event {
         action: u16,
         was: u16,
     },
-    /// This item fell to the floor: given by a recipe, or spilled out of
-    /// furniture taken away.
+    /// This item fell to the floor: given by a recipe, spilled out of
+    /// furniture taken away, or made with no room to carry it.
     Fell(ItemRef),
+    /// The player made this item by craft number `craft`, and put it in
+    /// a pocket.
+    Crafted {
+        craft: u16,
+        item: ItemRef,
+    },
+    /// The player couldn't make anything by craft number `craft`, and
+    /// `blocked` says why. No time passes.
+    CannotCraft {
+        craft: u16,
+        blocked: Blocked,
+    },
 }
 
 /// Noises the dead ship makes. Pure atmosphere for now. Later, sounds will
@@ -233,6 +249,10 @@ pub struct World {
     worn: Vec<Item>,
     /// What the player has seen of the ship, and can see now (D49).
     view: View,
+    /// Every kind of item the player has ever worn or carried, by number,
+    /// each once, in order. A craft is known once everything it uses is
+    /// here (D56).
+    carried_kinds: Vec<u16>,
 }
 
 impl World {
@@ -258,7 +278,9 @@ impl World {
             furniture,
             worn: loaded.worn,
             view,
+            carried_kinds: Vec::new(),
         };
+        world.remember_carried();
         world.refresh_view();
         world
     }
@@ -511,14 +533,122 @@ impl World {
             Command::Climb(way) => self.climb(way),
             Command::Interact { at, action } => self.interact(at, action),
             Command::Drop(path) => self.drop_item(path),
+            Command::Craft(craft) => self.craft(craft),
             Command::Wait => {
                 let mut events = vec![Event::Waited];
                 self.pass_time(WAIT_SECONDS, &mut events);
                 events
             }
         };
+        self.remember_carried();
         self.refresh_view();
         events
+    }
+
+    /// Adds every kind of item the player wears or carries now to the
+    /// kinds they've ever carried. Done after every command, since that's
+    /// the only way anything comes into your pockets.
+    fn remember_carried(&mut self) {
+        let carried = self.carried().into_iter().map(|(_, item)| item.kind);
+        let now: Vec<u16> = self.worn.iter().map(|i| i.kind).chain(carried).collect();
+        for kind in now {
+            // `binary_search` on a sorted list finds a value, or says where
+            // it would go (`Err(place)`), which keeps the list in order.
+            if let Err(place) = self.carried_kinds.binary_search(&kind) {
+                self.carried_kinds.insert(place, kind);
+            }
+        }
+    }
+
+    /// Whether the player has ever worn or carried an item of type number
+    /// `kind`.
+    pub fn has_carried(&self, kind: u16) -> bool {
+        self.carried_kinds.binary_search(&kind).is_ok()
+    }
+
+    /// The crafts the player knows, by number, in list order: those whose
+    /// every ingredient they've carried at some time.
+    pub fn known_crafts(&self) -> Vec<u16> {
+        (0..)
+            .zip(self.content.crafts())
+            .filter(|(_, craft)| self.knows(craft))
+            .map(|(number, _)| number)
+            .collect()
+    }
+
+    /// Whether the player has carried every kind of item `craft` uses.
+    fn knows(&self, craft: &Craft) -> bool {
+        craft.uses.iter().all(|used| {
+            self.content
+                .item_type_index(&used.item)
+                .is_some_and(|kind| self.has_carried(kind))
+        })
+    }
+
+    /// Why craft number `craft` can't be made now, if it can't: there's no
+    /// such craft, the player doesn't know it, a tool falls short, or they
+    /// don't carry enough of something it uses, in that order.
+    pub fn craft_blocked(&self, craft: u16) -> Option<Blocked> {
+        let Some(craft) = self.content.crafts().get(usize::from(craft)) else {
+            return Some(Blocked::NotPossible);
+        };
+        if !self.knows(craft) {
+            return Some(Blocked::NotKnown);
+        }
+        interact::short_of(self, &craft.needs)
+            .or_else(|| interact::missing_items(self, &craft.uses))
+    }
+
+    /// Makes something by craft number `number`, if nothing blocks it: the
+    /// craft's time passes, its items are used up, and what it makes goes
+    /// into your pockets, or falls at your feet if there's no room.
+    fn craft(&mut self, number: u16) -> Vec<Event> {
+        if let Some(blocked) = self.craft_blocked(number) {
+            return vec![Event::CannotCraft {
+                craft: number,
+                blocked,
+            }];
+        }
+        let craft = self.content.crafts()[usize::from(number)].clone();
+        let mut events = Vec::new();
+        self.pass_time(u64::from(craft.seconds), &mut events);
+        if !self.is_conscious() {
+            return events;
+        }
+        let used = self.use_items(&craft.uses);
+        let made = self.make(&craft, &used);
+        let ctx = ItemContext {
+            types: self.content.item_types(),
+            materials: self.content.materials(),
+        };
+        let crafted = |item| Event::Crafted {
+            craft: number,
+            item,
+        };
+        let (left, stowed) = stow_all(&mut self.worn, made, ctx, crafted);
+        events.extend(stowed);
+        events.extend(self.drop_at(self.player, left));
+        events
+    }
+
+    /// The items `craft` makes: of the made item's own material, or of
+    /// the first item `used` if the craft says so.
+    fn make(&self, craft: &Craft, used: &[Item]) -> Vec<Item> {
+        let types = self.content.item_types();
+        let kind = self
+            .content
+            .item_type_index(&craft.makes)
+            .expect("crafts make real items");
+        let own = &types[usize::from(kind)].material;
+        let material = match (craft.material, used.first()) {
+            (CraftMaterial::FromUsed, Some(first)) => first.material,
+            _ => self
+                .content
+                .material_index(own)
+                .expect("items are made of real materials"),
+        };
+        let one = Item::new(kind, material, types);
+        vec![one; craft.count as usize]
     }
 
     fn walk(&mut self, dir: Dir) -> Vec<Event> {
@@ -593,7 +723,7 @@ impl World {
         if !self.is_conscious() {
             return events;
         }
-        let used = self.use_up(&recipe);
+        let used = self.use_items(&recipe.uses);
         // The done line comes after everything heard while working, so
         // it's what the log ends on (then anything that fell).
         match &recipe.to {
@@ -670,11 +800,11 @@ impl World {
         events
     }
 
-    /// Takes the items `recipe` uses out of the player's pockets: of each
+    /// Takes the items `uses` lists out of the player's pockets: of each
     /// kind it names, only those of a material with the tag it asks for.
-    fn use_up(&mut self, recipe: &Recipe) -> Vec<Item> {
+    fn use_items(&mut self, uses: &[Use]) -> Vec<Item> {
         let mut used = Vec::new();
-        for needed in &recipe.uses {
+        for needed in uses {
             let kind = self
                 .item_type_index(&needed.item)
                 .expect("recipes name real items");
@@ -990,7 +1120,18 @@ impl World {
                 ));
             }
         }
-        self.check_contents(ctx)
+        self.check_contents(ctx)?;
+        let kinds = self.item_types().len();
+        match self
+            .carried_kinds
+            .iter()
+            .find(|&&k| usize::from(k) >= kinds)
+        {
+            Some(kind) => Err(format!(
+                "remembers carrying item type {kind}, which doesn't exist"
+            )),
+            None => Ok(()),
+        }
     }
 
     /// Checks everything inside furniture makes sense and fits in it.
@@ -1047,6 +1188,10 @@ impl World {
         }
         self.furniture.hash_into(&mut h);
         self.view.hash_into(&mut h);
+        h.u64(self.carried_kinds.len() as u64);
+        for &kind in &self.carried_kinds {
+            h.u64(u64::from(kind));
+        }
         h.finish()
     }
 }
@@ -2843,6 +2988,7 @@ mod tests {
             let scrap = Item::new(2, material, world.item_types());
             world.worn[0].pockets[0].push(scrap);
         }
+        world.remember_carried();
         world
     }
 
@@ -2941,6 +3087,167 @@ mod tests {
         assert!(events.contains(&Event::BlackedOut(Cause::Air)));
         assert_eq!(world.map().get(CRACK), Some(Tile::CRACK));
         assert_eq!(world.carried_count(2), 2);
+    }
+
+    // --- Crafting --------------------------------------------------------------
+
+    /// The test crafts' numbers: a cutter from 2 metal scrap, and two
+    /// lamps from a scrap and a cutter with LASER 1.
+    const CRAFT_CUTTER: u16 = 0;
+    const CRAFT_LAMPS: u16 = 1;
+
+    /// Crafts, and returns the events but the ambient sounds and the air
+    /// hissing out of the test room's cracked hull.
+    fn craft(world: &mut World, craft: u16) -> Vec<Event> {
+        let events = without_ambient(world.apply(Command::Craft(craft)));
+        let hiss = |e: &Event| matches!(e, Event::AirEscaping);
+        events.into_iter().filter(|e| !hiss(e)).collect()
+    }
+
+    #[test]
+    fn a_craft_is_known_once_you_have_carried_everything_it_uses() {
+        // Two scraps in your pockets from the start: the cutter craft is
+        // known; the lamps also need a cutter, which you've never had.
+        let mut world = repair_world(2);
+        assert!(world.has_carried(2) && !world.has_carried(1));
+        assert_eq!(world.known_crafts(), [CRAFT_CUTTER]);
+        assert_eq!(world.craft_blocked(CRAFT_LAMPS), Some(Blocked::NotKnown));
+        assert_eq!(world.craft_blocked(99), Some(Blocked::NotPossible));
+        craft(&mut world, CRAFT_CUTTER);
+        assert_eq!(world.known_crafts(), [CRAFT_CUTTER, CRAFT_LAMPS]);
+        // Dropping things doesn't make you forget.
+        world.apply(Command::Drop(ItemPath {
+            worn: 0,
+            pocket: 0,
+            index: 0,
+        }));
+        assert_eq!(world.carried().len(), 0);
+        assert_eq!(world.known_crafts(), [CRAFT_CUTTER, CRAFT_LAMPS]);
+    }
+
+    #[test]
+    fn crafting_takes_its_time_uses_its_items_and_makes_it_of_what_was_used() {
+        // The first scrap is hard alloy, the second steel.
+        let mut world = repair_world(2);
+        let events = craft(&mut world, CRAFT_CUTTER);
+        let cutter = ItemRef {
+            kind: 1,
+            material: 1,
+        };
+        assert_eq!(
+            events,
+            vec![Event::Crafted {
+                craft: CRAFT_CUTTER,
+                item: cutter
+            }]
+        );
+        assert_eq!(world.seconds(), 60);
+        assert_eq!(world.carried_count(2), 0, "both scraps used");
+        assert_eq!(world.carried_count(1), 1);
+    }
+
+    #[test]
+    fn a_craft_can_make_several_of_its_own_material_with_the_right_tool() {
+        let mut world = repair_world(3);
+        craft(&mut world, CRAFT_CUTTER); // leaves one scrap
+        // The lamps need LASER 1, which the new cutter has, and use it up.
+        let events = craft(&mut world, CRAFT_LAMPS);
+        let lamp = ItemRef {
+            kind: 3,
+            material: 0,
+        };
+        let made = Event::Crafted {
+            craft: CRAFT_LAMPS,
+            item: lamp,
+        };
+        assert_eq!(events, vec![made; 2], "two, of the lamp's own steel");
+        assert_eq!((world.carried_count(1), world.carried_count(3)), (0, 2));
+    }
+
+    #[test]
+    fn what_can_not_be_crafted_says_why_and_takes_no_time() {
+        let mut world = repair_world(2);
+        craft(&mut world, CRAFT_CUTTER);
+        let before = world.seconds();
+        assert_eq!(
+            craft(&mut world, CRAFT_LAMPS),
+            vec![Event::CannotCraft {
+                craft: CRAFT_LAMPS,
+                blocked: Blocked::Missing {
+                    item: 2,
+                    need: 1,
+                    have: 0,
+                    tag: None
+                }
+            }]
+        );
+        assert_eq!(world.seconds(), before, "no time passed");
+        // Without a LASER tool (the cutter dropped), that comes first.
+        world.apply(Command::Drop(ItemPath {
+            worn: 0,
+            pocket: 0,
+            index: 0,
+        }));
+        let laser = world.content().quality_index("LASER").unwrap();
+        assert_eq!(
+            world.craft_blocked(CRAFT_LAMPS),
+            Some(Blocked::Needs {
+                quality: laser,
+                level: 1
+            })
+        );
+    }
+
+    #[test]
+    fn what_you_make_with_no_room_for_it_falls_at_your_feet() {
+        let mut world = repair_world(0);
+        // Each pocket: a cutter (800 ml) and two scraps (100 ml each).
+        for pocket in 0..2 {
+            // `world.worn` changes while `world.content` is read: separate
+            // fields, so Rust allows it.
+            let types = world.content.item_types.list();
+            let pockets = &mut world.worn[0].pockets[pocket];
+            pockets.push(Item::new(1, 0, types));
+            for _ in 0..2 {
+                pockets.push(Item::new(2, 0, types));
+            }
+        }
+        world.remember_carried();
+        let events = craft(&mut world, CRAFT_CUTTER);
+        let cutter = ItemRef {
+            kind: 1,
+            material: 0,
+        };
+        assert_eq!(events, vec![Event::NoRoom(cutter), Event::Fell(cutter)]);
+        assert_eq!(world.items_at(world.player()).count(), 1);
+    }
+
+    #[test]
+    fn blacking_out_partway_makes_nothing_and_uses_nothing() {
+        let mut world = repair_world(2);
+        for x in 1..4 {
+            world
+                .map
+                .set_air(Pos::new(x, 1, 0), crate::air::Mix::VACUUM);
+        }
+        world.breath = 10;
+        let events = craft(&mut world, CRAFT_CUTTER);
+        assert!(events.contains(&Event::BlackedOut(Cause::Air)));
+        assert_eq!((world.carried_count(2), world.carried_count(1)), (2, 0));
+    }
+
+    #[test]
+    fn what_you_have_carried_is_part_of_the_state_and_checked_on_load() {
+        let world = repair_world(2);
+        let mut forgot = world.clone();
+        forgot.carried_kinds.clear();
+        assert_ne!(forgot.state_hash(), world.state_hash());
+        let mut odd = world.clone();
+        odd.carried_kinds.push(99);
+        assert_eq!(
+            odd.check_consistent(),
+            Err("remembers carrying item type 99, which doesn't exist".into())
+        );
     }
 
     #[test]

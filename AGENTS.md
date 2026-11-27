@@ -208,8 +208,10 @@ precise error and exits with code 1 before entering raw mode.
   and dismantling it (SCREW 1) gives 3 steel and 1 hard-alloy scrap;
   smashing a `"cabinet"` gives nothing; repairing a `"frame"` with 1 scrap makes a `"door"`,
   in 20 s; welding a `"hull_crack"` with WELD 2 makes a `"wall"`, in 40 s;
-  opening a `"door"` makes an `"open_door"` and closing turns it back, 2 s),
-  and puts the player on
+  opening a `"door"` makes an `"open_door"` and closing turns it back, 2 s)
+  and crafts (craft 0 makes a `"cutter"` from 2 metal scrap, of the scrap's
+  material, 60 s; craft 1 makes 2 `"lamp"`s from a scrap and a cutter
+  with LASER 1, 30 s), and puts the player on
   `"floor"` if the legend doesn't say what `@` is. Test furniture: a
   `"crate"` in the way, a `"bench"` two tiles across, a walkable `"stool"`
   and a `"cabinet"` that blocks sight and holds 1 L. Test rooms are dark

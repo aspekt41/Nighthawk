@@ -9,6 +9,15 @@
       "material": "steel",
       "volume_ml": 100,
       "solid_percent": 100
+    },
+    {
+      "id": "rag",
+      "name": "rag",
+      "description": "A strip of torn fabric. It'll wipe, wrap, bind or plug, and later, perhaps, bandage.",
+      "glyph": "~",
+      "material": "cotton_fabric",
+      "volume_ml": 50,
+      "solid_percent": 30
     }
   ]
 }

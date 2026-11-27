@@ -17,7 +17,7 @@ the files in its folder. Mistakes name the folder and the file, for example
 
 The folders load in this order, and each may refer to the ones before it:
 `qualities`, `actions`, `materials`, `structures`, `furniture`, `items`,
-`recipes`.
+`recipes`, `crafts`.
 
 Every tile on a map is a **structure** (what it is: a bulkhead, a door)
 made of a **material** (what it's made of: steel, Nanocarbon Alloy). A tile
@@ -134,7 +134,7 @@ Each material has real physical properties, in whole numbers:
 | `thermal_conductivity` | **mW**/(m·K), thousandths of a W/(m·K), so insulators like cotton (40) aren't rounded to zero. Steel is 45000. |
 | `hardness` | Vickers hardness (HV); 0 for soft things like fabric. |
 | `worked_by` | Optional. For each action with `tool_from_material`, the tool qualities that can do it to this material and the level each needs (1 to 10); any one is enough. `{ "cut": { "LASER": 2 } }`: cutting it needs `LASER 2`. Leave an action out and nothing can do it to this material. Actions must be from `actions/`, qualities from `qualities/`. |
-| `tags` | Optional. What kind of stuff it is, like `["metal"]`. A recipe can ask for items of a material with a tag (`"tag"` in `uses`): hull patches take metal scrap, so Scrap (Bone) won't do. Shipped tags: `metal` (steel, aluminium, nanocarbon, copper), `fabric` (cotton, polyester), `plastic` (polyester), `organic` (bone), `glass`. |
+| `tags` | Optional. What kind of stuff it is, like `["metal"]`. A recipe can ask for items of a material with a tag (`"tag"` in `uses`): hull patches take metal scrap, so Scrap (Bone) won't do. Shipped tags: `metal` (steel, aluminium, nanocarbon, copper), `rigid` (the metals, glass and bone: anything that holds an edge), `fabric` (cotton, polyester), `plastic` (polyester), `organic` (bone), `glass`. |
 
 Mistakes are reported precisely: a duplicate id, or a level out of range.
 
@@ -236,6 +236,35 @@ standing there first, then for the structure.
 | `gives` | Optional. Items it leaves on the floor where the work was done, as `{ "item": id, "material": id, "count": n }`: the material is optional (the item's own), and the count is a number or `[least, most]`, a range rolled each time (from the game's seed, so a replay rolls the same). Smashing gives ranges; dismantling gives everything. |
 | `material` | Optional. `kept` (the default): the tile keeps its material. `from_used`: it becomes the material of the first item used (steel scrap makes a steel patch); needs `uses`, and a structure. |
 | `needs` | Optional. Tool levels it needs, all of them, like `{ "WELD": 1 }`, whatever the material. Qualities from `qualities/`. |
+
+## Crafts (`crafts/*.json`)
+
+How to make items from items in your pockets, on the crafting screen
+(`C`). You know a craft once you've carried every kind of item it uses at
+some time: pick up your first scrap and the shiv comes to mind.
+
+```json
+{ "crafts": [
+  { "id": "shiv", "makes": "shiv", "material": "from_used", "seconds": 300,
+    "uses": [ { "item": "scrap", "count": 1, "tag": "rigid" } ] },
+  { "id": "rags", "makes": "rag", "count": 2, "material": "from_used", "seconds": 60,
+    "uses": [ { "item": "scrap", "count": 1, "tag": "fabric" } ], "needs": { "CUT": 1 } } ] }
+```
+
+| Field | Meaning |
+|---|---|
+| `id` | Unique across all craft files. |
+| `makes` | The item it makes, from `items/`. |
+| `count` | Optional. How many it makes (at least 1). Default 1. |
+| `material` | Optional. `own` (the default): the made item's own material. `from_used`: the material of the first item used, so bone scrap makes a bone shiv; needs `uses`. |
+| `uses` | Optional. Items it uses up from your pockets, written as in recipes, each optionally with a `tag` (only items of a material with it count). Carrying every kind listed here, once, is what teaches you the craft; a craft that uses nothing is always known. |
+| `needs` | Optional. Tool levels it needs, all of them, like `{ "CUT": 1 }`, from anything you carry. |
+| `seconds` | How long it takes (at least 1). Blacking out partway makes nothing and uses nothing. |
+
+What you make goes into your pockets, or falls at your feet if there's no
+room. The screen lists every craft you know, with what it uses and how
+long it takes, greyed with the reason if you can't make it yet ("needs
+CUT 1", "needs 1 rigid scrap").
 
 ## Items (`items/*.json`)
 

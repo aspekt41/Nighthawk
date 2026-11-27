@@ -16,7 +16,7 @@
           "LASER": 2
         }
       },
-      "tags": ["glass"]
+      "tags": ["glass", "rigid"]
     }
   ]
 }

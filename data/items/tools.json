@@ -34,6 +34,18 @@
       "qualities": {
         "SCREW": 1
       }
+    },
+    {
+      "id": "shiv",
+      "name": "shiv",
+      "description": "A shard of scrap ground to an edge against the deck, its grip wrapped tight. It cuts, after a fashion.",
+      "glyph": "/",
+      "material": "steel",
+      "volume_ml": 80,
+      "solid_percent": 100,
+      "qualities": {
+        "CUT": 1
+      }
     }
   ]
 }

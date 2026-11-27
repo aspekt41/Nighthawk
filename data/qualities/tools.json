@@ -5,6 +5,11 @@
       "id": "SCREW",
       "name": "screwing",
       "description": "Driving and drawing screws: what it takes to take things apart properly instead of smashing them."
+    },
+    {
+      "id": "CUT",
+      "name": "cutting",
+      "description": "Cutting with an edge: slicing fabric, cord and anything else soft. Not much use against metal."
     }
   ]
 }

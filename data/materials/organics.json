@@ -10,7 +10,7 @@
       "specific_heat": 1300,
       "thermal_conductivity": 320,
       "hardness": 40,
-      "tags": ["organic"]
+      "tags": ["organic", "rigid"]
     }
   ]
 }

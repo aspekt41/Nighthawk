@@ -14,8 +14,9 @@
 //! ```
 
 use nighthawk_sim::{
-    ActionOption, BREATH_FULL, Colour, Item, ItemRef, Material, Mix, Piece, PocketType, Pos, Tile,
-    Use, WARMTH_FULL, World, celsius_to_mk, mk_to_tenths_celsius, options_at,
+    ActionOption, BREATH_FULL, Colour, CraftMaterial, Item, ItemRef, Levels, Material, Mix, Piece,
+    PocketType, Pos, Tile, Use, WARMTH_FULL, World, celsius_to_mk, mk_to_tenths_celsius,
+    options_at,
 };
 use ratatui::Frame;
 use ratatui::buffer::Buffer;
@@ -80,6 +81,8 @@ pub struct View {
     pub cursor: Option<Cursor>,
     /// The highlighted item, while the inventory screen is open.
     pub inventory: Option<usize>,
+    /// The highlighted craft, while the crafting screen is open.
+    pub crafting: Option<usize>,
 }
 
 /// Draws whichever screen the app is on.
@@ -88,6 +91,7 @@ pub fn render(app: &App, frame: &mut Frame) {
         overlay: app.overlay,
         cursor: app.cursor,
         inventory: app.inventory,
+        crafting: app.crafting,
     };
     match &app.screen {
         Screen::Title(menu) => render_title(menu, frame),
@@ -192,9 +196,11 @@ fn render_game(world: &World, log_lines: &[String], view: View, frame: &mut Fram
         overlay: view.overlay,
         cursor: view.cursor.map(|c| c.at),
     };
-    match view.inventory {
-        Some(selected) => frame.render_widget(inventory_panel(world, selected), map_area),
-        None => frame.render_widget(map_view, map_inner),
+    // The inventory or crafting screen, if open, takes the map's place.
+    match (view.inventory, view.crafting) {
+        (Some(selected), _) => frame.render_widget(inventory_panel(world, selected), map_area),
+        (None, Some(selected)) => frame.render_widget(crafting_panel(world, selected), map_area),
+        (None, None) => frame.render_widget(map_view, map_inner),
     }
 
     let log_lines_shown = log_area.height.saturating_sub(2);
@@ -503,7 +509,7 @@ fn sidebar_lines(world: &World) -> Vec<Line<'static>> {
         Line::styled(format!("climb < >{}", shortcut_hints(world)), dim),
         Line::styled("look V  use e  items i", dim),
         Line::styled("air a  heat t  save S", dim),
-        Line::styled("menu q/Q", dim),
+        Line::styled("craft C  menu q/Q", dim),
     ]);
     lines
 }
@@ -852,17 +858,141 @@ fn option_lines(world: &World, at: Pos, option: ActionOption) -> Vec<Line<'stati
 /// ": 2 metal scrap", or "" if it uses nothing or there's no recipe.
 fn uses(world: &World, at: Pos, action: &str) -> String {
     let recipe = world.recipe_for(action, at);
-    let one = |u: &Use| {
-        let tag = u.tag.as_ref().map_or(String::new(), |t| format!("{t} "));
-        format!("{} {tag}{}", u.count, item_name(world, &u.item))
-    };
     let parts: Vec<String> = recipe
-        .map(|r| r.uses.iter().map(one).collect())
+        .map(|r| r.uses.iter().map(|u| use_text(world, u)).collect())
         .unwrap_or_default();
     if parts.is_empty() {
         return String::new();
     }
     format!(": {}", parts.join(", "))
+}
+
+/// Some items a recipe or craft uses: "2 metal scrap".
+fn use_text(world: &World, used: &Use) -> String {
+    let tag = used.tag.as_ref().map_or(String::new(), |t| format!("{t} "));
+    format!("{} {tag}{}", used.count, item_name(world, &used.item))
+}
+
+/// The crafting screen: every craft you know, with what it uses and how
+/// long it takes, greyed with the reason if you can't make it now; then
+/// what the highlighted one makes. It takes the map's place, like the
+/// inventory.
+fn crafting_panel(world: &World, selected: usize) -> Paragraph<'static> {
+    Paragraph::new(crafting_lines(world, selected))
+        .wrap(Wrap { trim: false })
+        .block(Block::bordered().title(" Crafting "))
+}
+
+fn crafting_lines(world: &World, selected: usize) -> Vec<Line<'static>> {
+    let dim = Style::new().fg(Color::DarkGray);
+    let known = world.known_crafts();
+    let mut lines = Vec::new();
+    if known.is_empty() {
+        lines.extend([
+            Line::raw("You don't know how to make anything yet."),
+            Line::styled("Pick things up, and ideas will come.", dim),
+        ]);
+    }
+    for (i, &number) in known.iter().enumerate() {
+        lines.extend(craft_lines(world, number, i == selected));
+    }
+    if let Some(&number) = known.get(selected) {
+        lines.push(Line::raw(""));
+        lines.extend(made_lines(world, number));
+    }
+    lines.extend([
+        Line::raw(""),
+        Line::styled("j/k choose   Enter make   Esc close", dim),
+    ]);
+    lines
+}
+
+/// One known craft: "shiv  1 rigid scrap  5 min", yellow if you can make
+/// it now, grey with the reason on the next line if not, and reversed if
+/// it's the highlighted one.
+fn craft_lines(world: &World, number: u16, chosen: bool) -> Vec<Line<'static>> {
+    let craft = &world.content().crafts()[usize::from(number)];
+    let blocked = world.craft_blocked(number);
+    let dim = Style::new().fg(Color::DarkGray);
+    let style = blocked.map_or(Style::new().fg(Color::Yellow), |_| dim);
+    let style = match chosen {
+        true => style.add_modifier(Modifier::REVERSED),
+        false => style,
+    };
+    let uses: Vec<String> = craft.uses.iter().map(|u| use_text(world, u)).collect();
+    let label = format!(
+        "{}  {}  {}",
+        made_name(world, &craft.makes, craft.count),
+        uses.join(", "),
+        duration(craft.seconds)
+    );
+    let mut lines = vec![Line::styled(label, style)];
+    if let Some(blocked) = blocked {
+        let why = text::blocked_short(blocked, u16::MAX, Some(world));
+        lines.push(Line::styled(format!("    {why}"), dim));
+    }
+    lines
+}
+
+/// What craft number `number` makes, for under the list: how many and of
+/// what, the tools it needs, the qualities the made item has, and its
+/// description.
+fn made_lines(world: &World, number: u16) -> Vec<Line<'static>> {
+    let craft = &world.content().crafts()[usize::from(number)];
+    let of = match craft.material {
+        CraftMaterial::FromUsed => ", of the material used",
+        CraftMaterial::Own => "",
+    };
+    let made = made_name(world, &craft.makes, craft.count);
+    let mut lines = vec![Line::raw(format!("Makes {made}{of}."))];
+    if !craft.needs.is_empty() {
+        lines.push(Line::raw(format!(
+            "Needs a tool with {}.",
+            levels_text(&craft.needs)
+        )));
+    }
+    let kind = world
+        .item_type_index(&craft.makes)
+        .and_then(|k| world.item_types().get(usize::from(k)));
+    if let Some(kind) = kind {
+        if !kind.qualities.is_empty() {
+            lines.push(Line::raw(format!(
+                "It has {}.",
+                levels_text(&kind.qualities)
+            )));
+        }
+        lines.push(Line::styled(
+            kind.description.clone(),
+            Style::new().fg(Color::Gray),
+        ));
+    }
+    lines
+}
+
+/// Tool levels, like "CUT 1, SCREW 1".
+fn levels_text(levels: &Levels) -> String {
+    let each: Vec<String> = levels.iter().map(|(q, l)| format!("{q} {l}")).collect();
+    each.join(", ")
+}
+
+/// "shiv", or "2 × rag": the name of the item type with id `id`, after
+/// how many if more than one.
+fn made_name(world: &World, id: &str, count: u32) -> String {
+    let name = item_name(world, id);
+    match count {
+        1 => name,
+        _ => format!("{count} × {name}"),
+    }
+}
+
+/// A time in seconds as a person would say it: "45 s", "5 min", "1 min
+/// 30 s".
+fn duration(seconds: u32) -> String {
+    match (seconds / 60, seconds % 60) {
+        (0, s) => format!("{s} s"),
+        (m, 0) => format!("{m} min"),
+        (m, s) => format!("{m} min {s} s"),
+    }
 }
 
 /// The display name of the item type with id `id` ("scrap" → "metal
@@ -1587,6 +1717,7 @@ mod tests {
             overlay: Some(Overlay::Heat),
             cursor: None,
             inventory: None,
+            crafting: None,
         };
         let bay = draw_screen(80, 24, |f| render_game(&world, &[], heat, f));
         assert!(bay.contains("[heat overlay]"));
@@ -1628,6 +1759,7 @@ mod tests {
             overlay: Some(Overlay::Air),
             cursor: None,
             inventory: None,
+            crafting: None,
         }
     }
 
@@ -1768,6 +1900,7 @@ mod tests {
                 mode: CursorMode::Look,
             }),
             inventory: None,
+            crafting: None,
         };
         let screen = draw_screen(80, 24, |f| render_game(&world, &[], view, f));
         assert!(screen.contains("[looking]"));
@@ -1940,6 +2073,7 @@ mod tests {
                 mode: CursorMode::Interact,
             }),
             inventory: None,
+            crafting: None,
         };
         let log = ["You need a tool with LASER 1 for that.".to_string()];
         let screen = draw_screen(80, 24, |f| render_game(&world, &log, view, f));
@@ -2021,6 +2155,68 @@ mod tests {
         assert!(!unchosen[2].style.add_modifier.contains(Modifier::REVERSED));
     }
 
+    fn crafting_texts(world: &World, selected: usize) -> Vec<String> {
+        crafting_lines(world, selected)
+            .iter()
+            .map(ToString::to_string)
+            .collect()
+    }
+
+    /// The real world after picking up the four steel scraps at (9, 9).
+    fn with_scrap() -> World {
+        let mut world = real_world();
+        world.apply(Command::Move(Dir::SouthWest));
+        world.apply(Command::Interact {
+            at: Pos::new(9, 9, 0),
+            action: number(&world, "pick_up"),
+        });
+        world
+    }
+
+    #[test]
+    fn the_crafting_screen_lists_what_you_know_and_why_you_cannot_make_it() {
+        assert_eq!(
+            crafting_texts(&real_world(), 0)[0],
+            "You don't know how to make anything yet."
+        );
+        let world = with_scrap();
+        let lines = crafting_lines(&world, 0);
+        let texts = crafting_texts(&world, 0);
+        assert_eq!(texts[0], "shiv  1 rigid scrap  5 min");
+        assert_eq!(lines[0].style.fg, Some(Color::Yellow), "can be made");
+        assert!(lines[0].style.add_modifier.contains(Modifier::REVERSED));
+        assert_eq!(texts[1], "2 × rag  1 fabric scrap  1 min");
+        assert_eq!(lines[1].style.fg, Some(Color::DarkGray));
+        assert_eq!(texts[2], "    needs CUT 1", "the reason, under it");
+        assert_eq!(texts[4], "Makes shiv, of the material used.");
+        assert_eq!(texts[5], "It has CUT 1.");
+        assert!(texts[6].starts_with("A shard of scrap"));
+        let rags = crafting_texts(&world, 1);
+        assert_eq!(rags[4], "Makes 2 × rag, of the material used.");
+        assert_eq!(rags[5], "Needs a tool with CUT 1.");
+    }
+
+    #[test]
+    fn the_crafting_screen_replaces_the_map() {
+        let world = with_scrap();
+        let view = View {
+            overlay: None,
+            cursor: None,
+            inventory: None,
+            crafting: Some(0),
+        };
+        let screen = draw_screen(80, 24, |f| render_game(&world, &[], view, f));
+        assert!(screen.contains(" Crafting ") && screen.contains("Enter make"));
+        assert!(!screen.contains(" Stasis bay "), "no map while it's open");
+    }
+
+    #[test]
+    fn times_read_as_a_person_would_say_them() {
+        assert_eq!(duration(45), "45 s");
+        assert_eq!(duration(300), "5 min");
+        assert_eq!(duration(90), "1 min 30 s");
+    }
+
     #[test]
     fn the_inventory_screen_replaces_the_map_and_fits_80_by_24() {
         let world = real_world();
@@ -2028,6 +2224,7 @@ mod tests {
             overlay: None,
             cursor: None,
             inventory: Some(0),
+            crafting: None,
         };
         let screen = draw_screen(80, 24, |f| render_game(&world, &[], view, f));
         assert!(screen.contains(" Inventory "));

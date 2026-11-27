@@ -10,7 +10,7 @@ use nighthawk_sim::{
 };
 use ratatui::crossterm::event::KeyEvent;
 
-use crate::keys::{self, CursorAction, GameAction, InventoryAction, TitleAction};
+use crate::keys::{self, CraftingAction, CursorAction, GameAction, InventoryAction, TitleAction};
 use crate::saves::SaveSlot;
 use crate::text;
 use crate::title::{MenuItem, TitleMenu};
@@ -55,6 +55,9 @@ pub struct App {
     /// While the inventory screen is open (`i`), which carried item is
     /// highlighted, counting from 0.
     pub inventory: Option<usize>,
+    /// While the crafting screen is open (`C`), which of the crafts you
+    /// know is highlighted.
+    pub crafting: Option<usize>,
 }
 
 impl App {
@@ -77,6 +80,7 @@ impl App {
             overlay: None,
             cursor: None,
             inventory: None,
+            crafting: None,
         };
         match seed {
             Some(seed) => app.start_new_game(seed),
@@ -88,23 +92,7 @@ impl App {
     /// Reacts to a key press on whichever screen is showing.
     pub fn handle_key(&mut self, key: KeyEvent) {
         // Releases and repeats never count, so they can't answer a question.
-        if !keys::is_press(key) {
-            return;
-        }
-        if let Some(action) = self.asking_direction {
-            self.answer_direction(key, action);
-            return;
-        }
-        if self.inventory.is_some() {
-            if let Some(action) = keys::inventory_action(key) {
-                self.on_inventory(action);
-            }
-            return;
-        }
-        if self.cursor.is_some() {
-            if let Some(action) = keys::cursor_action(key, self.actions()) {
-                self.on_cursor(action);
-            }
+        if !keys::is_press(key) || self.on_open_screen(key) {
             return;
         }
         match self.screen {
@@ -119,6 +107,36 @@ impl App {
                 }
             }
         }
+    }
+
+    /// Sends `key` to whatever is open over the game, if anything: a
+    /// question waiting for a direction, the inventory or crafting screen,
+    /// or a cursor. Returns whether something was open, and so took the
+    /// key (even a key it does nothing with).
+    fn on_open_screen(&mut self, key: KeyEvent) -> bool {
+        if let Some(action) = self.asking_direction {
+            self.answer_direction(key, action);
+            return true;
+        }
+        if self.inventory.is_some() {
+            if let Some(action) = keys::inventory_action(key) {
+                self.on_inventory(action);
+            }
+            return true;
+        }
+        if self.crafting.is_some() {
+            if let Some(action) = keys::crafting_action(key) {
+                self.on_crafting(action);
+            }
+            return true;
+        }
+        if self.cursor.is_some() {
+            if let Some(action) = keys::cursor_action(key, self.actions()) {
+                self.on_cursor(action);
+            }
+            return true;
+        }
+        false
     }
 
     /// The actions of the game being played (from `data/actions/`), or
@@ -164,7 +182,8 @@ impl App {
             GameAction::ToggleOverlay(_)
             | GameAction::Look
             | GameAction::Interact
-            | GameAction::Inventory => self.change_view(action),
+            | GameAction::Inventory
+            | GameAction::Crafting => self.change_view(action),
             GameAction::BeginShortcut(action) => {
                 let name = match &self.screen {
                     Screen::Playing(world) => text::action_name(world, action).to_string(),
@@ -179,14 +198,36 @@ impl App {
     }
 
     /// The actions that only change what's shown: overlays, the look and
-    /// interact cursors, the inventory. None of them spends any time. `fn
-    /// on_game` sends only those here, so the last arm is the inventory.
+    /// interact cursors, the inventory and crafting screens. None of them
+    /// spends any time. `fn on_game` sends only those here, so the last
+    /// arm is crafting.
     fn change_view(&mut self, action: GameAction) {
         match action {
             GameAction::ToggleOverlay(overlay) => self.toggle_overlay(overlay),
             GameAction::Look => self.raise_cursor(CursorMode::Look),
             GameAction::Interact => self.raise_cursor(CursorMode::Interact),
-            _ => self.inventory = Some(0),
+            GameAction::Inventory => self.inventory = Some(0),
+            _ => self.crafting = Some(0),
+        }
+    }
+
+    /// Moves the crafting highlight, makes the highlighted craft, or
+    /// closes the screen. The screen stays open after making something, so
+    /// you can make another.
+    fn on_crafting(&mut self, action: CraftingAction) {
+        let (Screen::Playing(world), Some(selected)) = (&self.screen, self.crafting) else {
+            return;
+        };
+        let known = world.known_crafts();
+        let last = known.len().saturating_sub(1);
+        match action {
+            CraftingAction::Close => self.crafting = None,
+            CraftingAction::Up => self.crafting = Some(selected.saturating_sub(1)),
+            CraftingAction::Down => self.crafting = Some((selected + 1).min(last)),
+            CraftingAction::Make => match known.get(selected) {
+                Some(&craft) => self.apply(Command::Craft(craft)),
+                None => self.push_log("You don't know how to make anything yet.".into()),
+            },
         }
     }
 
@@ -349,6 +390,7 @@ impl App {
     fn show_title(&mut self, message: Option<String>) {
         self.cursor = None;
         self.inventory = None;
+        self.crafting = None;
         let can_continue = self.slot.as_ref().is_some_and(SaveSlot::exists);
         self.screen = Screen::Title(TitleMenu::new(can_continue).with_message(message));
     }
@@ -1187,6 +1229,49 @@ mod tests {
         assert!(world(&app).carried().is_empty());
         press_all(&mut app, "d");
         assert_eq!(last_log(&app), "You have nothing to drop.");
+    }
+
+    // --- Crafting ---------------------------------------------------------------
+
+    #[test]
+    fn crafting_before_you_know_anything_says_so_and_takes_no_time() {
+        let (mut app, _dir) = new_app(Some(7));
+        press_all(&mut app, "C");
+        assert_eq!(app.crafting, Some(0));
+        app.handle_key(key(KeyCode::Enter));
+        assert_eq!(last_log(&app), "You don't know how to make anything yet.");
+        assert_eq!(world(&app).seconds(), 0);
+        press_all(&mut app, "jkC");
+        assert_eq!(app.crafting, None, "C closes it again");
+    }
+
+    #[test]
+    fn picking_up_scrap_gives_you_the_idea_of_a_shiv_and_enter_makes_one() {
+        let (mut app, _dir) = new_app(Some(7));
+        press_all(&mut app, "bejg"); // to (9, 8); pick up the scrap at (9, 9)
+        press_all(&mut app, "C");
+        let known = world(&app).known_crafts();
+        let shiv = world(&app).content().crafts()[usize::from(known[0])]
+            .id
+            .clone();
+        assert_eq!(shiv, "shiv");
+        app.handle_key(key(KeyCode::Enter));
+        assert_eq!(last_log(&app), "You make a shiv (Steel).");
+        assert_eq!(app.crafting, Some(0), "still open, to make another");
+        press_all(&mut app, "jjjjk");
+        assert_eq!(app.crafting, Some(0), "between the first and the last");
+        app.handle_key(key(KeyCode::Esc));
+        assert_eq!(app.crafting, None);
+    }
+
+    #[test]
+    fn leaving_the_game_closes_the_crafting_screen() {
+        let (mut app, _dir) = new_app(Some(7));
+        press_all(&mut app, "C");
+        app.show_title(None);
+        assert_eq!(app.crafting, None);
+        app.on_crafting(CraftingAction::Down); // no game: ignored
+        assert_eq!(app.crafting, None);
     }
 
     #[test]

@@ -1,7 +1,7 @@
 //! Content: the JSON in `data/` (decisions D17 and D43).
 //!
 //! Each kind of content (qualities, actions, materials, structures,
-//! furniture, items, recipes) has a folder, and every `.json` file in it is read, so content can be grouped
+//! furniture, items, recipes, crafts) has a folder, and every `.json` file in it is read, so content can be grouped
 //! into as many files as reads best (`metals.json`, `fabrics.json`…). The
 //! sim never touches the disk (decision D18): the front-end reads the files
 //! and passes in each one's name and text, and the name is used to say
@@ -20,6 +20,7 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
 use crate::action::{self, Action, ActionError, Actions, parse_actions};
+use crate::craft::{Craft, CraftError, CraftRefs, Crafts, parse_crafts};
 use crate::furniture::{FurnitureError, FurnitureType, FurnitureTypes, parse_furniture};
 use crate::hash::Fnv64;
 use crate::item::{self, ItemError, ItemType, ItemTypes, parse_items};
@@ -31,8 +32,9 @@ use crate::structure::{Structure, StructureError, Structures, parse_structures};
 /// The content folders, in the order they're loaded. A kind may refer to
 /// the kinds before it (materials name actions and qualities; structures
 /// and furniture name materials; items name materials and qualities;
-/// recipes name all of those), which is why the order matters.
-pub const CONTENT_FOLDERS: [&str; 7] = [
+/// recipes name all of those; crafts name items, materials and
+/// qualities), which is why the order matters.
+pub const CONTENT_FOLDERS: [&str; 8] = [
     "qualities",
     "actions",
     "materials",
@@ -40,6 +42,7 @@ pub const CONTENT_FOLDERS: [&str; 7] = [
     "furniture",
     "items",
     "recipes",
+    "crafts",
 ];
 
 /// One content file: its name, for error messages, and its text.
@@ -101,8 +104,8 @@ pub(crate) fn first_duplicate<'a>(ids: impl Iterator<Item = &'a str>) -> Option<
 }
 
 /// Everything a game is made of: every tool quality, action, material,
-/// structure, kind of furniture, item type and recipe, checked against
-/// each other.
+/// structure, kind of furniture, item type, recipe and craft, checked
+/// against each other.
 ///
 /// The world keeps its own copy, saved with the game, so editing the data
 /// files never changes a game already in progress (decision D35). Tiles,
@@ -117,6 +120,7 @@ pub struct Content {
     pub(crate) furniture: FurnitureTypes,
     pub(crate) item_types: ItemTypes,
     pub(crate) recipes: Recipes,
+    pub(crate) crafts: Crafts,
 }
 
 impl Content {
@@ -153,6 +157,7 @@ impl Content {
             furniture,
             items,
             recipes,
+            crafts,
         ] = files;
         let qualities = parse_qualities(&qualities).map_err(ContentError::Qualities)?;
         let actions = parse_actions(&actions).map_err(ContentError::Actions)?;
@@ -172,6 +177,12 @@ impl Content {
             items: &item_types,
         };
         let recipes = parse_recipes(&recipes, &refs).map_err(ContentError::Recipes)?;
+        let craft_refs = CraftRefs {
+            qualities: &qualities,
+            materials: &materials,
+            items: &item_types,
+        };
+        let crafts = parse_crafts(&crafts, &craft_refs).map_err(ContentError::Crafts)?;
         Ok(Self {
             qualities,
             actions,
@@ -180,6 +191,7 @@ impl Content {
             furniture,
             item_types,
             recipes,
+            crafts,
         })
     }
 
@@ -240,6 +252,12 @@ impl Content {
         self.recipes.list()
     }
 
+    /// Every craft: how to make an item from items. Commands name a craft
+    /// by its place in this list.
+    pub fn crafts(&self) -> &[Craft] {
+        self.crafts.list()
+    }
+
     /// The number of the quality with this id, if there is one.
     pub fn quality_index(&self, id: &str) -> Option<u16> {
         self.qualities.index_of(id)
@@ -276,6 +294,7 @@ impl Content {
         self.furniture.hash_into(h);
         item::hash_types(self.item_types(), h);
         recipe::hash_recipes(self.recipes(), h);
+        self.crafts.hash_into(h);
     }
 
     /// The materials, changeable, for tests in other modules.
@@ -296,6 +315,7 @@ impl Content {
             furniture: crate::furniture::tests::test_furniture(),
             item_types: crate::item::tests::test_items(),
             recipes: crate::recipe::tests::test_recipes(),
+            crafts: crate::craft::tests::test_crafts(),
         }
     }
 }
@@ -310,6 +330,7 @@ pub enum ContentError {
     Furniture(FurnitureError),
     Items(ItemError),
     Recipes(RecipeError),
+    Crafts(CraftError),
 }
 
 impl ContentError {
@@ -323,6 +344,7 @@ impl ContentError {
             furniture,
             items,
             recipes,
+            crafts,
         ] = CONTENT_FOLDERS;
         match self {
             ContentError::Qualities(_) => qualities,
@@ -332,6 +354,7 @@ impl ContentError {
             ContentError::Furniture(_) => furniture,
             ContentError::Items(_) => items,
             ContentError::Recipes(_) => recipes,
+            ContentError::Crafts(_) => crafts,
         }
     }
 }
@@ -346,6 +369,7 @@ impl fmt::Display for ContentError {
             ContentError::Furniture(e) => write!(f, "{e}"),
             ContentError::Items(e) => write!(f, "{e}"),
             ContentError::Recipes(e) => write!(f, "{e}"),
+            ContentError::Crafts(e) => write!(f, "{e}"),
         }
     }
 }
@@ -416,7 +440,8 @@ mod tests {
                 r#"{ "items": [ { "id": "bolt", "name": "bolt", "description": "B.",
                      "glyph": "*", "material": "steel", "volume_ml": 1, "solid_percent": 100 } ] }"#
             }
-            _ => r#"{ "recipes": [] }"#,
+            "recipes" => r#"{ "recipes": [] }"#,
+            _ => r#"{ "crafts": [] }"#,
         };
         vec![ContentFile::new(format!("{folder}.json"), text)]
     }

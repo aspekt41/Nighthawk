@@ -503,6 +503,55 @@ fn dismantling_your_own_stasis_chamber_gives_steel_glass_padding_and_copper() {
     assert_eq!(world.items_at(yours).count(), 9);
 }
 
+/// The number of the shipped craft with this id.
+fn craft_number(world: &World, id: &str) -> u16 {
+    let i = world.content().crafts().iter().position(|c| c.id == id);
+    u16::try_from(i.unwrap_or_else(|| panic!("no craft {id:?}"))).unwrap()
+}
+
+#[test]
+fn scrap_gives_you_a_shiv_and_the_shiv_cuts_polyester_into_rags() {
+    let mut world = common::start_world(1);
+    assert!(world.known_crafts().is_empty(), "you know nothing at first");
+    // Pick up the four steel scraps at (9, 9): both crafts come to mind.
+    world.apply(Command::Move(Dir::SouthWest));
+    world.apply(Command::Interact {
+        at: Pos::new(9, 9, 0),
+        action: action(&world, "pick_up"),
+    });
+    let (shiv, rags) = (craft_number(&world, "shiv"), craft_number(&world, "rags"));
+    assert_eq!(world.known_crafts(), [shiv, rags]);
+    let before = world.seconds();
+    world.apply(Command::Craft(shiv));
+    assert_eq!(world.seconds() - before, 300, "five minutes");
+    assert_eq!(world.tool_level("CUT"), 1, "the shiv cuts");
+    let made = world.carried().into_iter().map(|(_, item)| item);
+    let shiv_kind = world.item_type_index("shiv").unwrap();
+    let steel = world.content().material_index("steel").unwrap();
+    assert!(
+        made.clone()
+            .any(|i| (i.kind, i.material) == (shiv_kind, steel))
+    );
+    // Up to the torn padding at (18, 2), and cut a scrap of it into rags.
+    for (dir, steps) in [(Dir::North, 6), (Dir::East, 8)] {
+        for _ in 0..steps {
+            world.apply(Command::Move(dir));
+        }
+    }
+    world.apply(Command::Interact {
+        at: Pos::new(18, 2, 0),
+        action: action(&world, "pick_up"),
+    });
+    world.apply(Command::Craft(rags));
+    let rag = world.item_type_index("rag").unwrap();
+    let polyester = world.content().material_index("polyester").unwrap();
+    let carried = world.carried();
+    let rags_made = carried
+        .iter()
+        .filter(|(_, i)| (i.kind, i.material) == (rag, polyester));
+    assert_eq!(rags_made.count(), 2);
+}
+
 #[test]
 fn the_basic_laser_cuts_the_side_room_door_into_a_damaged_door() {
     // Fetch the laser cutter from the gear locker, and from two tiles

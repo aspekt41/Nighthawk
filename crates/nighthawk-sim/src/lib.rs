@@ -22,6 +22,7 @@ mod air;
 mod body;
 mod calendar;
 mod content;
+mod craft;
 mod fov;
 mod furniture;
 mod hash;
@@ -50,6 +51,7 @@ pub use body::{
 };
 pub use calendar::{DateTime, SHIP_START};
 pub use content::{CONTENT_FOLDERS, Content, ContentError, ContentFile, FileError};
+pub use craft::{Craft, CraftError, CraftMaterial};
 pub use furniture::{FurnitureError, FurnitureType, MAX_FURNITURE_SIDE, Piece};
 pub use heat::{
     HULL_LOSS_PER_BILLION, MAX_CELSIUS, MIN_CELSIUS, MIXING_PER_MILLE, ROOM_TEMPERATURE_MK,

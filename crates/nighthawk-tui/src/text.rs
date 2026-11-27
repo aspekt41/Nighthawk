@@ -18,16 +18,37 @@ pub fn describe_in(world: &World, event: Event) -> Option<String> {
         Event::Bumped { at, .. } if let Some(name) = solid_name(world, at) => {
             Some(format!("You bump into the {name}."))
         }
-        Event::PickedUp(id) | Event::NoRoom(id) | Event::Dropped(id) => {
-            Some(item_text(event, &item_name(world, id)))
-        }
-        Event::TookOut { item, from } => Some(took_out_text(world, item, from)),
-        Event::Fell(id) => Some(item_text(event, &item_name(world, id))),
+        Event::CannotCraft { blocked, .. } => Some(blocked_text(blocked, u16::MAX, Some(world))),
         Event::Transformed { at, action, was } => Some(done_text(world, at, action, was)),
         Event::Removed { action, was, .. } => Some(removed_text(world, action, was)),
         Event::Unable { action, blocked } => Some(blocked_text(blocked, action, Some(world))),
-        _ => describe(event),
+        // Events about items get their own function, so this `match`
+        // stays under the complexity limit.
+        _ => item_event_text(world, event).or_else(|| describe(event)),
     }
+}
+
+/// Log lines for events about one item, naming it and its material: what
+/// you picked up, took out, dropped, made, or saw fall. `None` for any
+/// other event.
+fn item_event_text(world: &World, event: Event) -> Option<String> {
+    match event {
+        Event::PickedUp(id) | Event::NoRoom(id) | Event::Dropped(id) | Event::Fell(id) => {
+            Some(item_text(event, &item_name(world, id)))
+        }
+        Event::TookOut { item, from } => Some(took_out_text(world, item, from)),
+        Event::Crafted { item, .. } => {
+            Some(format!("You make {}.", a_or_an(&item_name(world, item))))
+        }
+        _ => None,
+    }
+}
+
+/// `name` after "a", or "an" if it starts with a vowel: "a shiv (Bone)",
+/// "an item".
+fn a_or_an(name: &str) -> String {
+    let vowel = name.starts_with(['a', 'e', 'i', 'o', 'u']);
+    format!("{} {name}", if vowel { "an" } else { "a" })
 }
 
 /// "You take the hand lamp (Aluminium Alloy) out of the locker."
@@ -106,6 +127,8 @@ pub fn describe(event: Event) -> Option<String> {
         | Event::Dropped(_)
         | Event::NothingToDrop => item_text(event, "item"),
         Event::Transformed { .. } | Event::Removed { .. } => "Done.".into(),
+        Event::Crafted { .. } => "You make something.".into(),
+        Event::CannotCraft { blocked, .. } => blocked_text(blocked, u16::MAX, None),
         Event::AirEscaping | Event::Breath(_) | Event::Warmth(_) | Event::BlackedOut(_) => {
             survival_text(event).into()
         }
@@ -245,6 +268,7 @@ fn blocked_short_fixed(blocked: Blocked) -> String {
         Blocked::InTheWay { .. } => "path blocked".into(),
         Blocked::StandingInIt => "step out first".into(),
         Blocked::CantSee => "can't see it".into(),
+        Blocked::NotKnown => "not known yet".into(),
         _ => "not possible".into(),
     }
 }
@@ -288,6 +312,7 @@ fn blocked_text_fixed(blocked: Blocked) -> String {
         Blocked::InTheWay { .. } => "Something solid is in the way.".into(),
         Blocked::StandingInIt => "You're standing in it. Step out first.".into(),
         Blocked::CantSee => "You can't see there.".into(),
+        Blocked::NotKnown => "You don't know how to make that yet.".into(),
         _ => "You can't do that there.".into(),
     }
 }
@@ -459,9 +484,10 @@ mod tests {
     }
 
     /// One of each kind of blocked reason.
-    fn every_blocked() -> [Blocked; 10] {
+    fn every_blocked() -> [Blocked; 11] {
         [
             Blocked::CantSee,
+            Blocked::NotKnown,
             Blocked::TooFar { reach: 1 },
             Blocked::TooFar { reach: 2 },
             Blocked::InTheWay {
@@ -585,6 +611,33 @@ mod tests {
         let names: Vec<&str> = (0..5).map(|n| action_name(&world, n)).collect();
         assert_eq!(names, ["Open", "Close", "Cut", "Repair", "Pick up"]);
         assert_eq!(action_name(&world, 999), "?");
+    }
+
+    #[test]
+    fn crafting_is_logged_with_an_article_and_refusals_say_why() {
+        let world = real_world();
+        let shiv = ItemRef {
+            kind: world.item_type_index("shiv").unwrap(),
+            material: world.content().material_index("bone").unwrap(),
+        };
+        let made = Event::Crafted {
+            craft: 0,
+            item: shiv,
+        };
+        assert_eq!(
+            describe_in(&world, made).as_deref(),
+            Some("You make a shiv (Bone).")
+        );
+        assert_eq!(describe(made).as_deref(), Some("You make something."));
+        assert_eq!(a_or_an("item"), "an item");
+        let unknown = Event::CannotCraft {
+            craft: 0,
+            blocked: Blocked::NotKnown,
+        };
+        let line = "You don't know how to make that yet.";
+        assert_eq!(describe_in(&world, unknown).as_deref(), Some(line));
+        assert_eq!(describe(unknown).as_deref(), Some(line));
+        assert_eq!(blocked_short(Blocked::NotKnown, 0, None), "not known yet");
     }
 
     #[test]

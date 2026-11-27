@@ -6,7 +6,7 @@
 //! ```json
 //! {
 //!   "format": "nighthawk-save",
-//!   "version": 20,
+//!   "version": 21,
 //!   "world": { "deck_names": ["Stasis bay"], "seconds": 36, ... }
 //! }
 //! ```
@@ -33,7 +33,7 @@ pub const SAVE_FORMAT: &str = "nighthawk-save";
 
 /// The save layout this build reads and writes. Bump it when `World` (or
 /// anything inside it) changes shape, and update the save-format test.
-pub const SAVE_VERSION: u32 = 20;
+pub const SAVE_VERSION: u32 = 21;
 
 /// Everything that can be wrong with a save file.
 #[derive(Debug)]
@@ -189,13 +189,13 @@ mod tests {
     fn save_text_is_tagged_and_versioned() {
         let text = save_to_string(&small_world());
         assert!(text.contains(r#""format": "nighthawk-save""#));
-        assert!(text.contains(r#""version": 20"#));
+        assert!(text.contains(r#""version": 21"#));
     }
 
     /// The exact text of the tiny save in `the_save_format_is_stable`.
     const EXPECTED_SAVE: &str = r#"{
   "format": "nighthawk-save",
-  "version": 20,
+  "version": 21,
   "world": {
     "deck_names": [
       "Deck 0"
@@ -328,7 +328,8 @@ mod tests {
           "light": 0
         }
       ],
-      "recipes": []
+      "recipes": [],
+      "crafts": []
     },
     "floor_items": [],
     "furniture": {
@@ -354,7 +355,10 @@ mod tests {
         65535,
         65535
       ]
-    }
+    },
+    "carried_kinds": [
+      0
+    ]
   }
 }"#;
 
@@ -434,21 +438,20 @@ mod tests {
 
     #[test]
     fn a_save_without_a_version_is_not_a_save() {
-        let text = save_with("\"version\": 20,", "");
+        let text = save_with("\"version\": 21,", "");
         assert!(matches!(load_from_str(&text), Err(SaveError::NotASave)));
     }
 
     #[test]
     fn saves_from_other_versions_are_rejected_clearly() {
-        // A save from before furniture could hold things and be taken
-        // apart: exactly what an old save file on disk looks like after
-        // this build is installed.
-        let text = save_with(r#""version": 20"#, r#""version": 19"#);
+        // A save from before crafting: exactly what an old save file on
+        // disk looks like after this build is installed.
+        let text = save_with(r#""version": 21"#, r#""version": 20"#);
         let err = load_from_str(&text).unwrap_err();
-        assert!(matches!(err, SaveError::UnsupportedVersion { found: 19 }));
+        assert!(matches!(err, SaveError::UnsupportedVersion { found: 20 }));
         assert_eq!(
             err.to_string(),
-            "save file is version 19, but this build only reads version 20"
+            "save file is version 20, but this build only reads version 21"
         );
     }
 

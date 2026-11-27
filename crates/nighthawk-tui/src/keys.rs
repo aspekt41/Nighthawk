@@ -36,6 +36,8 @@ pub enum GameAction {
     Interact,
     /// Show what you're wearing and carrying (`i`).
     Inventory,
+    /// Show what you know how to make (`C`).
+    Crafting,
 }
 
 /// Something the player wants on the inventory screen.
@@ -60,6 +62,32 @@ pub fn inventory_action(key: KeyEvent) -> Option<InventoryAction> {
         (KeyCode::Char('d'), _) => Some(InventoryAction::Drop),
         (_, Some(Dir::North)) => Some(InventoryAction::Up),
         (_, Some(Dir::South)) => Some(InventoryAction::Down),
+        _ => None,
+    }
+}
+
+/// Something the player wants on the crafting screen.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CraftingAction {
+    /// Highlight the craft above or below.
+    Up,
+    Down,
+    /// Make the highlighted craft.
+    Make,
+    Close,
+}
+
+/// The action for a key pressed on the crafting screen: up and down
+/// movement keys choose, Enter makes, Esc, `C` or `q` close.
+pub fn crafting_action(key: KeyEvent) -> Option<CraftingAction> {
+    if !is_press(key) {
+        return None;
+    }
+    match (key.code, direction(key)) {
+        (KeyCode::Esc | KeyCode::Char('C' | 'q'), _) => Some(CraftingAction::Close),
+        (KeyCode::Enter, _) => Some(CraftingAction::Make),
+        (_, Some(Dir::North)) => Some(CraftingAction::Up),
+        (_, Some(Dir::South)) => Some(CraftingAction::Down),
         _ => None,
     }
 }
@@ -172,6 +200,7 @@ const GAME_KEYS: &[(char, GameAction)] = &[
     ('V', GameAction::Look),
     ('e', GameAction::Interact),
     ('i', GameAction::Inventory),
+    ('C', GameAction::Crafting),
 ];
 
 /// The action for a key pressed while playing, if any: the game's own
@@ -560,5 +589,26 @@ mod tests {
             assert_eq!(inventory_action(press(code)), action, "{code:?}");
         }
         assert_eq!(inventory_action(release(KeyCode::Char('d'))), None);
+    }
+
+    #[test]
+    fn capital_c_opens_crafting_where_up_down_choose_and_enter_makes() {
+        assert_eq!(game(press(KeyCode::Char('C'))), Some(GameAction::Crafting));
+        let cases = [
+            (KeyCode::Char('k'), Some(CraftingAction::Up)),
+            (KeyCode::Up, Some(CraftingAction::Up)),
+            (KeyCode::Char('j'), Some(CraftingAction::Down)),
+            (KeyCode::Down, Some(CraftingAction::Down)),
+            (KeyCode::Enter, Some(CraftingAction::Make)),
+            (KeyCode::Esc, Some(CraftingAction::Close)),
+            (KeyCode::Char('C'), Some(CraftingAction::Close)),
+            (KeyCode::Char('q'), Some(CraftingAction::Close)),
+            (KeyCode::Char('l'), None),
+            (KeyCode::Char('d'), None),
+        ];
+        for (code, action) in cases {
+            assert_eq!(crafting_action(press(code)), action, "{code:?}");
+        }
+        assert_eq!(crafting_action(release(KeyCode::Enter)), None);
     }
 }

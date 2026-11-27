@@ -16,7 +16,7 @@
           "LASER": 2
         }
       },
-      "tags": ["metal"]
+      "tags": ["metal", "rigid"]
     },
     {
       "id": "aluminium_alloy",
@@ -33,7 +33,7 @@
           "LASER": 1
         }
       },
-      "tags": ["metal"]
+      "tags": ["metal", "rigid"]
     },
     {
       "id": "nanocarbon_alloy",
@@ -50,7 +50,7 @@
           "LASER": 5
         }
       },
-      "tags": ["metal"]
+      "tags": ["metal", "rigid"]
     },
     {
       "id": "copper",
@@ -67,7 +67,7 @@
           "LASER": 1
         }
       },
-      "tags": ["metal"]
+      "tags": ["metal", "rigid"]
     }
   ]
 }

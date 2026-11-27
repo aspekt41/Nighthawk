@@ -17,6 +17,7 @@ use schemars::{Schema, schema_for};
 
 use crate::action::ActionsFile;
 use crate::content::CONTENT_FOLDERS;
+use crate::craft::CraftsFile;
 use crate::furniture::FurnitureFile;
 use crate::item::ItemsFile;
 use crate::map_file::MapFile;
@@ -39,8 +40,9 @@ pub fn data_schemas() -> Vec<(String, String)> {
         furniture,
         items,
         recipes,
+        crafts,
     ] = CONTENT_FOLDERS;
-    let schemas: [(&str, Schema); 8] = [
+    let schemas: [(&str, Schema); 9] = [
         (qualities, schema_for!(QualitiesFile)),
         (actions, schema_for!(ActionsFile)),
         (materials, schema_for!(MaterialsFile)),
@@ -48,6 +50,7 @@ pub fn data_schemas() -> Vec<(String, String)> {
         (furniture, schema_for!(FurnitureFile)),
         (items, schema_for!(ItemsFile)),
         (recipes, schema_for!(RecipesFile)),
+        (crafts, schema_for!(CraftsFile)),
         ("map", schema_for!(MapFile)),
     ];
     schemas

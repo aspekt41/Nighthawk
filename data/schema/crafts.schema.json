@@ -1,0 +1,126 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "CraftsFile",
+  "description": "The JSON shape of one file in `data/crafts/`.",
+  "type": "object",
+  "properties": {
+    "$schema": {
+      "description": "Optional: the JSON Schema this file follows, so editors can check\nit as you type (`\"$schema\": \"../schema/crafts.schema.json\"`).",
+      "type": [
+        "string",
+        "null"
+      ],
+      "default": null
+    },
+    "crafts": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/Craft"
+      }
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "crafts"
+  ],
+  "$defs": {
+    "Craft": {
+      "description": "One craft.",
+      "type": "object",
+      "properties": {
+        "count": {
+          "description": "How many it makes. Optional: 1.",
+          "type": "integer",
+          "format": "uint32",
+          "default": 1,
+          "minimum": 0
+        },
+        "id": {
+          "type": "string"
+        },
+        "makes": {
+          "description": "The id of the item it makes.",
+          "type": "string"
+        },
+        "material": {
+          "description": "What they're made of: `own` (the default) or `from_used`.",
+          "$ref": "#/$defs/CraftMaterial",
+          "default": "own"
+        },
+        "needs": {
+          "description": "Tool levels it needs, all of them, like `{ \"CUT\": 1 }`. Optional.",
+          "type": "object",
+          "additionalProperties": {
+            "type": "integer",
+            "format": "uint8",
+            "maximum": 255,
+            "minimum": 0
+          },
+          "default": {}
+        },
+        "seconds": {
+          "description": "How long it takes, in seconds.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "uses": {
+          "description": "The items it uses up from your pockets, each optionally only of a\nmaterial with a tag. You know the craft once you've carried every\nkind of item it uses. Optional: none, and then it's always known.",
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/Use"
+          }
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "makes",
+        "seconds"
+      ]
+    },
+    "CraftMaterial": {
+      "description": "What a crafted item is made of.",
+      "oneOf": [
+        {
+          "description": "The made item's own material, from `data/items/`.",
+          "type": "string",
+          "const": "own"
+        },
+        {
+          "description": "The material of the first item used.",
+          "type": "string",
+          "const": "from_used"
+        }
+      ]
+    },
+    "Use": {
+      "description": "Some items a recipe uses up: `count` of the item type `item`, made of\nany material, or only of materials with the tag `tag`.",
+      "type": "object",
+      "properties": {
+        "count": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "item": {
+          "type": "string"
+        },
+        "tag": {
+          "description": "Only items made of a material with this tag count, like `\"metal\"`:\nbone scrap won't patch the hull. Optional: any material.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "item",
+        "count"
+      ]
+    }
+  }
+}

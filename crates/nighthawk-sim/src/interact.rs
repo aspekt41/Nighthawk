@@ -16,6 +16,8 @@
 use crate::action::{Action, Effect};
 use crate::map::Tile;
 use crate::pos::Pos;
+use crate::quality::Levels;
+use crate::recipe::Use;
 use crate::world::World;
 
 /// Why an action can't be done right now.
@@ -50,6 +52,9 @@ pub enum Blocked {
     },
     /// Items are lying on it, and would end up inside it.
     Cluttered,
+    /// For a craft: the player hasn't yet carried everything it uses, so
+    /// they don't know how to make it.
+    NotKnown,
 }
 
 /// One line of the interact menu: an action (its number), and why it can't
@@ -194,8 +199,13 @@ fn material_tool(world: &World, at: Pos, action: &Action) -> Option<Blocked> {
 /// What the recipe asks: every level it lists.
 fn recipe_tools(world: &World, at: Pos, action: &Action) -> Option<Blocked> {
     let recipe = world.recipe_for(&action.id, at)?;
-    recipe
-        .needs
+    short_of(world, &recipe.needs)
+}
+
+/// `Needs` for the first of `levels` (tool levels, all needed) that the
+/// player's best tools fall short of. Recipes and crafts share it.
+pub(crate) fn short_of(world: &World, levels: &Levels) -> Option<Blocked> {
+    levels
         .iter()
         .find(|&(quality, &level)| world.tool_level(quality) < level)
         .map(|(quality, &level)| needs(world, quality, level))
@@ -214,8 +224,15 @@ fn needs(world: &World, quality: &str, level: u8) -> Blocked {
 /// carry enough of.
 fn missing(world: &World, at: Pos, action: &Action) -> Option<Blocked> {
     let recipe = world.recipe_for(&action.id, at)?;
+    missing_items(world, &recipe.uses)
+}
+
+/// `Missing` for the first of `uses` that the player doesn't carry enough
+/// of (counting only items of the tagged material, for a use with a tag).
+/// Recipes and crafts share it.
+pub(crate) fn missing_items(world: &World, uses: &[Use]) -> Option<Blocked> {
     let tags = world.content().material_tags();
-    recipe.uses.iter().find_map(|used| {
+    uses.iter().find_map(|used| {
         let item = world.item_type_index(&used.item)?;
         let tag = used.tag.as_deref();
         let have = world.carried_count_tagged(item, tag);

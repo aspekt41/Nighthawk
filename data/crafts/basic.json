@@ -1,0 +1,25 @@
+{
+  "$schema": "../schema/crafts.schema.json",
+  "crafts": [
+    {
+      "id": "shiv",
+      "makes": "shiv",
+      "material": "from_used",
+      "seconds": 300,
+      "uses": [
+        { "item": "scrap", "count": 1, "tag": "rigid" }
+      ]
+    },
+    {
+      "id": "rags",
+      "makes": "rag",
+      "count": 2,
+      "material": "from_used",
+      "seconds": 60,
+      "uses": [
+        { "item": "scrap", "count": 1, "tag": "fabric" }
+      ],
+      "needs": { "CUT": 1 }
+    }
+  ]
+}
