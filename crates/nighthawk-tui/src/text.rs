@@ -197,6 +197,7 @@ fn blocked_short_fixed(blocked: Blocked) -> String {
         Blocked::TooFar { reach } => format!("too far: reach {reach}"),
         Blocked::InTheWay { .. } => "path blocked".into(),
         Blocked::StandingInIt => "step out first".into(),
+        Blocked::CantSee => "can't see it".into(),
         _ => "not possible".into(),
     }
 }
@@ -234,6 +235,7 @@ fn blocked_text_fixed(blocked: Blocked) -> String {
         }
         Blocked::InTheWay { .. } => "Something solid is in the way.".into(),
         Blocked::StandingInIt => "You're standing in it. Step out first.".into(),
+        Blocked::CantSee => "You can't see there.".into(),
         _ => "You can't do that there.".into(),
     }
 }
@@ -405,8 +407,9 @@ mod tests {
     }
 
     /// One of each kind of blocked reason.
-    fn every_blocked() -> [Blocked; 9] {
+    fn every_blocked() -> [Blocked; 10] {
         [
+            Blocked::CantSee,
             Blocked::TooFar { reach: 1 },
             Blocked::TooFar { reach: 2 },
             Blocked::InTheWay {
@@ -509,6 +512,11 @@ mod tests {
         assert_eq!(
             blocked_short(Blocked::TooFar { reach: 1 }, 0, None),
             "too far: reach 1"
+        );
+        assert_eq!(blocked_short(Blocked::CantSee, 0, None), "can't see it");
+        assert_eq!(
+            blocked_text(Blocked::CantSee, 0, None),
+            "You can't see there."
         );
         let needs = Blocked::Needs {
             quality: world.content().quality_index("LASER").unwrap(),

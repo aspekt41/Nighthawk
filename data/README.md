@@ -164,6 +164,7 @@ other change.
 | `walkable` | Optional. You can walk on it, and air fills it and moves through it (floor, ladders, an open door). Left out, it's solid and airtight (a wall, a shut door). |
 | `leak_cm2` | Optional. A hole to space of this many cm² (a hull crack is 4, a breach 400): the space beside it leaks, faster the bigger the hole. Solid structures only. |
 | `climb` | Optional. A ladder: `"up"` to the deck above or `"down"` to the one below (see [Stairs](#stairs)). Walkable structures only. |
+| `see_through` | Optional. You can see through it though it's solid, like a window. Left out, solid structures block sight. Walkable structures never block it, so it's for solid ones only. |
 | `material` | The material it's made of, unless a map legend says otherwise. |
 | `colour` | Optional. Draw it in this colour (same names as materials). Otherwise ladders are cyan, leaks red (bold from 100 cm²), floor dark grey, and solid structures their material's colour. Doors are `light_red`; a damaged door is `red`. |
 

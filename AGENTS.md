@@ -185,6 +185,11 @@ precise error and exits with code 1 before entering raw mode.
   contains both, so no delimiter is safe. In tests, build the JSON with
   `format!` from a `[&str]` of rows (see `test_world()` in
   `crates/nighthawk-sim/src/world.rs` and `crates/nighthawk-tui/src/ui.rs`).
+- **Lizard misreads `'` inside raw strings.** It doesn't understand
+  `r#"..."#`, so a `'` in one (like an open door's glyph in a legend) looks
+  like the start of a character literal, and lizard thinks the function runs
+  on for hundreds of lines: check.sh then fails on length, or hides a real
+  complexity problem. Keep `'` out of raw strings in code it checks.
 - **Test maps and content.** In the sim's unit tests, import
   `crate::map_file::parse_map_for_tests as parse_map`: it parses with a
   small test set (`Content::for_tests()`) of qualities (`LASER`, `WELD`),

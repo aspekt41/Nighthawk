@@ -6,7 +6,7 @@
 //! ```json
 //! {
 //!   "format": "nighthawk-save",
-//!   "version": 16,
+//!   "version": 17,
 //!   "world": { "deck_names": ["Stasis bay"], "seconds": 36, ... }
 //! }
 //! ```
@@ -33,7 +33,7 @@ pub const SAVE_FORMAT: &str = "nighthawk-save";
 
 /// The save layout this build reads and writes. Bump it when `World` (or
 /// anything inside it) changes shape, and update the save-format test.
-pub const SAVE_VERSION: u32 = 16;
+pub const SAVE_VERSION: u32 = 17;
 
 /// Everything that can be wrong with a save file.
 #[derive(Debug)]
@@ -189,13 +189,13 @@ mod tests {
     fn save_text_is_tagged_and_versioned() {
         let text = save_to_string(&small_world());
         assert!(text.contains(r#""format": "nighthawk-save""#));
-        assert!(text.contains(r#""version": 16"#));
+        assert!(text.contains(r#""version": 17"#));
     }
 
     /// The exact text of the tiny save in `the_save_format_is_stable`.
     const EXPECTED_SAVE: &str = r#"{
   "format": "nighthawk-save",
-  "version": 16,
+  "version": 17,
   "world": {
     "deck_names": [
       "Deck 0"
@@ -301,7 +301,8 @@ mod tests {
           "colour": null,
           "walkable": true,
           "leak_cm2": 0,
-          "climb": null
+          "climb": null,
+          "see_through": false
         }
       ],
       "item_types": [
@@ -328,7 +329,17 @@ mod tests {
         "material": 0,
         "pockets": []
       }
-    ]
+    ],
+    "view": {
+      "seen_structure": [
+        0,
+        0
+      ],
+      "seen_item": [
+        65535,
+        65535
+      ]
+    }
   }
 }"#;
 
@@ -408,21 +419,21 @@ mod tests {
 
     #[test]
     fn a_save_without_a_version_is_not_a_save() {
-        let text = save_with("\"version\": 16,", "");
+        let text = save_with("\"version\": 17,", "");
         assert!(matches!(load_from_str(&text), Err(SaveError::NotASave)));
     }
 
     #[test]
     fn saves_from_other_versions_are_rejected_clearly() {
-        // A save from before structures had properties (and maps saved
-        // tiles): exactly what an old save file on disk looks like after
-        // this build is installed.
-        let text = save_with(r#""version": 16"#, r#""version": 15"#);
+        // A save from before the player remembered what they'd seen:
+        // exactly what an old save file on disk looks like after this
+        // build is installed.
+        let text = save_with(r#""version": 17"#, r#""version": 16"#);
         let err = load_from_str(&text).unwrap_err();
-        assert!(matches!(err, SaveError::UnsupportedVersion { found: 15 }));
+        assert!(matches!(err, SaveError::UnsupportedVersion { found: 16 }));
         assert_eq!(
             err.to_string(),
-            "save file is version 15, but this build only reads version 16"
+            "save file is version 16, but this build only reads version 17"
         );
     }
 

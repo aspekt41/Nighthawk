@@ -53,6 +53,11 @@ pub struct Structure {
     /// Optional: not a ladder.
     #[serde(default)]
     pub climb: Option<Vertical>,
+    /// You can see through it, though it's solid, like a window. Only for
+    /// solid structures (walkable ones never block sight). Optional: solid
+    /// structures block sight.
+    #[serde(default)]
+    pub see_through: bool,
 }
 
 impl Structure {
@@ -62,6 +67,7 @@ impl Structure {
             walkable: self.walkable,
             leak_cm2: self.leak_cm2,
             climb: self.climb,
+            see_through: self.see_through,
         }
     }
 
@@ -73,7 +79,8 @@ impl Structure {
             .u64(self.colour.map_or(u64::MAX, |c| u64::from(c.hash_id())))
             .u8(u8::from(self.walkable))
             .u64(u64::from(self.leak_cm2))
-            .u8(self.climb.map_or(u8::MAX, Vertical::hash_id));
+            .u8(self.climb.map_or(u8::MAX, Vertical::hash_id))
+            .u8(u8::from(self.see_through));
     }
 }
 
@@ -210,6 +217,8 @@ fn check_one(structure: &Structure, materials: &Materials) -> Result<(), Structu
         Some("only solid structures can leak (leak_cm2), and this one is walkable")
     } else if !structure.walkable && structure.climb.is_some() {
         Some("only walkable structures can be ladders (climb)")
+    } else if structure.walkable && structure.see_through {
+        Some("walkable structures never block sight, so see_through is only for solid ones")
     } else {
         None
     };
@@ -317,6 +326,21 @@ pub(crate) mod tests {
             structure("slide", '~', r#", "walkable": true, "climb": "sideways""#)
         );
         assert!(error_of(&sideways).contains("sideways"));
+        let clear_floor = format!(
+            r#"{{ "structures": [ {} ] }}"#,
+            structure(
+                "glass_floor",
+                '.',
+                r#", "walkable": true, "see_through": true"#
+            )
+        );
+        assert!(error_of(&clear_floor).contains("see_through is only for solid ones"));
+        let window = format!(
+            r#"{{ "structures": [ {} ] }}"#,
+            structure("window", '=', r#", "see_through": true"#)
+        );
+        let parsed = parse_structures(&[ContentFile::new("w.json", window)], &test_materials());
+        assert!(parsed.unwrap().list()[0].tile().see_through);
     }
 
     #[test]
@@ -392,7 +416,8 @@ pub(crate) mod tests {
             h.finish()
         };
         let base = test_structures().list()[4].clone();
-        let changes: [fn(&mut Structure); 7] = [
+        let changes: [fn(&mut Structure); 8] = [
+            |s| s.see_through = !s.see_through,
             |s| s.glyph = '=',
             |s| s.walkable = !s.walkable,
             |s| s.leak_cm2 += 1,

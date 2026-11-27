@@ -12,7 +12,8 @@ mod common;
 use std::fs;
 
 use nighthawk_sim::{
-    Blocked, Command, Content, ContentError, ContentFile, Event, Pos, World, options_at, parse_map,
+    Blocked, Command, Content, ContentError, ContentFile, Dir, Event, Pos, Vertical, World,
+    options_at, parse_map,
 };
 
 /// The extra content, per folder: what a modder would write.
@@ -140,9 +141,24 @@ fn with_the_torch_and_a_scrap_the_crack_is_welded_shut() {
 #[test]
 fn the_shipped_ship_still_loads_with_welding_added() {
     let text = fs::read_to_string(common::data_dir().join("maps/aft_ring.json")).unwrap();
-    let world = World::new(parse_map(&text, &content_with_welding()).unwrap(), 1);
+    let mut world = World::new(parse_map(&text, &content_with_welding()).unwrap(), 1);
     assert_eq!(world.area_name(), common::start_world(1).area_name());
-    // Its real crack can be welded now too, with no change to the map.
+    // Its real crack can be welded now too, with no change to the map:
+    // walk up to the crew deck and into the room with the crack in its
+    // hull, so it's in sight.
+    let route = [(Dir::SouthWest, 1), (Dir::North, 6), (Dir::East, 24)]
+        .into_iter()
+        .chain([(Dir::South, 3), (Dir::West, 11), (Dir::North, 3)])
+        .chain([(Dir::NorthEast, 1), (Dir::North, 1)]);
+    for (i, (dir, steps)) in route.enumerate() {
+        if i == 3 {
+            world.apply(Command::Climb(Vertical::Up));
+        }
+        for _ in 0..steps {
+            world.apply(Command::Move(dir));
+        }
+    }
+    assert_eq!(world.player(), Pos::new(23, 1, 1));
     let weld = action(&world, "weld");
     let real_crack = Pos::new(23, 0, 1);
     assert!(

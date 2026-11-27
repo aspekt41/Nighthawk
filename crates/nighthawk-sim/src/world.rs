@@ -15,6 +15,7 @@ use crate::material::Material;
 use crate::pos::{Dir, Pos, Vertical};
 use crate::recipe::{Recipe, RecipeMaterial};
 use crate::rng::{GameRng, Stream};
+use crate::sight::{Remembered, View};
 use crate::structure::Structure;
 
 /// Something the player wants to do. Front-ends turn key presses into these.
@@ -166,13 +167,17 @@ pub struct World {
     floor_items: Vec<FloorItem>,
     /// What the player is wearing; carried items are in its pockets.
     worn: Vec<Item>,
+    /// What the player has seen of the ship, and can see now (D49).
+    view: View,
 }
 
 impl World {
     /// A new game on a loaded map, with the player at the map's `@`, the
-    /// clock at 0 seconds, and all randomness derived from `seed`.
+    /// clock at 0 seconds, and all randomness derived from `seed`. The
+    /// player starts out seeing what's around them.
     pub fn new(loaded: LoadedMap, seed: u64) -> Self {
-        Self {
+        let view = View::new(loaded.map.tile_count());
+        let mut world = Self {
             deck_names: loaded.deck_names,
             map: loaded.map,
             player: loaded.player_start,
@@ -184,7 +189,32 @@ impl World {
             content: loaded.content,
             floor_items: loaded.floor_items,
             worn: loaded.worn,
-        }
+            view,
+        };
+        world.refresh_view();
+        world
+    }
+
+    /// Works out what the player can see from where they stand now, and
+    /// remembers it. Done after every command, since anything that changes
+    /// (where you are, a door, an item) changes what you see.
+    fn refresh_view(&mut self) {
+        // `items` and `self.view` are different fields of `self`, so one
+        // can be read while the other changes.
+        let items = &self.floor_items;
+        let top_item = |p: Pos| items.iter().find(|f| f.at == p).map(|f| f.item.kind);
+        self.view.refresh(&self.map, self.player, &top_item);
+    }
+
+    /// Whether the player can see the tile at `p` right now.
+    pub fn is_visible(&self, p: Pos) -> bool {
+        self.view.is_visible(&self.map, p)
+    }
+
+    /// What the player remembers of the tile at `p` (the last they saw of
+    /// it), if they've ever seen it. For a tile in view, it's as it is now.
+    pub fn remembered(&self, p: Pos) -> Option<Remembered> {
+        self.view.remembered(&self.map, p)
     }
 
     /// The name of the deck the player is on, like "Stasis bay".
@@ -323,7 +353,7 @@ impl World {
         if !self.is_conscious() {
             return Vec::new();
         }
-        match command {
+        let events = match command {
             Command::Move(dir) => self.walk(dir),
             Command::Climb(way) => self.climb(way),
             Command::Interact { at, action } => self.interact(at, action),
@@ -333,7 +363,9 @@ impl World {
                 self.pass_time(WAIT_SECONDS, &mut events);
                 events
             }
-        }
+        };
+        self.refresh_view();
+        events
     }
 
     fn walk(&mut self, dir: Dir) -> Vec<Event> {
@@ -661,7 +693,11 @@ impl World {
         let structures = self.content.structures();
         self.map
             .rebuild_tiles(|i| structures.get(usize::from(i)).map(Structure::tile))?;
-        self.check_consistent()
+        self.check_consistent()?;
+        let (tiles, kinds) = (self.map.tile_count(), self.item_types().len());
+        self.view.check(tiles, self.structures().len(), kinds)?;
+        self.refresh_view();
+        Ok(())
     }
 
     /// Checks the breath and warmth meters aren't over full.
@@ -735,6 +771,7 @@ impl World {
         for worn in &self.worn {
             worn.hash_into(&mut h);
         }
+        self.view.hash_into(&mut h);
         h.finish()
     }
 }
@@ -1151,7 +1188,7 @@ mod tests {
         let rows = ["#####", "#@+.#", "#####"];
         let json = format!(
             r##"{{ "id": "t", "name": "T", "legend": {{ "#": "wall", ".": "floor",
-                     "+": "door", "'": "open_door" }},
+                     "+": "door" }},
                   "decks": [ {{ "rows": {rows:?} }} ] }}"##
         );
         World::new(parse_map(&json).expect("test map is valid"), TEST_SEED)
@@ -1637,18 +1674,96 @@ mod tests {
     #[test]
     fn a_blocked_interaction_says_why_and_costs_no_time() {
         let mut world = door_world();
-        let events = world.apply(Command::Interact {
-            at: Pos::new(3, 1, 0),
-            action: OPEN,
-        });
+        let unable = |world: &mut World, at| world.apply(Command::Interact { at, action: OPEN });
+        let wall = unable(&mut world, Pos::new(1, 0, 0));
         assert_eq!(
-            events,
+            wall,
             vec![Event::Unable {
                 action: OPEN,
                 blocked: Blocked::NotPossible
             }]
         );
+        let behind_the_door = unable(&mut world, Pos::new(3, 1, 0));
+        assert_eq!(
+            behind_the_door,
+            vec![Event::Unable {
+                action: OPEN,
+                blocked: Blocked::CantSee
+            }]
+        );
         assert_eq!(world.seconds(), 0);
+    }
+
+    // --- Sight -----------------------------------------------------------------
+
+    #[test]
+    fn you_see_your_surroundings_from_the_start_and_remember_them() {
+        let world = door_world(); // #@+.#, door at (2, 1)
+        assert!(world.is_visible(world.player()));
+        assert!(world.is_visible(DOOR), "the shut door");
+        assert!(!world.is_visible(Pos::new(3, 1, 0)), "behind it");
+        assert_eq!(world.remembered(DOOR).unwrap().structure, SHUT);
+        assert_eq!(world.remembered(Pos::new(3, 1, 0)), None);
+    }
+
+    #[test]
+    fn opening_a_door_shows_what_is_beyond_and_memory_keeps_it_after() {
+        let mut world = door_world();
+        world.apply(Command::Move(Dir::East)); // open
+        let beyond = Pos::new(3, 1, 0);
+        assert!(world.is_visible(beyond));
+        world.apply(close_toward(&world, Dir::East));
+        assert!(!world.is_visible(beyond), "shut out of sight again");
+        let floor = world.content().structure_index("floor").unwrap();
+        assert_eq!(world.remembered(beyond).unwrap().structure, floor);
+        assert_eq!(world.remembered(DOOR).unwrap().structure, SHUT);
+    }
+
+    #[test]
+    fn memory_keeps_the_door_as_it_was_last_seen() {
+        // Open the door, walk away round a corner so it's out of sight, and
+        // it's remembered open; it is open, as it happens, but memory never
+        // looks: change it behind the player's back and memory stays open.
+        let mut world = door_world();
+        world.apply(Command::Move(Dir::East)); // open
+        assert_eq!(world.remembered(DOOR).unwrap().structure, OPENED);
+        world.map.place(DOOR, SHUT, Tile::WALL); // shut, unseen...
+        world.view = {
+            // ...as if the player had looked away: keep memory, see nothing
+            let mut blind = world.view.clone();
+            blind.refresh(&world.map, Pos::new(99, 99, 0), &|_| None);
+            blind
+        };
+        assert_eq!(world.remembered(DOOR).unwrap().structure, OPENED);
+    }
+
+    #[test]
+    fn items_seen_lying_about_are_remembered_by_kind() {
+        let mut world = world_with_items(); // cutter and scraps at (3, 1)
+        let pile = Pos::new(3, 1, 0);
+        let first = world.items_at(pile).next().unwrap().kind;
+        assert_eq!(world.remembered(pile).unwrap().item, Some(first));
+        world.apply(Command::Interact {
+            at: pile,
+            action: PICK_UP,
+        });
+        let left = world.items_at(pile).next().map(|i| i.kind);
+        assert_eq!(world.remembered(pile).unwrap().item, left, "seen again");
+    }
+
+    #[test]
+    fn what_you_remember_is_part_of_the_state_hash_and_survives_loading() {
+        let mut world = door_world();
+        world.apply(Command::Move(Dir::East)); // open: see beyond...
+        world.apply(close_toward(&world, Dir::East)); // ...and shut it
+        let mut forgetful = world.clone();
+        forgetful.view = View::new(world.map.tile_count());
+        forgetful.refresh_view();
+        assert_ne!(world.state_hash(), forgetful.state_hash());
+        let loaded = crate::save::load_from_str(&crate::save::save_to_string(&world)).unwrap();
+        assert_eq!(loaded, world);
+        assert!(loaded.is_visible(DOOR), "worked out again on load");
+        assert!(loaded.remembered(Pos::new(3, 1, 0)).is_some());
     }
 
     // --- Structures -----------------------------------------------------------

@@ -5,7 +5,9 @@
 //! action means on the current screen. There's no terminal code here, so all
 //! of it can be tested directly.
 
-use nighthawk_sim::{ActionOption, Cause, Command, DateTime, LoadedMap, Pos, World, options_at};
+use nighthawk_sim::{
+    ActionOption, Blocked, Cause, Command, DateTime, LoadedMap, Pos, World, options_at,
+};
 use ratatui::crossterm::event::KeyEvent;
 
 use crate::keys::{self, CursorAction, GameAction, InventoryAction, TitleAction};
@@ -259,6 +261,9 @@ impl App {
         // Work out what to say first: `world` borrows `self`, and logging
         // needs to change `self`, so the borrow has to end before logging.
         let refusal = match pick {
+            None if !world.is_visible(at) => {
+                Some(text::blocked_text(Blocked::CantSee, 0, Some(world)))
+            }
             None => Some("There's nothing to do with that here.".to_string()),
             Some(&ActionOption {
                 action,
@@ -1083,6 +1088,15 @@ mod tests {
             "There's nothing to do with that here. (×2)",
             "said twice in a row, so counted"
         );
+    }
+
+    #[test]
+    fn choosing_something_out_of_sight_says_you_cannot_see_it() {
+        let (mut app, _dir) = by_a_door();
+        press_all(&mut app, "ekkk"); // into the cabin behind the shut door
+        app.handle_key(key(KeyCode::Enter));
+        assert_eq!(last_log(&app), "You can't see there.");
+        assert!(app.cursor.is_some(), "so you can pick something else");
     }
 
     #[test]

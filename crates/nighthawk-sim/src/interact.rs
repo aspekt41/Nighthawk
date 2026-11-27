@@ -21,6 +21,9 @@ use crate::world::World;
 /// Why an action can't be done right now.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Blocked {
+    /// You can't see the tile (it's out of sight, or later, in the dark),
+    /// so you can't act on it, or even tell what's there.
+    CantSee,
     /// The tile is further than the action's reach, or on another deck.
     TooFar { reach: u32 },
     /// Something solid is between you and the tile.
@@ -52,8 +55,12 @@ pub struct ActionOption {
 
 /// The actions that make sense on the tile at `at`, in menu order, each
 /// with what blocks it. Empty for tiles with nothing to do, like open
-/// floor.
+/// floor, and for tiles you can't see (the list would give away what's
+/// there).
 pub fn options_at(world: &World, at: Pos) -> Vec<ActionOption> {
+    if !world.is_visible(at) {
+        return Vec::new();
+    }
     // `(0..).zip(list)` numbers the actions as it goes: 0, 1, 2…
     (0..)
         .zip(world.content().actions())
@@ -66,8 +73,12 @@ pub fn options_at(world: &World, at: Pos) -> Vec<ActionOption> {
 }
 
 /// What stops the player doing action number `action` to the tile at
-/// `at` right now, or `None` if nothing does.
+/// `at` right now, or `None` if nothing does. A tile you can't see comes
+/// first: you can't tell what else is wrong with it.
 pub fn blocked(world: &World, at: Pos, action: u16) -> Option<Blocked> {
+    if !world.is_visible(at) {
+        return Some(Blocked::CantSee);
+    }
     match world.content().actions().get(usize::from(action)) {
         Some(action) if applies(world, at, action) => rules(world, at, action),
         _ => Some(Blocked::NotPossible),
@@ -75,11 +86,9 @@ pub fn blocked(world: &World, at: Pos, action: u16) -> Option<Blocked> {
 }
 
 /// Whether `action` makes sense at `at` at all: there's a recipe for it
-/// (opening a door is one), or there are items to pick up.
+/// (opening a door is one), or there are items to pick up. Off the map
+/// there's neither (and it's never in sight, which is checked first).
 fn applies(world: &World, at: Pos, action: &Action) -> bool {
-    if !world.map().in_bounds(at) {
-        return false;
-    }
     match action.effect {
         Effect::Recipe => world.recipe_for(&action.id, at).is_some(),
         Effect::PickUp => world.items_at(at).next().is_some(),
@@ -308,9 +317,12 @@ mod tests {
         assert_eq!(w.player(), Pos::new(2, 2, 0));
         assert_eq!(
             blocked(&w, Pos::new(4, 2, 0), CUT),
-            Some(Blocked::InTheWay {
-                at: Pos::new(3, 2, 0)
-            })
+            Some(Blocked::CantSee),
+            "hidden right behind it, so first of all you can't see it"
+        );
+        assert!(
+            options_at(&w, Pos::new(4, 2, 0)).is_empty(),
+            "nothing given away"
         );
         // The near half itself is right beside you: only the tool is
         // missing.
@@ -319,6 +331,31 @@ mod tests {
             Some(Blocked::Needs {
                 quality: 0, // LASER, the first test quality
                 level: 2
+            })
+        );
+    }
+
+    #[test]
+    fn a_wall_seen_past_a_corner_can_still_be_in_the_way_of_the_laser() {
+        // From (1, 1), the wall at (3, 2) is seen past the corner of the
+        // wall at (2, 2), but the laser's straight line runs through it.
+        //
+        //     #####
+        //     #@..#
+        //     #.###
+        //     #####
+        let rows = ["#####", "#@..#", "#.###", "#####"];
+        let json = format!(
+            r##"{{ "id": "t", "name": "T", "legend": {{ "#": "wall", ".": "floor" }},
+                 "decks": [ {{ "rows": {rows:?} }} ] }}"##
+        );
+        let w = with_laser(World::new(parse_map(&json).unwrap(), 1), 2);
+        let target = Pos::new(3, 2, 0);
+        assert!(w.is_visible(target));
+        assert_eq!(
+            blocked(&w, target, CUT),
+            Some(Blocked::InTheWay {
+                at: Pos::new(2, 2, 0)
             })
         );
     }
@@ -350,7 +387,8 @@ mod tests {
         );
         assert_eq!(
             blocked(&w, Pos::new(9, 9, 9), CUT),
-            Some(Blocked::NotPossible)
+            Some(Blocked::CantSee),
+            "off the map there's nothing to see"
         );
         assert_eq!(
             blocked(&w, Pos::new(1, 3, 0), 999),

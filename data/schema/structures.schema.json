@@ -105,6 +105,11 @@
           "description": "How it's shown to the player, like \"bulkhead\".",
           "type": "string"
         },
+        "see_through": {
+          "description": "You can see through it, though it's solid, like a window. Only for\nsolid structures (walkable ones never block sight). Optional: solid\nstructures block sight.",
+          "type": "boolean",
+          "default": false
+        },
         "walkable": {
           "description": "You can walk on it, and air fills it. Optional: left out, it's\nsolid and airtight, like a wall or a shut door.",
           "type": "boolean",

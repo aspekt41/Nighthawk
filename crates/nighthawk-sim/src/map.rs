@@ -26,6 +26,9 @@ pub struct Tile {
     /// A ladder: which way it goes, up to the deck above or down to the one
     /// below. Must be matched by a ladder the other way there.
     pub climb: Option<Vertical>,
+    /// A solid tile you can see through, like a window. (Walkable tiles
+    /// never block sight.)
+    pub see_through: bool,
 }
 
 impl Tile {
@@ -43,6 +46,11 @@ impl Tile {
     pub fn hole_cm2(self) -> u64 {
         u64::from(self.leak_cm2)
     }
+
+    /// Whether this tile stops sight: solid, and not see-through.
+    pub fn blocks_sight(self) -> bool {
+        !self.walkable && !self.see_through
+    }
 }
 
 /// Tiles with each kind of property, for tests that build maps directly.
@@ -52,6 +60,11 @@ impl Tile {
         walkable: false,
         leak_cm2: 0,
         climb: None,
+        see_through: false,
+    };
+    pub(crate) const WINDOW: Tile = Tile {
+        see_through: true,
+        ..Tile::WALL
     };
     pub(crate) const FLOOR: Tile = Tile {
         walkable: true,
@@ -631,6 +644,11 @@ impl Map {
         }
     }
 
+    /// How many tiles the map has, over all its decks.
+    pub(crate) fn tile_count(&self) -> usize {
+        self.structure.len()
+    }
+
     /// Where `p` lives in the flat tile and air vectors, for matching it
     /// against the tiles [`Map::spread_air`] reports.
     pub(crate) fn index_of(&self, p: Pos) -> Option<usize> {
@@ -656,6 +674,13 @@ mod tests {
         assert!(Tile::FLOOR.is_walkable() && Tile::FLOOR.holds_air());
         assert!(!Tile::WALL.is_walkable() && !Tile::WALL.holds_air());
         assert_eq!(Tile::default(), Tile::WALL, "solid unless it says");
+    }
+
+    #[test]
+    fn solid_tiles_block_sight_unless_see_through() {
+        assert!(Tile::WALL.blocks_sight() && Tile::CRACK.blocks_sight());
+        assert!(!Tile::FLOOR.blocks_sight() && !Tile::LADDER_UP.blocks_sight());
+        assert!(!Tile::WINDOW.blocks_sight() && !Tile::WINDOW.holds_air());
     }
 
     #[test]

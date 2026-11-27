@@ -22,6 +22,7 @@ mod air;
 mod body;
 mod calendar;
 mod content;
+mod fov;
 mod hash;
 mod heat;
 mod interact;
@@ -35,6 +36,7 @@ mod recipe;
 mod rng;
 mod save;
 mod schema;
+mod sight;
 mod structure;
 mod world;
 
@@ -63,6 +65,7 @@ pub use recipe::{Recipe, RecipeError, RecipeMaterial, Use};
 pub use rng::{GameRng, Stream};
 pub use save::{SAVE_FORMAT, SAVE_VERSION, SaveError, load_from_str, save_to_string};
 pub use schema::data_schemas;
+pub use sight::Remembered;
 pub use structure::{Structure, StructureError};
 pub use world::{
     CLIMB_SECONDS, Command, DIAGONAL_STEP_SECONDS, DROP_SECONDS, Event, STEP_SECONDS, Sound,

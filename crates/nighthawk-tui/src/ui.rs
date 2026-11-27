@@ -271,16 +271,24 @@ impl MapView<'_> {
 }
 
 /// The character and colour for one map cell. The player is drawn on top of
-/// whatever tile they stand on. Off-map cells are blank.
+/// whatever tile they stand on. Tiles out of sight are drawn as
+/// remembered; off-map cells are blank.
 fn glyph_at(world: &World, pos: Pos, overlay: Option<Overlay>) -> (String, Style) {
     if pos == world.player() {
         let style = Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD);
         return ("@".into(), style);
     }
+    // Off the map is never in sight, so it goes the way of the unseen.
+    match world.map().get(pos).filter(|_| world.is_visible(pos)) {
+        Some(tile) => visible_glyph(world, pos, tile, overlay),
+        None => remembered_glyph(world, pos),
+    }
+}
+
+/// How a tile in sight looks: the top item lying on it, an overlay's
+/// shading, or the structure.
+fn visible_glyph(world: &World, pos: Pos, tile: Tile, overlay: Option<Overlay>) -> (String, Style) {
     let map = world.map();
-    let Some(tile) = map.get(pos) else {
-        return (" ".into(), Style::new());
-    };
     // Items lying on the floor show on top, unless an overlay is shading it.
     if overlay.is_none()
         && let Some(item) = world.items_at(pos).next()
@@ -297,6 +305,26 @@ fn glyph_at(world: &World, pos: Pos, overlay: Option<Overlay>) -> (String, Style
     };
     (shaded.0.to_string(), shaded.1)
 }
+
+/// How a tile out of sight looks: what was last seen there (the top item
+/// if there was one, else the structure), all in one dim colour so it's
+/// clearly memory, not sight. Never seen: blank.
+fn remembered_glyph(world: &World, pos: Pos) -> (String, Style) {
+    let Some(seen) = world.remembered(pos) else {
+        return (" ".into(), Style::new());
+    };
+    let item = seen
+        .item
+        .and_then(|kind| world.item_types().get(usize::from(kind)))
+        .map(|t| t.glyph);
+    let structure = world.structures().get(usize::from(seen.structure));
+    let glyph = item.or(structure.map(|s| s.glyph)).unwrap_or('?');
+    (glyph.to_string(), REMEMBERED)
+}
+
+/// The colour of remembered tiles: dark grey, dimmed where the terminal
+/// can.
+const REMEMBERED: Style = Style::new().fg(Color::DarkGray).add_modifier(Modifier::DIM);
 
 /// How an item lying on the floor looks: its type's glyph, in its
 /// material's colour, bold so it stands out from the floor.
@@ -549,17 +577,58 @@ fn look_lines(world: &World, at: Pos) -> Vec<Line<'static>> {
         Line::raw(format!("Look  {}, {}  deck {}", at.x, at.y, at.z)),
         here,
     ];
+    if world.is_visible(at) {
+        lines.extend(seen_lines(world, at));
+    } else {
+        lines.extend(memory_lines(world, at));
+    }
+    lines.extend([
+        Line::raw(""),
+        Line::styled("move  hjkl yubn", dim),
+        Line::styled("Esc   stop looking", dim),
+    ]);
+    lines
+}
+
+/// What the look panel says about a tile in sight: its name, its
+/// material, and the air there.
+fn seen_lines(world: &World, at: Pos) -> Vec<Line<'static>> {
     let tile = world.map().get(at).unwrap_or_default();
-    lines.push(Line::raw(tile_name(world, at, tile)));
+    let mut lines = vec![Line::raw(tile_name(world, at, tile))];
     if let Some(material) = world.material_at(at) {
         lines.extend(material_lines(world, material));
     }
     lines.push(Line::raw(""));
     lines.extend(air_here(world, at, tile));
+    lines
+}
+
+/// What the look panel says about a tile out of sight: what's remembered
+/// of it (only what it was and what lay there: you can't read its air
+/// from here), or that it hasn't been seen.
+fn memory_lines(world: &World, at: Pos) -> Vec<Line<'static>> {
+    let dim = Style::new().fg(Color::DarkGray);
+    let Some(seen) = world.remembered(at) else {
+        return vec![Line::styled("You haven't seen this.", dim)];
+    };
+    let name = world
+        .structures()
+        .get(usize::from(seen.structure))
+        .map_or_else(|| "Something".into(), |s| capitalised(&s.name));
+    let mut lines = vec![Line::raw(name)];
+    if let Some(t) = seen
+        .item
+        .and_then(|k| world.item_types().get(usize::from(k)))
+    {
+        lines.extend([
+            Line::raw("Last seen here:"),
+            Line::raw(capitalised(&t.name)),
+        ]);
+    }
     lines.extend([
         Line::raw(""),
-        Line::styled("move  hjkl yubn", dim),
-        Line::styled("Esc   stop looking", dim),
+        Line::styled("Out of sight:", dim),
+        Line::styled("as you remember it", dim),
     ]);
     lines
 }
@@ -663,11 +732,29 @@ fn interact_panel(world: &World, at: Pos) -> Paragraph<'static> {
 
 fn interact_lines(world: &World, at: Pos) -> Vec<Line<'static>> {
     let dim = Style::new().fg(Color::DarkGray);
+    let mut lines = vec![Line::raw(format!(
+        "At    {}, {}  deck {}",
+        at.x, at.y, at.z
+    ))];
+    if world.is_visible(at) {
+        lines.extend(option_list(world, at));
+    } else {
+        lines.push(Line::styled("You can't see there.", dim));
+    }
+    lines.extend([
+        Line::raw(""),
+        Line::styled("Enter first option", dim),
+        Line::styled("move  hjkl yubn", dim),
+        Line::styled("Esc   cancel", dim),
+    ]);
+    lines
+}
+
+/// The interact panel for a tile in sight: what it is, then what can be
+/// done to it.
+fn option_list(world: &World, at: Pos) -> Vec<Line<'static>> {
     let tile = world.map().get(at).unwrap_or_default();
-    let mut lines = vec![
-        Line::raw(format!("At    {}, {}  deck {}", at.x, at.y, at.z)),
-        Line::raw(tile_name(world, at, tile)),
-    ];
+    let mut lines = vec![Line::raw(tile_name(world, at, tile))];
     if let Some(material) = world.material_at(at) {
         lines.push(Line::styled(
             material.name.clone(),
@@ -677,17 +764,12 @@ fn interact_lines(world: &World, at: Pos) -> Vec<Line<'static>> {
     lines.push(Line::raw(""));
     let options = options_at(world, at);
     if options.is_empty() {
+        let dim = Style::new().fg(Color::DarkGray);
         lines.push(Line::styled("Nothing to do here.", dim));
     }
     for option in options {
         lines.extend(option_lines(world, at, option));
     }
-    lines.extend([
-        Line::raw(""),
-        Line::styled("Enter first option", dim),
-        Line::styled("move  hjkl yubn", dim),
-        Line::styled("Esc   cancel", dim),
-    ]);
     lines
 }
 
@@ -748,8 +830,21 @@ fn item_name(world: &World, id: &str) -> String {
 }
 
 /// The bottom panel in look mode: what's lying there, what the structure
-/// is, then what it's made of, wrapped.
+/// is, then what it's made of, wrapped. Out of sight, only what's
+/// remembered.
 fn description(world: &World, at: Pos) -> Paragraph<'static> {
+    let text = if world.is_visible(at) {
+        seen_description(world, at)
+    } else {
+        remembered_description(world, at)
+    };
+    Paragraph::new(text)
+        .wrap(Wrap { trim: true })
+        .block(Block::bordered().title(" About "))
+}
+
+/// The About text for a tile in sight.
+fn seen_description(world: &World, at: Pos) -> String {
     let structure = world
         .structure_at(at)
         .map_or("", |s| s.description.as_str());
@@ -757,9 +852,16 @@ fn description(world: &World, at: Pos) -> Paragraph<'static> {
         .material_at(at)
         .map_or(String::new(), |m| format!("{}: {}", m.name, m.description));
     let items = items_here(world, at);
-    Paragraph::new(format!("{items}{structure} {material}"))
-        .wrap(Wrap { trim: true })
-        .block(Block::bordered().title(" About "))
+    format!("{items}{structure} {material}")
+}
+
+/// The About text for a tile out of sight: the remembered structure's
+/// description, or nothing.
+fn remembered_description(world: &World, at: Pos) -> String {
+    world
+        .remembered(at)
+        .and_then(|seen| world.structures().get(usize::from(seen.structure)))
+        .map_or_else(String::new, |s| s.description.clone())
 }
 
 /// "On the floor: basic laser cutter (Aluminium Alloy), 4 × scrap
@@ -1038,8 +1140,16 @@ mod tests {
 
     #[test]
     fn every_structure_on_the_real_map_draws_its_own_glyph() {
+        // As it looks in sight, wherever it is (most of it is out of sight
+        // from the start).
         let world = real_world();
-        let glyph = |x, y, z| glyph_at(&world, Pos::new(x, y, z), None).0;
+        let glyph = |x, y, z| {
+            let pos = Pos::new(x, y, z);
+            match world.map().get(pos) {
+                Some(tile) => structure_glyph(&world, pos, tile).0,
+                None => glyph_at(&world, pos, None).0,
+            }
+        };
         assert_eq!(glyph(5, 7, 0), ".", "deck plating");
         assert_eq!(glyph(0, 7, 0), "#", "hull plating");
         assert_eq!(glyph(33, 2, 0), ">", "ladder up");
@@ -1067,6 +1177,90 @@ mod tests {
         }
         assert_eq!(world.player(), Pos::new(11, 5, 1));
         assert_eq!(glyph_at(&world, Pos::new(11, 4, 1), None).0, "'");
+    }
+
+    #[test]
+    fn tiles_never_seen_are_blank_and_remembered_ones_are_dim() {
+        let mut world = real_world();
+        let (inside, hull) = (Pos::new(5, 7, 0), Pos::new(0, 7, 0));
+        assert_eq!(glyph_at(&world, inside, None), (" ".into(), Style::new()));
+        // Walk to the side room's door, open it to look in, and shut it.
+        for _ in 0..3 {
+            world.apply(Command::Move(Dir::West));
+        }
+        world.apply(Command::Move(Dir::West)); // opens it
+        let floor = Style::new().fg(Color::DarkGray);
+        assert_eq!(glyph_at(&world, inside, None), (".".into(), floor));
+        world.apply(Command::Interact {
+            at: Pos::new(6, 7, 0),
+            action: number(&world, "close"),
+        });
+        assert_eq!(glyph_at(&world, inside, None), (".".into(), REMEMBERED));
+        assert_eq!(glyph_at(&world, hull, None), ("#".into(), REMEMBERED));
+        let overlaid = glyph_at(&world, inside, Some(Overlay::Air));
+        assert_eq!(
+            overlaid.1, REMEMBERED,
+            "overlays only shade what's in sight"
+        );
+    }
+
+    /// The real world, after climbing to the crew deck: everything on the
+    /// stasis deck is out of sight, but remembered.
+    fn upstairs_world() -> World {
+        let mut world = real_world();
+        use nighthawk_sim::Command::{Climb, Move};
+        let route = std::iter::repeat_n(Move(Dir::North), 5)
+            .chain(std::iter::repeat_n(Move(Dir::East), 23))
+            .chain([Climb(nighthawk_sim::Vertical::Up)]);
+        for command in route {
+            world.apply(command);
+        }
+        assert_eq!(world.player().z, 1);
+        world
+    }
+
+    #[test]
+    fn remembered_items_show_where_they_were_last_seen() {
+        let world = upstairs_world();
+        let cutter = Pos::new(12, 7, 0);
+        let kind = world.items_at(cutter).next().unwrap().kind;
+        let glyph = world.item_types()[usize::from(kind)].glyph;
+        assert_eq!(glyph_at(&world, cutter, None), (glyph.into(), REMEMBERED));
+        let lines = look_texts(&world, cutter);
+        let name = &world.item_types()[usize::from(kind)].name;
+        assert_eq!(lines[2], "Deck plating");
+        assert_eq!(lines[3], "Last seen here:");
+        assert_eq!(lines[4], capitalised(name));
+        assert!(lines.contains(&"Out of sight:".to_string()));
+        assert!(
+            !lines.iter().any(|l| l.starts_with("Air")),
+            "no air readings"
+        );
+    }
+
+    #[test]
+    fn looking_out_of_sight_shows_only_memory() {
+        let world = upstairs_world();
+        let hull = Pos::new(20, 0, 0);
+        let lines = look_texts(&world, hull);
+        assert_eq!(lines[2], "Hull plating");
+        assert!(
+            !lines.contains(&"Nanocarbon Alloy".to_string()),
+            "{lines:?}"
+        );
+        let about = |at| {
+            let area = Rect::new(0, 0, 60, 5);
+            let mut buf = Buffer::empty(area);
+            description(&world, at).render(area, &mut buf);
+            (0..5)
+                .map(|y| (0..60).map(|x| buf[(x, y)].symbol()).collect::<String>())
+                .collect::<String>()
+        };
+        assert!(about(hull).contains("The outer hull."));
+        assert!(!about(hull).contains("Nanocarbon"));
+        let never = Pos::new(5, 7, 0);
+        assert_eq!(look_texts(&world, never)[2], "You haven't seen this.");
+        assert!(!about(never).contains('.'), "nothing to say");
     }
 
     #[test]
@@ -1293,9 +1487,14 @@ mod tests {
 
         // Climb to the crew deck, which starts at 60% pressure.
         use nighthawk_sim::Command::{Climb, Move};
+        // The corridor soon fills from the shaft, so go along it and open
+        // a cabin door to look in.
         let route = std::iter::repeat_n(Move(Dir::North), 5)
             .chain(std::iter::repeat_n(Move(Dir::East), 23))
-            .chain([Climb(nighthawk_sim::Vertical::Up)]);
+            .chain([Climb(nighthawk_sim::Vertical::Up)])
+            .chain(std::iter::repeat_n(Move(Dir::South), 3))
+            .chain(std::iter::repeat_n(Move(Dir::West), 11))
+            .chain([Move(Dir::North)]);
         for command in route {
             world.apply(command);
         }
@@ -1332,8 +1531,8 @@ mod tests {
     #[test]
     fn looking_at_the_hull_shows_its_material_and_laser_level() {
         let world = real_world();
-        let lines = look_texts(&world, Pos::new(0, 7, 0));
-        assert_eq!(lines[0], "Look  0, 7  deck 0");
+        let lines = look_texts(&world, Pos::new(20, 0, 0));
+        assert_eq!(lines[0], "Look  20, 0  deck 0");
         assert_eq!(lines[2], "Hull plating");
         assert_eq!(lines[3], "Nanocarbon Alloy");
         assert!(lines.contains(&"Cut by   LASER 5".to_string()));
@@ -1353,9 +1552,16 @@ mod tests {
 
     #[test]
     fn the_look_panel_fits_a_minimum_terminal_wherever_it_points() {
-        let world = real_world();
+        // From the start, most tiles are unseen; from upstairs, all of
+        // the stasis deck is remembered.
+        for world in [real_world(), upstairs_world()] {
+            look_panel_fits(&world);
+        }
+    }
+
+    fn look_panel_fits(world: &World) {
         for at in world.map().positions() {
-            let lines = look_lines(&world, at);
+            let lines = look_lines(world, at);
             assert!(lines.len() <= 16, "{at:?}: {} lines", lines.len());
             for line in &lines {
                 assert!(line.width() <= usize::from(SIDEBAR_WIDTH - 2), "{line}");
@@ -1389,7 +1595,7 @@ mod tests {
         let view = View {
             overlay: None,
             cursor: Some(Cursor {
-                at: Pos::new(0, 7, 0),
+                at: Pos::new(20, 0, 0),
                 mode: CursorMode::Look,
             }),
             inventory: None,
@@ -1426,7 +1632,7 @@ mod tests {
     #[test]
     fn walls_are_drawn_in_their_materials_colour() {
         let world = real_world();
-        let hull = glyph_at(&world, Pos::new(0, 7, 0), None);
+        let hull = glyph_at(&world, Pos::new(20, 0, 0), None);
         let pillar = glyph_at(&world, Pos::new(15, 5, 0), None);
         assert_eq!(hull, ("#".to_string(), Style::new().fg(Color::DarkGray)));
         assert_eq!(pillar, ("#".to_string(), Style::new().fg(Color::Gray)));
@@ -1484,17 +1690,40 @@ mod tests {
     #[test]
     fn the_hull_offers_nothing_to_do_until_there_is_a_recipe_for_it() {
         let world = real_world();
-        let lines = interact_texts(&world, Pos::new(0, 7, 0));
+        let lines = interact_texts(&world, Pos::new(20, 0, 0));
         assert_eq!(lines[1], "Hull plating");
         assert_eq!(lines[4], "Nothing to do here.");
     }
 
     #[test]
     fn a_hull_crack_offers_a_repair_that_names_the_scrap_it_uses() {
-        let world = real_world();
+        let mut world = real_world();
+        // Up to the crew deck and into the room with the crack, without
+        // picking up any scrap on the way.
+        use nighthawk_sim::Command::{Climb, Move};
+        let route = std::iter::repeat_n(Move(Dir::North), 5)
+            .chain(std::iter::repeat_n(Move(Dir::East), 23))
+            .chain([Climb(nighthawk_sim::Vertical::Up)])
+            .chain(std::iter::repeat_n(Move(Dir::South), 3))
+            .chain(std::iter::repeat_n(Move(Dir::West), 11))
+            .chain(std::iter::repeat_n(Move(Dir::North), 3))
+            .chain([Move(Dir::NorthEast), Move(Dir::North)]);
+        for command in route {
+            world.apply(command);
+        }
+        assert_eq!(world.player(), Pos::new(23, 1, 1));
         let lines = interact_texts(&world, Pos::new(23, 0, 1));
         assert_eq!(lines[4], "r  Repair: 1 scrap");
-        assert_eq!(lines[5], "   too far: reach 1");
+        assert_eq!(lines[5], "   needs 1 scrap");
+    }
+
+    #[test]
+    fn what_you_cannot_see_offers_nothing() {
+        let world = real_world();
+        let lines = interact_texts(&world, Pos::new(23, 0, 1));
+        assert_eq!(lines[0], "At    23, 0  deck 1");
+        assert_eq!(lines[1], "You can't see there.");
+        assert!(!lines.iter().any(|l| l.contains("Repair")));
     }
 
     #[test]
