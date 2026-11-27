@@ -84,7 +84,8 @@ Use them by default:
   blocks on standard input, not ad-hoc Python or `sed`. It formats, matches
   ignoring whitespace and rustfmt's trailing commas, refuses an OLD that
   matches nowhere or twice (pointing at the closest text), and writes all
-  edits or none. `--all` replaces every match, for renames.
+  edits or none. `--all` replaces every match, for renames; a `...` line
+  in OLD stands for everything between its first and last lines.
 - **Update a snapshot with `agent-tools/bless.py TEST FILE CONST`** when a
   stored copy of some output (like `EXPECTED_SAVE` in `save.rs`) should
   change on purpose: it takes the failing test's actual value and writes
@@ -177,7 +178,8 @@ precise error and exits with code 1 before entering raw mode.
   `crates/nighthawk-sim/src/world.rs` and `crates/nighthawk-tui/src/ui.rs`).
 - **Test maps and content.** In the sim's unit tests, import
   `crate::map_file::parse_map_for_tests as parse_map`: it parses with a
-  small test set of materials, structures (one per behaviour, named after
+  small test set (`Content::for_tests()`) of qualities (`LASER`, `WELD`),
+  materials, structures (one per behaviour, named after
   it: `"wall"`, `"floor"`, `"door"`…, plus `"frame"`, a floor) and items
   (`"suit"` with two 1 L pockets, `"cutter"` with LASER 1, `"scrap"`) and
   recipes (cutting a `"door"` or a `"wall"` leaves `"floor"`, in 60 s;

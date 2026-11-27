@@ -15,8 +15,34 @@ reads best (`metals.json`, `fabrics.json`…). An id must be unique across all
 the files in its folder. Mistakes name the folder and the file, for example
 `data/structures: invalid structures file doors.json: missing field "name"`.
 
+The folders load in this order, and each may refer to the ones before it:
+`qualities`, `materials`, `structures`, `items`, `recipes`.
+
 Every tile on a map is a **structure** (what it is: a bulkhead, a door)
 made of a **material** (what it's made of: steel, Nanocarbon Alloy).
+
+## Qualities (`qualities/*.json`)
+
+What tools can do (decision D9). A tool has a quality at a level from 1 to
+10 (`LASER 1` is a small laser cutter), and actions ask for a quality at a
+level, never for a particular tool, so there can be many ways to get one.
+Materials and items may only name qualities listed here. There may be none
+at all.
+
+```json
+{
+  "qualities": [
+    { "id": "LASER", "name": "laser cutting",
+      "description": "Cutting with a beam of light: the tool melts a slot through it." }
+  ]
+}
+```
+
+| Field | Meaning |
+|---|---|
+| `id` | Unique. How materials and items name it, and how the game shows it next to a level: "LASER 2". Capitals by convention. |
+| `name` | What it is in words. |
+| `description` | A sentence or two about it. |
 
 ## Materials (`materials/*.json`)
 
@@ -44,7 +70,7 @@ Each material has real physical properties, in whole numbers:
 | `specific_heat` | J/(kg·K) |
 | `thermal_conductivity` | **mW**/(m·K), thousandths of a W/(m·K), so insulators like cotton (40) aren't rounded to zero. Steel is 45000. |
 | `hardness` | Vickers hardness (HV); 0 for soft things like fabric. |
-| `cut_by` | Optional. Tool qualities that cut it, with the level each needs (1 to 10); any one is enough. Leave it out and nothing can cut it. Qualities today: `LASER`. |
+| `cut_by` | Optional. Tool qualities that cut it, with the level each needs (1 to 10); any one is enough. Leave it out and nothing can cut it. Each must be a quality from `qualities/`. |
 
 Mistakes are reported precisely: a duplicate id, or a level out of range.
 
@@ -126,7 +152,7 @@ is, plus whatever is in its pockets.
 | `material` | What it's made of, unless the map says otherwise. |
 | `volume_ml` | How much room it takes, in millilitres (above 0). |
 | `solid_percent` | How much of that volume is solid material, 1 to 100: 100 for a lump of scrap, 50 for a tool full of air and wiring. |
-| `qualities` | Optional. Tool qualities it has, levels 1 to 10, like `{ "LASER": 1 }`. |
+| `qualities` | Optional. Tool qualities it has, levels 1 to 10, like `{ "LASER": 1 }`. Each must be a quality from `qualities/`. |
 | `wear` | Optional. Makes it wearable; `pockets` lists what it gives you to carry things in, each with a `name`, a `volume_ml` and a `max_mass_g`. |
 
 ## Maps (`maps/*.json`)

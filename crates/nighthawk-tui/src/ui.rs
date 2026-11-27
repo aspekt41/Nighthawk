@@ -14,8 +14,8 @@
 //! ```
 
 use nighthawk_sim::{
-    Action, ActionOption, BREATH_FULL, Colour, Item, ItemRef, Material, Mix, PocketType, Pos,
-    Quality, Tile, WARMTH_FULL, World, celsius_to_mk, mk_to_tenths_celsius, options_at,
+    Action, ActionOption, BREATH_FULL, Colour, Item, ItemRef, Material, Mix, PocketType, Pos, Tile,
+    WARMTH_FULL, World, celsius_to_mk, mk_to_tenths_celsius, options_at,
 };
 use ratatui::Frame;
 use ratatui::buffer::Buffer;
@@ -576,7 +576,7 @@ fn cut_by(m: &Material) -> String {
     let each: Vec<String> = m
         .cut_by
         .iter()
-        .map(|(q, level): (&Quality, &u8)| format!("{} {level}", q.name()))
+        .map(|(quality, level)| format!("{quality} {level}"))
         .collect();
     each.join(", ")
 }

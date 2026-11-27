@@ -12,7 +12,7 @@
 //! rules again before doing anything.
 
 use crate::map::Tile;
-use crate::material::Quality;
+
 use crate::pos::Pos;
 use crate::recipe::RecipeAction;
 use crate::world::World;
@@ -92,8 +92,9 @@ pub enum Blocked {
     InTheWay { at: Pos },
     /// You can't close a door you're standing in.
     StandingInIt,
-    /// It needs a tool quality you don't have.
-    Needs { quality: Quality, level: u8 },
+    /// It needs a tool with quality number `quality` (in the world's
+    /// content) at `level`, and you have nothing that good.
+    Needs { quality: u16, level: u8 },
     /// Nothing can cut this material.
     Uncuttable,
     /// The action doesn't apply to this tile (opening a wall, say).
@@ -176,10 +177,14 @@ fn hand_blocked(world: &World, at: Pos) -> Option<Blocked> {
 /// clear line, and you need the tool.
 fn cut_blocked(world: &World, at: Pos) -> Option<Blocked> {
     let material = world.material_at(at)?;
-    let Some((&quality, &level)) = material.cut_by.iter().next() else {
+    let Some((id, &level)) = material.cut_by.iter().next() else {
         return Some(Blocked::Uncuttable);
     };
-    let have = world.tool_level(quality);
+    let have = world.tool_level(id);
+    let quality = world
+        .content()
+        .quality_index(id)
+        .expect("materials name real qualities");
     too_far(world, at, LASER_REACH)
         .or_else(|| in_the_way(world, at))
         .or_else(|| (have < level).then_some(Blocked::Needs { quality, level }))
@@ -258,7 +263,7 @@ mod tests {
                 ActionOption {
                     action: Action::Cut,
                     blocked: Some(Blocked::Needs {
-                        quality: Quality::Laser,
+                        quality: 0, // LASER, the first test quality
                         level: 2
                     })
                 },
@@ -320,7 +325,7 @@ mod tests {
         assert_eq!(
             blocked(&w, Pos::new(3, 2, 0), Action::Cut),
             Some(Blocked::Needs {
-                quality: Quality::Laser,
+                quality: 0, // LASER, the first test quality
                 level: 2
             })
         );

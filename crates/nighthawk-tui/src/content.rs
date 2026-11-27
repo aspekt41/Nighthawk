@@ -237,7 +237,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let missing = load_map(dir.path(), "aft_ring").unwrap_err();
         assert!(matches!(missing, LoadError::Read { .. }));
-        assert!(missing.to_string().contains("materials"));
+        let first = nighthawk_sim::CONTENT_FOLDERS[0];
+        assert!(missing.to_string().contains(first), "{missing}");
     }
 
     #[test]

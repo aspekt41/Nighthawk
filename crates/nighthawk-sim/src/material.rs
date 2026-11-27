@@ -13,50 +13,20 @@
 //! machine computes the same game), and the tool qualities that can cut it,
 //! CDDA-style (decision D9): `"cut_by": { "LASER": 2 }` means a cutter with
 //! the `LASER` quality at level 2 or more gets through. The levels are set
-//! by hand and tuned as the game grows.
+//! by hand and tuned as the game grows. The qualities themselves are
+//! content too (`data/qualities/`, see `quality.rs`), so `cut_by` may only
+//! name qualities from there.
 //!
 //! Materials live in `data/materials/*.json`. Which material a structure is
 //! made of by default is up to the structure (see `structure.rs`).
 
-use std::collections::BTreeMap;
 use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
 use crate::content::{ContentFile, FileError, first_duplicate, read_all};
 use crate::hash::Fnv64;
-
-/// A tool quality (decision D9). Recipes and actions ask for a quality at a
-/// level, never for a particular tool, so there can be many ways to get one.
-///
-/// `Ord` lets qualities be keys of a `BTreeMap`, which always lists them in
-/// the same order (a `HashMap` wouldn't: its order changes from run to run).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-pub enum Quality {
-    /// Cutting with a beam of light: melts a slot through a tile.
-    #[serde(rename = "LASER")]
-    Laser,
-}
-
-impl Quality {
-    /// The name shown to the player and written in data files.
-    pub fn name(self) -> &'static str {
-        match self {
-            Quality::Laser => "LASER",
-        }
-    }
-
-    /// A fixed number per quality, for the state hash. Never change or
-    /// reuse one.
-    fn hash_id(self) -> u8 {
-        match self {
-            Quality::Laser => 0,
-        }
-    }
-}
-
-/// The highest level a quality can have. Levels run from 1 to this.
-pub const MAX_QUALITY_LEVEL: u8 = 10;
+use crate::quality::{LevelError, Levels, Qualities, hash_levels};
 
 /// The colours a material can be drawn in. A short fixed list rather than
 /// any colour at all, so every terminal can show them (decision D16).
@@ -112,7 +82,7 @@ pub struct Material {
     /// The tool qualities that cut it, and the level each needs. Any one
     /// is enough. Empty means nothing can cut it.
     #[serde(default)]
-    pub cut_by: BTreeMap<Quality, u8>,
+    pub cut_by: Levels,
 }
 
 impl Material {
@@ -125,11 +95,8 @@ impl Material {
             .i32(self.melting_point.unwrap_or(i32::MIN))
             .u64(u64::from(self.specific_heat))
             .u64(u64::from(self.thermal_conductivity))
-            .u64(u64::from(self.hardness))
-            .u64(self.cut_by.len() as u64);
-        for (&quality, &level) in &self.cut_by {
-            h.u8(quality.hash_id()).u8(level);
-        }
+            .u64(u64::from(self.hardness));
+        hash_levels(&self.cut_by, h);
     }
 }
 
@@ -167,7 +134,7 @@ impl Materials {
 #[derive(Debug)]
 pub enum MaterialError {
     /// A file that isn't valid JSON, or has the wrong shape: a missing or
-    /// misspelled field, an unknown colour or quality.
+    /// misspelled field, an unknown colour.
     File(FileError),
     NoMaterials,
     /// More materials than a tile can refer to.
@@ -177,11 +144,11 @@ pub enum MaterialError {
     DuplicateId {
         id: String,
     },
-    /// A quality level outside 1 to [`MAX_QUALITY_LEVEL`].
-    BadLevel {
+    /// Its `cut_by` names a quality that doesn't exist, or a level out of
+    /// range.
+    CutBy {
         material: String,
-        quality: Quality,
-        level: u8,
+        error: LevelError,
     },
 }
 
@@ -194,15 +161,9 @@ impl fmt::Display for MaterialError {
                 write!(f, "{count} materials is too many; the most is {}", u16::MAX)
             }
             MaterialError::DuplicateId { id } => write!(f, "material {id:?} is defined twice"),
-            MaterialError::BadLevel {
-                material,
-                quality,
-                level,
-            } => write!(
-                f,
-                "material {material:?} needs {} {level} to cut; levels go from 1 to {MAX_QUALITY_LEVEL}",
-                quality.name()
-            ),
+            MaterialError::CutBy { material, error } => {
+                write!(f, "material {material:?}'s cut_by: {error}")
+            }
         }
     }
 }
@@ -216,10 +177,15 @@ struct MaterialsFile {
     materials: Vec<Material>,
 }
 
-/// Parses and checks every materials file.
-pub(crate) fn parse_materials(files: &[ContentFile]) -> Result<Materials, MaterialError> {
+/// Parses and checks every materials file. What cuts each must be among
+/// `qualities`.
+pub(crate) fn parse_materials(
+    files: &[ContentFile],
+    qualities: &Qualities,
+) -> Result<Materials, MaterialError> {
     let list = read_all(files, |f: MaterialsFile| f.materials).map_err(MaterialError::File)?;
     check_list(&list)?;
+    list.iter().try_for_each(|m| check_levels(m, qualities))?;
     Ok(Materials { list })
 }
 
@@ -235,27 +201,22 @@ fn check_list(list: &[Material]) -> Result<(), MaterialError> {
     if let Some(id) = first_duplicate(list.iter().map(|m| m.id.as_str())) {
         return Err(MaterialError::DuplicateId { id: id.into() });
     }
-    list.iter().try_for_each(check_levels)
+    Ok(())
 }
 
-fn check_levels(material: &Material) -> Result<(), MaterialError> {
-    let bad = material
-        .cut_by
-        .iter()
-        .find(|&(_, &level)| !(1..=MAX_QUALITY_LEVEL).contains(&level));
-    match bad {
-        Some((&quality, &level)) => Err(MaterialError::BadLevel {
+fn check_levels(material: &Material, qualities: &Qualities) -> Result<(), MaterialError> {
+    qualities
+        .check(&material.cut_by)
+        .map_err(|error| MaterialError::CutBy {
             material: material.id.clone(),
-            quality,
-            level,
-        }),
-        None => Ok(()),
-    }
+            error,
+        })
 }
 
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+    use crate::quality::tests::test_qualities;
 
     /// A material with every property filled in, for tests.
     fn material(id: &str, cut_by: &str) -> String {
@@ -279,12 +240,15 @@ pub(crate) mod tests {
 
     /// The parsed test materials, for other modules' tests.
     pub(crate) fn test_materials() -> Materials {
-        parse_materials(&[ContentFile::new("test.json", test_materials_json())])
-            .expect("test materials are valid")
+        parse_materials(
+            &[ContentFile::new("test.json", test_materials_json())],
+            &test_qualities(),
+        )
+        .expect("test materials are valid")
     }
 
     fn parse_one(json: &str) -> Result<Materials, MaterialError> {
-        parse_materials(&[ContentFile::new("metals.json", json)])
+        parse_materials(&[ContentFile::new("metals.json", json)], &test_qualities())
     }
 
     #[test]
@@ -294,8 +258,7 @@ pub(crate) mod tests {
         assert_eq!(materials.index_of("hard_alloy"), Some(1));
         assert_eq!(materials.index_of("cheese"), None);
         let alloy = &materials.list()[1];
-        assert_eq!(alloy.cut_by.get(&Quality::Laser), Some(&5));
-        assert_eq!(Quality::Laser.name(), "LASER");
+        assert_eq!(alloy.cut_by.get("LASER"), Some(&5));
     }
 
     #[test]
@@ -310,7 +273,7 @@ pub(crate) mod tests {
                 format!(r#"{{ "materials": [ {} ] }}"#, material("cotton", "{}")),
             ),
         ];
-        let materials = parse_materials(&files).unwrap();
+        let materials = parse_materials(&files, &test_qualities()).unwrap();
         assert_eq!(materials.index_of("cotton"), Some(1), "file order");
     }
 
@@ -329,21 +292,30 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn misspelled_fields_unknown_qualities_and_colours_are_errors_naming_the_file() {
+    fn misspelled_fields_and_colours_are_errors_naming_the_file() {
         let typo = test_materials_json().replace("\"density\"", "\"densty\"");
         assert!(error_of(&typo).contains("unknown field `densty`"));
-        let quality = test_materials_json().replace("LASER\": 5", "SPOON\": 5");
-        assert!(error_of(&quality).contains("SPOON"));
         let colour = test_materials_json().replace("\"grey\"", "\"plaid\"");
         assert!(error_of(&colour).contains("plaid"));
         assert!(error_of("[").starts_with("invalid materials file metals.json: "));
     }
 
     #[test]
+    fn cut_by_may_only_name_qualities_from_the_qualities_folder() {
+        let quality = test_materials_json().replace("LASER\": 5", "SPOON\": 5");
+        assert_eq!(
+            error_of(&quality),
+            r#"material "hard_alloy"'s cut_by: "SPOON" isn't a quality"#
+        );
+        let welded = test_materials_json().replace("LASER\": 5", "WELD\": 5");
+        assert!(parse_one(&welded).is_ok(), "any quality there is fine");
+    }
+
+    #[test]
     fn no_materials_at_all_is_an_error() {
         assert_eq!(error_of(r#"{ "materials": [] }"#), "there are no materials");
         assert!(matches!(
-            parse_materials(&[]),
+            parse_materials(&[], &test_qualities()),
             Err(MaterialError::NoMaterials)
         ));
     }
@@ -365,7 +337,7 @@ pub(crate) mod tests {
             assert_eq!(
                 error_of(&json),
                 format!(
-                    r#"material "hard_alloy" needs LASER {level} to cut; levels go from 1 to 10"#
+                    r#"material "hard_alloy"'s cut_by: LASER {level} is out of range; levels go from 1 to 10"#
                 )
             );
         }

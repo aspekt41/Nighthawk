@@ -10,9 +10,9 @@ use crate::interact::{self, Action, Blocked};
 use crate::item::{self, FloorItem, Item, ItemContext, ItemPath, ItemRef, ItemType};
 use crate::map::{Map, Tile};
 use crate::map_file::LoadedMap;
-use crate::material::{Material, Quality};
+use crate::material::Material;
 use crate::pos::{Dir, Pos, Vertical};
-use crate::recipe::{self, Recipe, RecipeAction, RecipeMaterial};
+use crate::recipe::{Recipe, RecipeAction, RecipeMaterial};
 use crate::rng::{GameRng, Stream};
 use crate::structure::Structure;
 
@@ -488,13 +488,13 @@ impl World {
     /// The best level of `quality` among everything the player wears or
     /// carries, or 0 with nothing that has it. A tool works from any
     /// pocket (decision D38).
-    pub fn tool_level(&self, quality: Quality) -> u8 {
+    pub fn tool_level(&self, quality: &str) -> u8 {
         let carried = self.carried().into_iter().map(|(_, item)| item);
         self.worn
             .iter()
             .chain(carried)
             .filter_map(|item| self.item_types().get(usize::from(item.kind)))
-            .filter_map(|kind| kind.qualities.get(&quality).copied())
+            .filter_map(|kind| kind.qualities.get(quality).copied())
             .max()
             .unwrap_or(0)
     }
@@ -765,16 +765,8 @@ impl World {
             .u64(self.seed)
             .u64(self.ambient_rng.fingerprint())
             .u64(u64::from(self.breath))
-            .u64(u64::from(self.warmth))
-            .u64(self.materials().len() as u64);
-        for material in self.materials() {
-            material.hash_into(&mut h);
-        }
-        h.u64(self.structures().len() as u64);
-        for structure in self.structures() {
-            structure.hash_into(&mut h);
-        }
-        item::hash_types(self.item_types(), &mut h);
+            .u64(u64::from(self.warmth));
+        self.content.hash_into(&mut h);
         h.u64(self.floor_items.len() as u64);
         for floor in &self.floor_items {
             h.i32(floor.at.x).i32(floor.at.y).i32(floor.at.z);
@@ -784,7 +776,6 @@ impl World {
         for worn in &self.worn {
             worn.hash_into(&mut h);
         }
-        recipe::hash_recipes(self.content.recipes(), &mut h);
         h.finish()
     }
 }
@@ -1887,7 +1878,7 @@ mod tests {
         let mut world = World::new(parse_map(&json).unwrap(), TEST_SEED);
         world.content.item_types.list_mut()[1]
             .qualities
-            .insert(Quality::Laser, level);
+            .insert("LASER".into(), level);
         let cutter = Item::new(1, 0, world.item_types());
         world.worn[0].pockets[0].push(cutter);
         world
@@ -1903,11 +1894,11 @@ mod tests {
     #[test]
     fn the_best_tool_you_carry_sets_your_level() {
         let mut world = cutting_world(3);
-        assert_eq!(world.tool_level(Quality::Laser), 3);
+        assert_eq!(world.tool_level("LASER"), 3);
         world.worn[0].pockets[0].clear();
-        assert_eq!(world.tool_level(Quality::Laser), 0, "nothing carried");
+        assert_eq!(world.tool_level("LASER"), 0, "nothing carried");
         world.worn.clear();
-        assert_eq!(world.tool_level(Quality::Laser), 0, "nothing at all");
+        assert_eq!(world.tool_level("LASER"), 0, "nothing at all");
     }
 
     #[test]
@@ -1935,7 +1926,7 @@ mod tests {
             vec![Event::Unable {
                 action: Action::Cut,
                 blocked: Blocked::Needs {
-                    quality: Quality::Laser,
+                    quality: 0, // LASER, the first test quality
                     level: 2
                 }
             }]

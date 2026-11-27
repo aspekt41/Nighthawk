@@ -67,6 +67,12 @@ EDITS
   was and the tool exits 1, so a bad edit never leaves broken code behind.
   `--allow-broken` keeps it anyway, for a change made in several steps.
 - `--dry-run` checks the edits without changing anything.
+- A line holding only `...` in OLD stands for everything between: the text
+  before it must match exactly one place, and the match runs on to the
+  first place after that where the text after it matches. So a whole
+  function can be replaced by giving its first line, `...`, and its last
+  lines, without copying the middle. Make the text after `...` distinctive
+  (not just `}`), since the first match after the head is used.
 - `--all` lets each OLD match any number of places (at least one) and
   replaces them all: for renames, like `catalogue.` → `content.`. Make
   OLD distinctive, since every match is replaced.

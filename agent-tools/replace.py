@@ -33,6 +33,11 @@ Why not just search and replace:
 To insert, put the line you're inserting after in OLD, and that line plus the
 new ones in NEW. To delete, leave NEW empty.
 
+To replace a long block without copying it all, put a line holding only
+`...` in OLD: the text before it must match exactly one place, and the
+match runs on to the first place after that where the text after it
+matches. So OLD can be a function's first line, `...`, and its last lines.
+
 Exit status: 0 if every edit applied, 1 if none did (the file is untouched).
 Only the Python standard library is used.
 """
@@ -141,9 +146,56 @@ def closest(file_text, norm_file, origin, norm_old):
     return best
 
 
+ELISION = "..."
+
+
+def split_elision(old):
+    """(head, tail) if OLD has one `...` line, (old, None) if it has none.
+    Raises ValueError for more than one."""
+    lines = old.split("\n")
+    marks = [i for i, line in enumerate(lines) if line.strip() == ELISION]
+    if not marks:
+        return old, None
+    if len(marks) > 1:
+        raise ValueError(f"OLD has {len(marks)} `...` lines; use at most one")
+    i = marks[0]
+    return "\n".join(lines[:i]), "\n".join(lines[i + 1 :])
+
+
 def locate(file_text, old, rust, many=False):
     """The (start, end) spans where `old` matches (exactly one, or with
     `many` at least one, none overlapping), or an error message."""
+    try:
+        head, tail = split_elision(old)
+    except ValueError as e:
+        return str(e)
+    if tail is not None:
+        return locate_elided(file_text, head, tail, rust, many)
+    return locate_exact(file_text, old, rust, many)
+
+
+def locate_elided(file_text, head, tail, rust, many):
+    """The span from the one match of `head` to the end of the first match
+    of `tail` after it, or an error message."""
+    if many:
+        return "`...` can't be used with --all"
+    if not normalise(tail, rust)[0]:
+        return "OLD has nothing after its `...` line"
+    found = locate_exact(file_text, head, rust)
+    if isinstance(found, str):
+        return f"the part before `...` {found}"
+    start, head_end = found[0]
+    norm_file, origin = normalise(file_text, rust)
+    norm_tail, _ = normalise(tail, rust)
+    from_here = next((i for i, pos in enumerate(origin) if pos >= head_end), len(norm_file))
+    at = norm_file.find(norm_tail, from_here)
+    if at == -1:
+        return f"the part after `...` matches nowhere after line {line_of(file_text, head_end)}"
+    return [(start, span(file_text, origin, at, norm_tail, tail, rust)[1])]
+
+
+def locate_exact(file_text, old, rust, many=False):
+    """`locate` for an OLD without a `...` line."""
     norm_file, origin = normalise(file_text, rust)
     norm_old, _ = normalise(old, rust)
     if not norm_old:

@@ -12,15 +12,15 @@
 //! Items you *wear* (the jumpsuit) have pockets; items you *carry* go in
 //! those pockets. A pocket holds a set volume and weight.
 
-use std::collections::BTreeMap;
 use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
 use crate::content::{ContentFile, FileError, first_duplicate, read_all};
 use crate::hash::Fnv64;
-use crate::material::{MAX_QUALITY_LEVEL, Material, Materials, Quality};
+use crate::material::{Material, Materials};
 use crate::pos::Pos;
+use crate::quality::{LevelError, Levels, Qualities, hash_levels};
 
 /// One pocket of a wearable item, as content: its name and how much it
 /// holds.
@@ -61,7 +61,7 @@ pub struct ItemType {
     pub solid_percent: u32,
     /// The tool qualities it has, like `{ "LASER": 1 }`.
     #[serde(default)]
-    pub qualities: BTreeMap<Quality, u8>,
+    pub qualities: Levels,
     /// If it can be worn, what wearing it gives.
     #[serde(default)]
     pub wear: Option<Wear>,
@@ -78,11 +78,8 @@ impl ItemType {
         h.u64(u64::from(self.glyph))
             .str(&self.material)
             .u64(u64::from(self.volume_ml))
-            .u64(u64::from(self.solid_percent))
-            .u64(self.qualities.len() as u64);
-        for (&quality, &level) in &self.qualities {
-            h.str(quality.name()).u8(level);
-        }
+            .u64(u64::from(self.solid_percent));
+        hash_levels(&self.qualities, h);
         let pockets = self.wear.as_ref().map(|w| w.pockets.as_slice());
         h.u64(pockets.map_or(u64::MAX, |p| p.len() as u64));
         for pocket in pockets.unwrap_or_default() {
@@ -339,10 +336,10 @@ pub enum ItemError {
     BadSize {
         item: String,
     },
-    BadLevel {
+    /// Its qualities name one that doesn't exist, or a level out of range.
+    Qualities {
         item: String,
-        quality: Quality,
-        level: u8,
+        error: LevelError,
     },
 }
 
@@ -367,15 +364,9 @@ impl fmt::Display for ItemError {
                 f,
                 "item {item:?} needs a volume above 0 and a solid_percent from 1 to 100"
             ),
-            ItemError::BadLevel {
-                item,
-                quality,
-                level,
-            } => write!(
-                f,
-                "item {item:?} has {} {level}; levels go from 1 to {MAX_QUALITY_LEVEL}",
-                quality.name()
-            ),
+            ItemError::Qualities { item, error } => {
+                write!(f, "item {item:?}'s qualities: {error}")
+            }
         }
     }
 }
@@ -389,14 +380,23 @@ struct ItemsFile {
 }
 
 /// Parses and checks every items file. Each item's material must be one of
-/// `materials`.
+/// `materials`, and its qualities among `qualities`.
 pub(crate) fn parse_items(
     files: &[ContentFile],
     materials: &Materials,
+    qualities: &Qualities,
 ) -> Result<ItemTypes, ItemError> {
     let list = read_all(files, |f: ItemsFile| f.items).map_err(ItemError::File)?;
     check_list(&list)?;
     list.iter().try_for_each(|t| check_one(t, materials))?;
+    for item in &list {
+        qualities
+            .check(&item.qualities)
+            .map_err(|error| ItemError::Qualities {
+                item: item.id.clone(),
+                error,
+            })?;
+    }
     Ok(ItemTypes { list })
 }
 
@@ -426,24 +426,14 @@ fn check_one(item: &ItemType, materials: &Materials) -> Result<(), ItemError> {
             item: item.id.clone(),
         });
     }
-    let bad = item
-        .qualities
-        .iter()
-        .find(|&(_, &level)| !(1..=MAX_QUALITY_LEVEL).contains(&level));
-    match bad {
-        Some((&quality, &level)) => Err(ItemError::BadLevel {
-            item: item.id.clone(),
-            quality,
-            level,
-        }),
-        None => Ok(()),
-    }
+    Ok(())
 }
 
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
     use crate::material::tests::test_materials;
+    use crate::quality::tests::test_qualities;
 
     /// Test items: a "suit" with two 1 L pockets (2.5 kg each), a "cutter"
     /// (LASER 1, 800 ml, half solid) and "scrap" (100 ml, solid), all
@@ -468,14 +458,19 @@ pub(crate) mod tests {
         parse_items(
             &[ContentFile::new("test.json", test_items_json())],
             &test_materials(),
+            &test_qualities(),
         )
         .expect("test items are valid")
     }
 
     fn error_of(json: &str) -> String {
-        parse_items(&[ContentFile::new("tools.json", json)], &test_materials())
-            .unwrap_err()
-            .to_string()
+        parse_items(
+            &[ContentFile::new("tools.json", json)],
+            &test_materials(),
+            &test_qualities(),
+        )
+        .unwrap_err()
+        .to_string()
     }
 
     #[test]
@@ -486,7 +481,7 @@ pub(crate) mod tests {
         assert_eq!(items.index_of("cheese"), None);
         assert_eq!(items.list()[0].pockets().len(), 2);
         assert!(items.list()[2].pockets().is_empty());
-        assert_eq!(items.list()[1].qualities.get(&Quality::Laser), Some(&1));
+        assert_eq!(items.list()[1].qualities.get("LASER"), Some(&1));
     }
 
     #[test]
@@ -573,7 +568,12 @@ pub(crate) mod tests {
         let level = test_items_json().replace("\"LASER\": 1", "\"LASER\": 0");
         assert_eq!(
             error_of(&level),
-            r#"item "cutter" has LASER 0; levels go from 1 to 10"#
+            r#"item "cutter"'s qualities: LASER 0 is out of range; levels go from 1 to 10"#
+        );
+        let unknown = test_items_json().replace("\"LASER\": 1", "\"SPORK\": 1");
+        assert_eq!(
+            error_of(&unknown),
+            r#"item "cutter"'s qualities: "SPORK" isn't a quality"#
         );
     }
 

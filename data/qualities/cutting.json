@@ -1,0 +1,9 @@
+{
+  "qualities": [
+    {
+      "id": "LASER",
+      "name": "laser cutting",
+      "description": "Cutting with a beam of light: the tool melts a slot through whatever it's pointed at. The higher the level, the more it gets through."
+    }
+  ]
+}

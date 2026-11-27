@@ -191,6 +191,31 @@ class ReplaceTests(TempFile):
         self.assertEqual(status, 1, "without --all, overlapping matches are ambiguous")
         self.assertIn("matches 2 places", err)
 
+    def test_dots_in_old_stand_for_everything_between(self):
+        path = self.file("a.rs", RUST)
+        old = "    fn shut(&mut self, at: Pos) -> Vec<Event> {\n...\n        events\n    }"
+        new = "    fn shut(&mut self) {}"
+        status, out, _ = self.replace(path, edit_block(old, new))
+        self.assertEqual(status, 0, out)
+        self.assertEqual(path.read_text(), "impl World {\n    fn shut(&mut self) {}\n}\n")
+
+    def test_dots_need_a_unique_head_and_a_tail_after_it(self):
+        path = self.file("a.rs", RUST)
+        cases = {
+            "fn open(\n...\n}": "the part before `...` matches nowhere",
+            "Event::\n...\n}": "the part before `...` matches 2 places",
+            "fn shut(\n...\nfn other": "the part after `...` matches nowhere after line 2",
+            "fn shut(\n...\n...\n}": "2 `...` lines",
+            "fn shut(\n...\n": "nothing after its `...` line",
+        }
+        for old, message in cases.items():
+            status, _, err = self.replace(path, edit_block(old, "x"))
+            self.assertEqual(status, 1, old)
+            self.assertIn(message, err)
+        _, _, err = self.replace(path, edit_block("fn shut(\n...\n}", "x"), "--all")
+        self.assertIn("can't be used with --all", err)
+        self.assertEqual(path.read_text(), RUST)
+
     def test_overlapping_edits_are_refused(self):
         path = self.file("a.txt", "one two three\n")
         edits = edit_block("one two", "1 2") + edit_block("two three", "2 3")

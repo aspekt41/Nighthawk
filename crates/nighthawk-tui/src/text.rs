@@ -163,14 +163,26 @@ fn item_type_name(world: Option<&World>, item: u16) -> String {
         .map_or_else(|| "item".into(), |t| t.name.clone())
 }
 
+/// The id of quality number `quality`, like "LASER", if there's a world
+/// to ask and it has one.
+fn quality_id(world: Option<&World>, quality: u16) -> Option<&str> {
+    world
+        .and_then(|w| w.content().qualities().get(usize::from(quality)))
+        .map(|q| q.id.as_str())
+}
+
 /// A short reason an action can't be done, for under it in the interact
 /// menu (at most 19 characters, to fit the panel; longer ones are cut).
-/// `world`, if given, names items.
+/// `world`, if given, names items and qualities.
 pub fn blocked_short(blocked: Blocked, world: Option<&World>) -> String {
     let short = match blocked {
         Blocked::Missing { item, need, .. } => {
             format!("needs {need} {}", item_type_name(world, item))
         }
+        Blocked::Needs { quality, level } => match quality_id(world, quality) {
+            Some(id) => format!("needs {id} {level}"),
+            None => "needs a better tool".into(),
+        },
         Blocked::Cluttered => "clear it first".into(),
         _ => blocked_short_fixed(blocked),
     };
@@ -183,16 +195,20 @@ fn blocked_short_fixed(blocked: Blocked) -> String {
         Blocked::TooFar { reach } => format!("too far: reach {reach}"),
         Blocked::InTheWay { .. } => "path blocked".into(),
         Blocked::StandingInIt => "step out first".into(),
-        Blocked::Needs { quality, level } => format!("needs {} {level}", quality.name()),
+
         Blocked::Uncuttable => "nothing cuts it".into(),
         _ => "not possible".into(),
     }
 }
 
 /// The log line for an action that couldn't be done. `world`, if given,
-/// names items.
+/// names items and qualities.
 pub fn blocked_text(blocked: Blocked, world: Option<&World>) -> String {
     match blocked {
+        Blocked::Needs { quality, level } => match quality_id(world, quality) {
+            Some(id) => format!("You need a tool with {id} {level} for that."),
+            None => "You need a better tool for that.".into(),
+        },
         Blocked::Missing { item, need, have } => format!(
             "You need {need} {} for that; you have {have}.",
             item_type_name(world, item)
@@ -213,9 +229,7 @@ fn blocked_text_fixed(blocked: Blocked) -> String {
         }
         Blocked::InTheWay { .. } => "Something solid is in the way.".into(),
         Blocked::StandingInIt => "You're standing in it. Step out first.".into(),
-        Blocked::Needs { quality, level } => {
-            format!("You need a tool with {} {level} for that.", quality.name())
-        }
+
         Blocked::Uncuttable => "Nothing you could carry would cut that.".into(),
         _ => "You can't do that there.".into(),
     }
@@ -373,7 +387,7 @@ mod tests {
             },
             Blocked::StandingInIt,
             Blocked::Needs {
-                quality: nighthawk_sim::Quality::Laser,
+                quality: 0,
                 level: 5,
             },
             Blocked::Uncuttable,
@@ -389,16 +403,24 @@ mod tests {
 
     #[test]
     fn blocked_actions_explain_themselves_in_the_log() {
+        // The real content's first quality is LASER.
+        let world = nighthawk_sim::World::new(crate::content::load_start_map().unwrap(), 1);
+        let laser = world.content().quality_index("LASER").unwrap();
         let unable = Event::Unable {
             action: Action::Cut,
             blocked: Blocked::Needs {
-                quality: nighthawk_sim::Quality::Laser,
+                quality: laser,
                 level: 5,
             },
         };
         assert_eq!(
-            describe(unable).as_deref(),
+            describe_in(&world, unable).as_deref(),
             Some("You need a tool with LASER 5 for that.")
+        );
+        assert_eq!(
+            describe(unable).as_deref(),
+            Some("You need a better tool for that."),
+            "without a world to name the quality"
         );
         assert_eq!(
             blocked_text(Blocked::TooFar { reach: 1 }, None),
@@ -424,16 +446,13 @@ mod tests {
             blocked_short(Blocked::TooFar { reach: 1 }, None),
             "too far: reach 1"
         );
-        assert_eq!(
-            blocked_short(
-                Blocked::Needs {
-                    quality: nighthawk_sim::Quality::Laser,
-                    level: 1
-                },
-                None
-            ),
-            "needs LASER 1"
-        );
+        let world = nighthawk_sim::World::new(crate::content::load_start_map().unwrap(), 1);
+        let needs = Blocked::Needs {
+            quality: world.content().quality_index("LASER").unwrap(),
+            level: 1,
+        };
+        assert_eq!(blocked_short(needs, Some(&world)), "needs LASER 1");
+        assert_eq!(blocked_short(needs, None), "needs a better tool");
     }
 
     #[test]

@@ -29,6 +29,7 @@ mod map;
 mod map_file;
 mod material;
 mod pos;
+mod quality;
 mod recipe;
 mod rng;
 mod save;
@@ -52,8 +53,9 @@ pub use item::{
 };
 pub use map::{Map, StairsError, Tile};
 pub use map_file::{ItemSpecError, LegendError, LoadedMap, MapError, parse_map};
-pub use material::{Colour, MAX_QUALITY_LEVEL, Material, MaterialError, Quality};
+pub use material::{Colour, Material, MaterialError};
 pub use pos::{Dir, Pos, Vertical};
+pub use quality::{LevelError, Levels, MAX_QUALITY_LEVEL, Quality, QualityError};
 pub use recipe::{Recipe, RecipeAction, RecipeError};
 pub use rng::{GameRng, Stream};
 pub use save::{SAVE_FORMAT, SAVE_VERSION, SaveError, load_from_str, save_to_string};

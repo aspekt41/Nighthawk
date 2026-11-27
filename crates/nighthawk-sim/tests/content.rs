@@ -10,7 +10,7 @@ use std::collections::{HashSet, VecDeque};
 use std::fs;
 use std::path::PathBuf;
 
-use nighthawk_sim::{Dir, LoadedMap, MapError, Pos, Quality, Tile, Vertical, parse_map};
+use nighthawk_sim::{Dir, LoadedMap, MapError, Pos, Tile, Vertical, parse_map};
 
 fn maps_dir() -> PathBuf {
     // CARGO_MANIFEST_DIR is this crate's folder, crates/nighthawk-sim.
@@ -207,7 +207,7 @@ fn the_shipped_materials_have_the_agreed_laser_levels() {
     let content = common::content();
     let level = |id: &str| {
         let i = usize::from(content.material_index(id).unwrap());
-        content.materials()[i].cut_by.get(&Quality::Laser).copied()
+        content.materials()[i].cut_by.get("LASER").copied()
     };
     assert_eq!(level("aluminium_alloy"), Some(1));
     assert_eq!(level("steel"), Some(2));
@@ -262,7 +262,7 @@ fn a_laser_cutter_and_four_steel_scraps_lie_near_the_start() {
         ]
     );
     let laser = &world.item_types()[usize::from(world.floor_items()[0].item.kind)];
-    assert_eq!(laser.qualities.get(&Quality::Laser), Some(&1));
+    assert_eq!(laser.qualities.get("LASER"), Some(&1));
 }
 
 #[test]
