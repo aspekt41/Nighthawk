@@ -79,7 +79,9 @@ tile only when a recipe for it exists.
 ```json
 {
   "recipes": [
-    { "id": "cut_door", "action": "cut", "from": "door", "to": "damaged_door", "seconds": 120 }
+    { "id": "cut_door", "action": "cut", "from": "door", "to": "damaged_door", "seconds": 120 },
+    { "id": "patch_hull_crack", "action": "repair", "from": "hull_crack", "to": "hull_plating",
+      "seconds": 60, "uses": [ { "item": "scrap", "count": 1 } ], "material": "from_used" }
   ]
 }
 ```
@@ -87,10 +89,12 @@ tile only when a recipe for it exists.
 | Field | Meaning |
 |---|---|
 | `id` | Unique across all recipe files. |
-| `action` | What the player does. Today: `cut`, which needs a tool with whatever quality and level the target's **material** lists in `cut_by` (an aluminium door: `LASER 1`), from within 2 tiles along a clear line. |
+| `action` | What the player does: `cut`, which needs a tool with whatever quality and level the target's **material** lists in `cut_by` (an aluminium door: `LASER 1`), from within 2 tiles along a clear line; or `repair`, by hand from right beside it, with nothing lying on the tile. |
 | `from` | The structure it acts on. Only one recipe per action per structure. |
-| `to` | The structure it becomes. The tile keeps its material. |
-| `seconds` | How long it takes (at least 1). If the player blacks out partway, nothing changes. |
+| `to` | The structure it becomes. |
+| `seconds` | How long it takes (at least 1). If the player blacks out partway, nothing changes and nothing is used. |
+| `uses` | Optional. Items it uses up from your pockets, as `{ "item": id, "count": n }` (n at least 1). The menu shows them ("Repair: 1 scrap") and says if you're short. |
+| `material` | Optional. `kept` (the default): the tile keeps its material. `from_used`: it becomes the material of the first item used (steel scrap makes a steel patch); needs `uses`. |
 
 ## Items (`items/*.json`)
 

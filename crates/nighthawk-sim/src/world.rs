@@ -11,7 +11,7 @@ use crate::map::{Map, Tile};
 use crate::map_file::LoadedMap;
 use crate::material::{Material, Quality};
 use crate::pos::{Dir, Pos, Vertical};
-use crate::recipe::{self, Recipe, RecipeAction};
+use crate::recipe::{self, Recipe, RecipeAction, RecipeMaterial};
 use crate::rng::{GameRng, Stream};
 use crate::structure::Structure;
 
@@ -99,6 +99,12 @@ pub enum Event {
     /// The player cut through the tile at `at`, which was structure
     /// number `was` and is now what its cut recipe makes.
     CutThrough {
+        at: Pos,
+        was: u16,
+    },
+    /// The player repaired the tile at `at`, which was structure number
+    /// `was` and is now what its repair recipe makes.
+    Repaired {
         at: Pos,
         was: u16,
     },
@@ -261,6 +267,22 @@ impl World {
             .collect()
     }
 
+    /// How many items of type number `kind` the player carries.
+    pub fn carried_count(&self, kind: u16) -> u32 {
+        let n = self
+            .carried()
+            .iter()
+            .filter(|(_, item)| item.kind == kind)
+            .count();
+        u32::try_from(n).unwrap_or(u32::MAX)
+    }
+
+    /// The number of the item type with this id, if there is one.
+    pub fn item_type_index(&self, id: &str) -> Option<u16> {
+        let i = self.item_types.iter().position(|t| t.id == id)?;
+        u16::try_from(i).ok()
+    }
+
     /// Every kind of item in this game.
     pub fn item_types(&self) -> &[ItemType] {
         &self.item_types
@@ -393,40 +415,63 @@ impl World {
         if let Some(blocked) = interact::blocked(self, at, action) {
             return vec![Event::Unable { action, blocked }];
         }
-        // Only door actions can get this far: cutting always needs a tool,
-        // and nothing can be carried yet (items come in the next step).
         match action {
             Action::Open => self.open(at),
             Action::PickUp => self.pick_up(at),
             Action::Close => self.shut(at),
-            Action::Cut => self.cut(at),
+            Action::Cut => self.follow_recipe(at, RecipeAction::Cut),
+            Action::Repair => self.follow_recipe(at, RecipeAction::Repair),
         }
     }
 
-    /// Cuts through the tile at `at` by its cut recipe, which the caller
-    /// has checked exists. The cutting takes the recipe's time first; if
-    /// the player blacks out before it's done, the tile stays as it was.
-    /// What's left keeps the tile's material (an aluminium door leaves an
-    /// aluminium frame).
-    fn cut(&mut self, at: Pos) -> Vec<Event> {
+    /// Follows the `kind` recipe for the tile at `at`, which the caller has
+    /// checked exists and can be done (decision D40). The recipe's time
+    /// passes first; if the player blacks out before it's done, nothing
+    /// changes and nothing is used up. Then the items it uses come out of
+    /// the player's pockets, and the tile becomes the recipe's `to`: of the
+    /// same material (an aluminium door cut open leaves an aluminium frame),
+    /// or of the first item used (a crack patched with steel scrap).
+    fn follow_recipe(&mut self, at: Pos, kind: RecipeAction) -> Vec<Event> {
         let was = self.map.structure_index(at).unwrap_or(0);
         let recipe = self
-            .recipe_for(RecipeAction::Cut, at)
+            .recipe_for(kind, at)
             .cloned()
-            .expect("interact checked there's a cut recipe");
+            .expect("interact checked there's a recipe");
         let mut events = Vec::new();
         self.pass_time(u64::from(recipe.seconds), &mut events);
         if !self.is_conscious() {
             return events;
         }
+        let used = self.use_up(&recipe);
+        if recipe.material == RecipeMaterial::FromUsed
+            && let Some(first) = used.first()
+        {
+            self.map.set_material(at, first.material);
+        }
         let to = self.structure_index_of(&recipe.to);
         let tile = self.structures[usize::from(to)].behaviour.tile(false);
         self.map.set(at, tile);
         self.map.set_structure(at, to);
-        // Last, after everything heard while cutting, so it's the line the
+        // Last, after everything heard while working, so it's the line the
         // log ends on.
-        events.push(Event::CutThrough { at, was });
+        events.push(match kind {
+            RecipeAction::Cut => Event::CutThrough { at, was },
+            RecipeAction::Repair => Event::Repaired { at, was },
+        });
         events
+    }
+
+    /// Takes the items `recipe` uses out of the player's pockets.
+    fn use_up(&mut self, recipe: &Recipe) -> Vec<Item> {
+        let mut used = Vec::new();
+        for needed in &recipe.uses {
+            let kind = self
+                .item_type_index(&needed.item)
+                .expect("recipes name real items");
+            let count = usize::try_from(needed.count).unwrap_or(usize::MAX);
+            used.extend(item::take_kind(&mut self.worn, kind, count));
+        }
+        used
     }
 
     /// The index of the structure with this id. Recipes are checked on load
@@ -1601,7 +1646,7 @@ mod tests {
         assert_eq!(world.structure_at(Pos::new(0, 0, 0)).unwrap().id, "wall");
         assert_eq!(world.structure_at(Pos::new(1, 1, 0)).unwrap().id, "floor");
         assert_eq!(world.structure_at(Pos::new(-1, 0, 0)), None);
-        assert_eq!(world.structures().len(), 7);
+        assert_eq!(world.structures().len(), 8);
     }
 
     #[test]
@@ -1911,5 +1956,133 @@ mod tests {
         let mut changed = cutting_world(2);
         changed.recipes[0].seconds += 1;
         assert_ne!(cutting_world(2).state_hash(), changed.state_hash());
+    }
+
+    // --- Repairing --------------------------------------------------------------
+
+    /// A room with cracked hull above the player and a door frame to the
+    /// east, wearing the test suit with `scraps` pieces of scrap in a
+    /// pocket: the first of hard alloy, the rest steel.
+    ///
+    /// ```text
+    /// #x###
+    /// #@/.#
+    /// #####
+    /// ```
+    fn repair_world(scraps: usize) -> World {
+        let rows = ["#x###", "#@/.#", "#####"];
+        let json = format!(
+            r##"{{ "id": "t", "name": "T",
+                  "legend": {{ "#": "wall", ".": "floor", "x": "hull_crack", "/": "frame" }},
+                  "player_wears": [ {{ "item": "suit" }} ],
+                  "decks": [ {{ "rows": {rows:?} }} ] }}"##
+        );
+        let mut world = World::new(parse_map(&json).unwrap(), TEST_SEED);
+        for n in 0..scraps {
+            let material = u16::from(n == 0);
+            let scrap = Item::new(2, material, &world.item_types);
+            world.worn[0].pockets[0].push(scrap);
+        }
+        world
+    }
+
+    const CRACK: Pos = Pos::new(1, 0, 0);
+    const FRAME: Pos = Pos::new(2, 1, 0);
+
+    fn repair(world: &mut World, at: Pos) -> Vec<Event> {
+        world.apply(Command::Interact {
+            at,
+            action: Action::Repair,
+        })
+    }
+
+    #[test]
+    fn patching_a_crack_uses_the_scrap_and_is_made_of_it() {
+        let mut world = repair_world(2);
+        let events = without_ambient(repair(&mut world, CRACK));
+        assert_eq!(events.last(), Some(&Event::Repaired { at: CRACK, was: 5 }));
+        assert_eq!(world.seconds(), 30, "the recipe's time");
+        assert_eq!(world.map().get(CRACK), Some(Tile::Wall));
+        assert_eq!(world.structure_at(CRACK).unwrap().id, "wall");
+        assert_eq!(
+            world.material_at(CRACK).unwrap().id,
+            "hard_alloy",
+            "the first scrap used"
+        );
+        assert_eq!(world.carried_count(2), 0, "both scraps used up");
+    }
+
+    #[test]
+    fn a_patched_crack_stops_the_leak() {
+        let mut world = repair_world(2);
+        repair(&mut world, CRACK);
+        let vented = world.map().vented();
+        world.apply(Command::Wait);
+        assert_eq!(world.map().vented(), vented);
+    }
+
+    #[test]
+    fn without_enough_scrap_nothing_happens() {
+        let mut world = repair_world(1);
+        assert_eq!(
+            repair(&mut world, CRACK),
+            vec![Event::Unable {
+                action: Action::Repair,
+                blocked: Blocked::Missing {
+                    item: 2,
+                    need: 2,
+                    have: 1
+                }
+            }]
+        );
+        assert_eq!(world.seconds(), 0);
+        assert_eq!(world.carried_count(2), 1);
+    }
+
+    #[test]
+    fn a_repaired_frame_keeps_its_own_material_and_needs_you_off_it_and_it_clear() {
+        let mut world = repair_world(1); // one hard alloy scrap
+        world.apply(Command::Move(Dir::East)); // onto the frame
+        assert_eq!(
+            interact::blocked(&world, FRAME, Action::Repair),
+            Some(Blocked::StandingInIt)
+        );
+        world.apply(Command::Move(Dir::West));
+        let lying = Item::new(2, 0, &world.item_types);
+        world.floor_items.push(FloorItem {
+            at: FRAME,
+            item: lying,
+        });
+        assert_eq!(
+            interact::blocked(&world, FRAME, Action::Repair),
+            Some(Blocked::Cluttered)
+        );
+        world.floor_items.clear();
+        repair(&mut world, FRAME);
+        assert_eq!(world.map().get(FRAME), Some(Tile::DoorClosed));
+        assert_eq!(world.material_at(FRAME).unwrap().id, "steel", "kept");
+    }
+
+    #[test]
+    fn blacking_out_partway_keeps_the_scrap_and_the_crack() {
+        let mut world = repair_world(2);
+        for x in 1..4 {
+            world
+                .map
+                .set_air(Pos::new(x, 1, 0), crate::air::Mix::VACUUM);
+        }
+        world.breath = 10;
+        let events = repair(&mut world, CRACK);
+        assert!(events.contains(&Event::BlackedOut(Cause::Air)));
+        assert_eq!(world.map().get(CRACK), Some(Tile::HullCrack));
+        assert_eq!(world.carried_count(2), 2);
+    }
+
+    #[test]
+    fn counting_and_finding_item_types() {
+        let world = repair_world(2);
+        assert_eq!(world.item_type_index("scrap"), Some(2));
+        assert_eq!(world.item_type_index("cheese"), None);
+        assert_eq!(world.carried_count(1), 0);
     }
 }

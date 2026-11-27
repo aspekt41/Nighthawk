@@ -14,15 +14,24 @@ pub fn describe_in(world: &World, event: Event) -> Option<String> {
         Event::PickedUp(id) | Event::NoRoom(id) | Event::Dropped(id) => {
             Some(item_text(event, &item_name(world, id)))
         }
-        Event::CutThrough { was, .. } => {
-            let name = world
-                .structures()
-                .get(usize::from(was))
-                .map_or("thing", |s| s.name.as_str());
-            Some(format!("You cut through the {name}."))
+        Event::CutThrough { was, .. } => Some(format!(
+            "You cut through the {}.",
+            structure_name(world, was)
+        )),
+        Event::Repaired { was, .. } => {
+            Some(format!("You repair the {}.", structure_name(world, was)))
         }
+        Event::Unable { blocked, .. } => Some(blocked_text(blocked, Some(world))),
         _ => describe(event),
     }
+}
+
+/// The name of structure number `index`, or "thing" if there's no such one.
+fn structure_name(world: &World, index: u16) -> &str {
+    world
+        .structures()
+        .get(usize::from(index))
+        .map_or("thing", |s| s.name.as_str())
 }
 
 /// An item's name and material, like "basic laser cutter (Aluminium Alloy)".
@@ -56,11 +65,12 @@ pub fn describe(event: Event) -> Option<String> {
         Event::Moved { .. } => return None,
         Event::Bumped { tile, .. } => format!("You bump into the {}.", tile.name()),
         Event::Ambient(sound) => sound_text(sound).into(),
-        Event::Unable { blocked, .. } => blocked_text(blocked),
+        Event::Unable { blocked, .. } => blocked_text(blocked, None),
         Event::PickedUp(_) | Event::NoRoom(_) | Event::Dropped(_) | Event::NothingToDrop => {
             item_text(event, "item")
         }
         Event::CutThrough { .. } => "You cut through it.".into(),
+        Event::Repaired { .. } => "You repair it.".into(),
         Event::AirEscaping | Event::Breath(_) | Event::Warmth(_) | Event::BlackedOut(_) => {
             survival_text(event).into()
         }
@@ -142,24 +152,58 @@ pub fn action_name(action: Action) -> &'static str {
         Action::Close => "Close",
         Action::Cut => "Cut",
         Action::PickUp => "Pick up",
+        Action::Repair => "Repair",
     }
 }
 
+/// The name of item type number `item`, or "item" without a world to ask.
+fn item_type_name(world: Option<&World>, item: u16) -> String {
+    world
+        .and_then(|w| w.item_types().get(usize::from(item)))
+        .map_or_else(|| "item".into(), |t| t.name.clone())
+}
+
 /// A short reason an action can't be done, for under it in the interact
-/// menu (at most 19 characters, to fit the panel).
-pub fn blocked_short(blocked: Blocked) -> String {
+/// menu (at most 19 characters, to fit the panel; longer ones are cut).
+/// `world`, if given, names items.
+pub fn blocked_short(blocked: Blocked, world: Option<&World>) -> String {
+    let short = match blocked {
+        Blocked::Missing { item, need, .. } => {
+            format!("needs {need} {}", item_type_name(world, item))
+        }
+        Blocked::Cluttered => "clear it first".into(),
+        _ => blocked_short_fixed(blocked),
+    };
+    short.chars().take(19).collect()
+}
+
+/// The short reasons that need no names.
+fn blocked_short_fixed(blocked: Blocked) -> String {
     match blocked {
         Blocked::TooFar { reach } => format!("too far: reach {reach}"),
         Blocked::InTheWay { .. } => "path blocked".into(),
         Blocked::StandingInIt => "step out first".into(),
         Blocked::Needs { quality, level } => format!("needs {} {level}", quality.name()),
         Blocked::Uncuttable => "nothing cuts it".into(),
-        Blocked::NotPossible => "not possible".into(),
+        _ => "not possible".into(),
     }
 }
 
-/// The log line for an action that couldn't be done.
-pub fn blocked_text(blocked: Blocked) -> String {
+/// The log line for an action that couldn't be done. `world`, if given,
+/// names items.
+pub fn blocked_text(blocked: Blocked, world: Option<&World>) -> String {
+    match blocked {
+        Blocked::Missing { item, need, have } => format!(
+            "You need {need} {} for that; you have {have}.",
+            item_type_name(world, item)
+        ),
+        Blocked::Cluttered => "Something is lying on it. Move it out of the way first.".into(),
+        _ => blocked_text_fixed(blocked),
+    }
+}
+
+/// The log lines that need no names.
+fn blocked_text_fixed(blocked: Blocked) -> String {
     match blocked {
         Blocked::TooFar { reach: 1 } => {
             "That's too far away: you need to be right beside it.".into()
@@ -168,12 +212,12 @@ pub fn blocked_text(blocked: Blocked) -> String {
             format!("That's out of reach: you need to be within {reach} tiles.")
         }
         Blocked::InTheWay { .. } => "Something solid is in the way.".into(),
-        Blocked::StandingInIt => "You're standing in the doorway.".into(),
+        Blocked::StandingInIt => "You're standing in it. Step out first.".into(),
         Blocked::Needs { quality, level } => {
             format!("You need a tool with {} {level} for that.", quality.name())
         }
         Blocked::Uncuttable => "Nothing you could carry would cut that.".into(),
-        Blocked::NotPossible => "You can't do that there.".into(),
+        _ => "You can't do that there.".into(),
     }
 }
 
@@ -320,7 +364,7 @@ mod tests {
     }
 
     /// One of each kind of blocked reason.
-    fn every_blocked() -> [Blocked; 7] {
+    fn every_blocked() -> [Blocked; 9] {
         [
             Blocked::TooFar { reach: 1 },
             Blocked::TooFar { reach: 2 },
@@ -334,6 +378,12 @@ mod tests {
             },
             Blocked::Uncuttable,
             Blocked::NotPossible,
+            Blocked::Missing {
+                item: 0,
+                need: 2,
+                have: 1,
+            },
+            Blocked::Cluttered,
         ]
     }
 
@@ -351,14 +401,14 @@ mod tests {
             Some("You need a tool with LASER 5 for that.")
         );
         assert_eq!(
-            blocked_text(Blocked::TooFar { reach: 1 }),
+            blocked_text(Blocked::TooFar { reach: 1 }, None),
             "That's too far away: you need to be right beside it."
         );
         assert_eq!(
-            blocked_text(Blocked::TooFar { reach: 2 }),
+            blocked_text(Blocked::TooFar { reach: 2 }, None),
             "That's out of reach: you need to be within 2 tiles."
         );
-        let lines: Vec<String> = every_blocked().map(blocked_text).to_vec();
+        let lines: Vec<String> = every_blocked().map(|b| blocked_text(b, None)).to_vec();
         for (i, line) in lines.iter().enumerate() {
             assert!(!lines[i + 1..].contains(line), "{line:?} is used twice");
         }
@@ -367,18 +417,21 @@ mod tests {
     #[test]
     fn short_reasons_fit_under_an_option_in_the_panel() {
         for blocked in every_blocked() {
-            let short = blocked_short(blocked);
+            let short = blocked_short(blocked, None);
             assert!(short.chars().count() <= 19, "{short:?}");
         }
         assert_eq!(
-            blocked_short(Blocked::TooFar { reach: 1 }),
+            blocked_short(Blocked::TooFar { reach: 1 }, None),
             "too far: reach 1"
         );
         assert_eq!(
-            blocked_short(Blocked::Needs {
-                quality: nighthawk_sim::Quality::Laser,
-                level: 1
-            }),
+            blocked_short(
+                Blocked::Needs {
+                    quality: nighthawk_sim::Quality::Laser,
+                    level: 1
+                },
+                None
+            ),
             "needs LASER 1"
         );
     }
@@ -387,7 +440,7 @@ mod tests {
     fn actions_have_menu_names() {
         assert_eq!(
             Action::ALL.map(action_name),
-            ["Open", "Close", "Cut", "Pick up"]
+            ["Open", "Close", "Cut", "Repair", "Pick up"]
         );
     }
 
@@ -492,5 +545,77 @@ mod tests {
             "never panics, even for a structure that isn't there"
         );
         assert_eq!(describe(cut).as_deref(), Some("You cut through it."));
+    }
+
+    #[test]
+    fn missing_items_are_named_when_the_world_is_to_hand() {
+        let world = nighthawk_sim::World::new(crate::content::load_start_map().unwrap(), 1);
+        let scrap = world.item_type_index("scrap").unwrap();
+        let missing = Blocked::Missing {
+            item: scrap,
+            need: 3,
+            have: 1,
+        };
+        assert_eq!(
+            blocked_text(missing, Some(&world)),
+            "You need 3 scrap for that; you have 1."
+        );
+        assert_eq!(blocked_short(missing, Some(&world)), "needs 3 scrap");
+        assert_eq!(
+            blocked_text(missing, None),
+            "You need 3 item for that; you have 1.",
+            "without a world it still says something"
+        );
+        let unable = Event::Unable {
+            action: Action::Repair,
+            blocked: missing,
+        };
+        assert_eq!(
+            describe_in(&world, unable).as_deref(),
+            Some("You need 3 scrap for that; you have 1.")
+        );
+    }
+
+    #[test]
+    fn long_item_names_are_cut_to_fit_the_panel() {
+        let world = nighthawk_sim::World::new(crate::content::load_start_map().unwrap(), 1);
+        let laser = world.item_type_index("basic_laser_cutter").unwrap();
+        let short = blocked_short(
+            Blocked::Missing {
+                item: laser,
+                need: 1,
+                have: 0,
+            },
+            Some(&world),
+        );
+        assert_eq!(short, "needs 1 basic laser");
+    }
+
+    #[test]
+    fn repairing_names_what_was_repaired() {
+        let world = nighthawk_sim::World::new(crate::content::load_start_map().unwrap(), 1);
+        let crack = world
+            .structures()
+            .iter()
+            .position(|s| s.id == "hull_crack")
+            .unwrap();
+        let repaired = Event::Repaired {
+            at: Pos::new(23, 0, 1),
+            was: u16::try_from(crack).unwrap(),
+        };
+        let name = &world.structures()[crack].name;
+        assert_eq!(
+            describe_in(&world, repaired),
+            Some(format!("You repair the {name}."))
+        );
+        assert_eq!(describe(repaired).as_deref(), Some("You repair it."));
+        assert_eq!(
+            describe(Event::Unable {
+                action: Action::Repair,
+                blocked: Blocked::Cluttered,
+            })
+            .as_deref(),
+            Some("Something is lying on it. Move it out of the way first.")
+        );
     }
 }

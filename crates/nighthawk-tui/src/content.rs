@@ -165,7 +165,7 @@ pub fn load_content(data_dir: &Path) -> Result<Content, LoadError> {
     let items = parse_items(&read_folder(&path)?, &materials)
         .map_err(|source| LoadError::Items { path, source })?;
     let path = data_dir.join("recipes");
-    let recipes = parse_recipes(&read_folder(&path)?, &structures)
+    let recipes = parse_recipes(&read_folder(&path)?, &structures, &items)
         .map_err(|source| LoadError::Recipes { path, source })?;
     Ok(Content {
         materials,

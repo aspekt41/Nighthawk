@@ -84,6 +84,7 @@ pub fn action_key(action: Action) -> char {
         Action::Close => 'c',
         Action::Cut => 'x',
         Action::PickUp => 'g',
+        Action::Repair => 'r',
     }
 }
 
@@ -397,7 +398,7 @@ mod tests {
     #[test]
     fn every_action_has_its_own_key_that_is_not_a_movement_key() {
         let keys: Vec<char> = Action::ALL.map(action_key).to_vec();
-        assert_eq!(keys, vec!['o', 'c', 'x', 'g']);
+        assert_eq!(keys, vec!['o', 'c', 'x', 'r', 'g']);
         for key in keys {
             assert_eq!(direction(press(KeyCode::Char(key))), None, "{key}");
         }

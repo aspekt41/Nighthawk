@@ -85,8 +85,24 @@ def normalise(text, rust):
     return "".join(kept), origin
 
 
+def swallow_comma(file_text, end):
+    """`end`, moved past the next comma if only whitespace comes before it.
+
+    An OLD ending in a comma ("recipe: String,") has that comma dropped when
+    normalised, as the end of OLD might be just before a closing bracket.
+    So the match stops before the file's comma; this takes it in too, or
+    NEW's own trailing comma would make two."""
+    at = end
+    while at < len(file_text) and file_text[at].isspace():
+        at += 1
+    return at + 1 if at < len(file_text) and file_text[at] == "," else end
+
+
 def next_visible(text, start):
-    """The first non-whitespace character at or after `start`, or ""."""
+    """The first non-whitespace character at or after `start`, or "" at the
+    end. Note that "" counts as `in CLOSERS` (every string contains the empty
+    string): the end of a snippet is treated like a closing bracket, since
+    the snippet may stop just before one."""
     for ch in text[start:]:
         if not ch.isspace():
             return ch
@@ -130,7 +146,10 @@ def locate(file_text, old, rust):
     starts = find_all(norm_file, norm_old)
     if len(starts) == 1:
         first = starts[0]
-        return origin[first], origin[first + len(norm_old) - 1] + 1
+        end = origin[first + len(norm_old) - 1] + 1
+        if rust and old.rstrip().endswith(","):
+            end = swallow_comma(file_text, end)
+        return origin[first], end
     if starts:
         lines = ", ".join(str(line_of(file_text, origin[s])) for s in starts)
         return f"matches {len(starts)} places (lines {lines}); add more context to OLD"
@@ -184,6 +203,11 @@ def main(argv=None, stdin=None):
     parser.add_argument("file", type=Path)
     parser.add_argument("--dry-run", action="store_true", help="check only; change nothing")
     parser.add_argument("--no-format", action="store_true", help="don't run cargo fmt")
+    parser.add_argument(
+        "--allow-broken",
+        action="store_true",
+        help="keep the edit even if cargo fmt can't parse the result",
+    )
     args = parser.parse_args(argv)
     rust = args.file.suffix == ".rs"
     try:
@@ -196,7 +220,8 @@ def main(argv=None, stdin=None):
         return 1
     if not args.no_format:
         format_rust(args.file)
-    result = apply(args.file.read_text(), edits, rust)
+    original = args.file.read_text()
+    result = apply(original, edits, rust)
     if isinstance(result, list):
         print("\n".join(result) + "\nnothing was changed", file=sys.stderr)
         return 1
@@ -205,6 +230,12 @@ def main(argv=None, stdin=None):
         return 0
     args.file.write_text(result)
     warning = "" if args.no_format else format_rust(args.file)
+    if warning and not args.allow_broken:
+        # The edit left code rustfmt can't parse (a stray comma, a missing
+        # brace): put the file back rather than leave it broken.
+        args.file.write_text(original)
+        print(warning + "\nthe edit broke the code, so nothing was changed", file=sys.stderr)
+        return 1
     print(f"applied {len(edits)} edits to {args.file}")
     if warning:
         print(warning, file=sys.stderr)

@@ -1,0 +1,45 @@
+{
+  "recipes": [
+    {
+      "id": "patch_hull_crack",
+      "action": "repair",
+      "from": "hull_crack",
+      "to": "hull_plating",
+      "seconds": 60,
+      "uses": [
+        {
+          "item": "scrap",
+          "count": 1
+        }
+      ],
+      "material": "from_used"
+    },
+    {
+      "id": "patch_hull_breach",
+      "action": "repair",
+      "from": "hull_breach",
+      "to": "hull_plating",
+      "seconds": 300,
+      "uses": [
+        {
+          "item": "scrap",
+          "count": 3
+        }
+      ],
+      "material": "from_used"
+    },
+    {
+      "id": "repair_damaged_door",
+      "action": "repair",
+      "from": "damaged_door",
+      "to": "door",
+      "seconds": 180,
+      "uses": [
+        {
+          "item": "scrap",
+          "count": 2
+        }
+      ]
+    }
+  ]
+}

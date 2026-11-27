@@ -242,16 +242,23 @@ impl App {
                 .find(|o| o.blocked.is_none())
                 .or(options.first()),
         };
-        match pick {
-            None => self.push_log("There's nothing to do with that here.".into()),
+        // Work out what to say first: `world` borrows `self`, and logging
+        // needs to change `self`, so the borrow has to end before logging.
+        let refusal = match pick {
+            None => Some("There's nothing to do with that here.".to_string()),
             Some(&ActionOption {
                 blocked: Some(blocked),
                 ..
-            }) => self.push_log(text::blocked_text(blocked)),
-            Some(&ActionOption { action, .. }) => {
+            }) => Some(text::blocked_text(blocked, Some(world))),
+            Some(_) => None,
+        };
+        match (refusal, pick) {
+            (Some(line), _) => self.push_log(line),
+            (None, Some(&ActionOption { action, .. })) => {
                 self.cursor = None;
                 self.apply(Command::Interact { at, action });
             }
+            (None, None) => {}
         }
     }
 

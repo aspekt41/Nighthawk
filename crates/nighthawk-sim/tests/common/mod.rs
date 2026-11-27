@@ -54,7 +54,7 @@ pub fn catalogue() -> Content {
         .unwrap_or_else(|e| panic!("data/structures: {e}"));
     let items = parse_items(&read_folder("items"), &materials)
         .unwrap_or_else(|e| panic!("data/items: {e}"));
-    let recipes = parse_recipes(&read_folder("recipes"), &structures)
+    let recipes = parse_recipes(&read_folder("recipes"), &structures, &items)
         .unwrap_or_else(|e| panic!("data/recipes: {e}"));
     Content {
         materials,

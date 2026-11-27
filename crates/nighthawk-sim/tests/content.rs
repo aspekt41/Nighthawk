@@ -301,3 +301,51 @@ fn the_basic_laser_cuts_the_side_room_door_into_a_damaged_door() {
     assert_eq!(world.material_at(door).unwrap().id, "aluminium_alloy");
     assert_eq!(world.map().get(door), Some(Tile::Floor), "walkable, airy");
 }
+
+#[test]
+fn two_scraps_repair_the_cut_side_room_door() {
+    use nighthawk_sim::{Action, Command, Event};
+    let mut world = common::start_world(1);
+    let door = Pos::new(6, 7, 0);
+    // Pick up the laser, cut the door from two tiles away (as above), then
+    // fetch the scrap at (9, 9) and come back to stand beside the door.
+    world.apply(Command::Move(Dir::East));
+    world.apply(Command::Interact {
+        at: Pos::new(12, 7, 0),
+        action: Action::PickUp,
+    });
+    for _ in 0..3 {
+        world.apply(Command::Move(Dir::West));
+    }
+    world.apply(Command::Interact {
+        at: door,
+        action: Action::Cut,
+    });
+    world.apply(Command::Move(Dir::SouthEast));
+    world.apply(Command::Interact {
+        at: Pos::new(9, 9, 0),
+        action: Action::PickUp,
+    });
+    world.apply(Command::Move(Dir::NorthWest));
+    world.apply(Command::Move(Dir::West));
+    assert_eq!(world.player(), Pos::new(7, 7, 0));
+    let scrap = world.item_type_index("scrap").unwrap();
+    assert_eq!(world.carried_count(scrap), 4);
+
+    let before = world.seconds();
+    let events = world.apply(Command::Interact {
+        at: door,
+        action: Action::Repair,
+    });
+    let last = events.last().copied();
+    assert!(matches!(last, Some(Event::Repaired { at, .. }) if at == door));
+    assert_eq!(world.seconds() - before, 180, "three minutes");
+    assert_eq!(world.carried_count(scrap), 2, "two scraps used");
+    assert_eq!(world.structure_at(door).unwrap().id, "door");
+    assert_eq!(
+        world.material_at(door).unwrap().id,
+        "aluminium_alloy",
+        "a repaired door keeps its own material"
+    );
+    assert_eq!(world.map().get(door), Some(Tile::DoorClosed));
+}

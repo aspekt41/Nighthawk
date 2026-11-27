@@ -14,8 +14,8 @@
 //! ```
 
 use nighthawk_sim::{
-    ActionOption, BREATH_FULL, Colour, Item, ItemRef, Material, Mix, PocketType, Pos, Quality,
-    Tile, WARMTH_FULL, World, celsius_to_mk, mk_to_tenths_celsius, options_at,
+    Action, ActionOption, BREATH_FULL, Colour, Item, ItemRef, Material, Mix, PocketType, Pos,
+    Quality, Tile, WARMTH_FULL, World, celsius_to_mk, mk_to_tenths_celsius, options_at,
 };
 use ratatui::Frame;
 use ratatui::buffer::Buffer;
@@ -639,7 +639,7 @@ fn interact_lines(world: &World, at: Pos) -> Vec<Line<'static>> {
         lines.push(Line::styled("Nothing to do here.", dim));
     }
     for option in options {
-        lines.extend(option_lines(option));
+        lines.extend(option_lines(world, at, option));
     }
     lines.extend([
         Line::raw(""),
@@ -650,21 +650,58 @@ fn interact_lines(world: &World, at: Pos) -> Vec<Line<'static>> {
     lines
 }
 
-/// One option: "o  Open", and if it can't be done, greyed with the reason
+/// One option: "o  Open", or for a recipe that uses items, what it uses
+/// ("r  Repair: 2 scrap"); and if it can't be done, greyed with the reason
 /// on the next line.
-fn option_lines(option: ActionOption) -> Vec<Line<'static>> {
+fn option_lines(world: &World, at: Pos, option: ActionOption) -> Vec<Line<'static>> {
     let key = keys::action_key(option.action);
-    let label = format!("{key}  {}", text::action_name(option.action));
+    let label = format!(
+        "{key}  {}{}",
+        text::action_name(option.action),
+        uses(world, at, option.action)
+    );
     match option.blocked {
         None => vec![Line::styled(label, Style::new().fg(Color::Yellow))],
         Some(blocked) => {
             let dim = Style::new().fg(Color::DarkGray);
             vec![
                 Line::styled(label, dim),
-                Line::styled(format!("   {}", text::blocked_short(blocked)), dim),
+                Line::styled(
+                    format!("   {}", text::blocked_short(blocked, Some(world))),
+                    dim,
+                ),
             ]
         }
     }
+}
+
+/// What the recipe for `action` at `at` uses up, like ": 2 scrap", or ""
+/// if it uses nothing or there's no recipe.
+fn uses(world: &World, at: Pos, action: Action) -> String {
+    let recipe = action
+        .recipe_action()
+        .and_then(|kind| world.recipe_for(kind, at));
+    let parts: Vec<String> = recipe
+        .map(|r| {
+            r.uses
+                .iter()
+                .map(|u| format!("{} {}", u.count, item_name(world, &u.item)))
+                .collect()
+        })
+        .unwrap_or_default();
+    if parts.is_empty() {
+        return String::new();
+    }
+    format!(": {}", parts.join(", "))
+}
+
+/// The display name of the item type with id `id` ("scrap" → "metal
+/// scrap"), or the id itself if there's no such type.
+fn item_name(world: &World, id: &str) -> String {
+    world
+        .item_type_index(id)
+        .and_then(|k| world.item_types().get(usize::from(k)))
+        .map_or_else(|| id.to_string(), |t| t.name.clone())
 }
 
 /// The bottom panel in look mode: what's lying there, what the structure
@@ -1379,6 +1416,14 @@ mod tests {
     }
 
     #[test]
+    fn a_hull_crack_offers_a_repair_that_names_the_scrap_it_uses() {
+        let world = real_world();
+        let lines = interact_texts(&world, Pos::new(23, 0, 1));
+        assert_eq!(lines[4], "r  Repair: 1 scrap");
+        assert_eq!(lines[5], "   too far: reach 1");
+    }
+
+    #[test]
     fn open_floor_has_nothing_to_do() {
         let world = real_world();
         let lines = interact_texts(&world, world.player());
@@ -1387,10 +1432,15 @@ mod tests {
 
     #[test]
     fn options_that_can_be_done_are_highlighted() {
-        let open = option_lines(ActionOption {
-            action: nighthawk_sim::Action::Open,
-            blocked: None,
-        });
+        let world = real_world();
+        let open = option_lines(
+            &world,
+            world.player(),
+            ActionOption {
+                action: nighthawk_sim::Action::Open,
+                blocked: None,
+            },
+        );
         assert_eq!(open.len(), 1);
         assert_eq!(open[0].to_string(), "o  Open");
         assert_eq!(open[0].style.fg, Some(Color::Yellow));

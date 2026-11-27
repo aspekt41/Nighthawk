@@ -6,7 +6,7 @@
 //! ```json
 //! {
 //!   "format": "nighthawk-save",
-//!   "version": 10,
+//!   "version": 11,
 //!   "world": { "deck_names": ["Stasis bay"], "seconds": 36, ... }
 //! }
 //! ```
@@ -33,7 +33,7 @@ pub const SAVE_FORMAT: &str = "nighthawk-save";
 
 /// The save layout this build reads and writes. Bump it when `World` (or
 /// anything inside it) changes shape, and update the save-format test.
-pub const SAVE_VERSION: u32 = 10;
+pub const SAVE_VERSION: u32 = 11;
 
 /// Everything that can be wrong with a save file.
 #[derive(Debug)]
@@ -189,13 +189,13 @@ mod tests {
     fn save_text_is_tagged_and_versioned() {
         let text = save_to_string(&small_world());
         assert!(text.contains(r#""format": "nighthawk-save""#));
-        assert!(text.contains(r#""version": 10"#));
+        assert!(text.contains(r#""version": 11"#));
     }
 
     /// The exact text of the tiny save in `the_save_format_is_stable`.
     const EXPECTED_SAVE: &str = r#"{
   "format": "nighthawk-save",
-  "version": 10,
+  "version": 11,
   "world": {
     "deck_names": [
       "Deck 0"
@@ -347,7 +347,7 @@ mod tests {
                  "player_wears": [ {{ "item": "smock" }} ],
                  "decks": [ {{ "rows": {rows:?} }} ] }}"#
         );
-        let recipes = crate::recipe::parse_recipes(&[], &structures).unwrap();
+        let recipes = crate::recipe::parse_recipes(&[], &structures, &items).unwrap();
         let catalogue = Catalogue {
             materials: &materials,
             structures: &structures,
@@ -387,20 +387,21 @@ mod tests {
 
     #[test]
     fn a_save_without_a_version_is_not_a_save() {
-        let text = save_with("\"version\": 10,", "");
+        let text = save_with("\"version\": 11,", "");
         assert!(matches!(load_from_str(&text), Err(SaveError::NotASave)));
     }
 
     #[test]
     fn saves_from_other_versions_are_rejected_clearly() {
-        // A save from before recipes: exactly what an old save file on
-        // disk looks like after this build is installed.
-        let text = save_with(r#""version": 10"#, r#""version": 9"#);
+        // A save from before repairs (its recipes have no `uses`): exactly
+        // what an old save file on disk looks like after this build is
+        // installed.
+        let text = save_with(r#""version": 11"#, r#""version": 10"#);
         let err = load_from_str(&text).unwrap_err();
-        assert!(matches!(err, SaveError::UnsupportedVersion { found: 9 }));
+        assert!(matches!(err, SaveError::UnsupportedVersion { found: 10 }));
         assert_eq!(
             err.to_string(),
-            "save file is version 9, but this build only reads version 10"
+            "save file is version 10, but this build only reads version 11"
         );
     }
 

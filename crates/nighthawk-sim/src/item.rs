@@ -261,6 +261,28 @@ pub(crate) fn take(worn: &mut [Item], path: ItemPath) -> Option<Item> {
     (path.index < pocket.len()).then(|| pocket.remove(path.index))
 }
 
+/// Takes `count` items of type `kind` out of the pockets of `worn`, the
+/// last-pocketed first, and returns them in the order they were found. If
+/// there are fewer than `count`, takes all there are.
+pub(crate) fn take_kind(worn: &mut [Item], kind: u16, count: usize) -> Vec<Item> {
+    let paths: Vec<ItemPath> = worn
+        .iter()
+        .enumerate()
+        .flat_map(|(w, wearing)| pocketed(w, wearing))
+        .filter(|(_, item)| item.kind == kind)
+        .map(|(path, _)| path)
+        .collect();
+    let chosen = &paths[paths.len().saturating_sub(count)..];
+    // Remove from the end backwards, so the earlier paths stay right.
+    let mut taken: Vec<Item> = chosen
+        .iter()
+        .rev()
+        .filter_map(|&path| take(worn, path))
+        .collect();
+    taken.reverse();
+    taken
+}
+
 /// Checks a saved item makes sense: its type and material exist, it has one
 /// list per pocket of its type, and so does everything in its pockets.
 pub(crate) fn check_item(item: &Item, ctx: ItemContext) -> Result<(), String> {
@@ -674,5 +696,40 @@ pub(crate) mod tests {
             check_item(&no_pockets, ctx),
             Err("a suit has 0 pockets but should have 2".to_string())
         );
+    }
+}
+
+#[cfg(test)]
+mod take_kind_tests {
+    use super::tests::test_items;
+    use super::*;
+
+    #[test]
+    fn taking_several_of_a_kind_takes_the_last_ones_and_leaves_the_rest() {
+        let items = test_items();
+        let mut worn = vec![Item::new(0, 0, items.list())];
+        // Pocket 0: cutter, scrap(material 0); pocket 1: scrap(1), scrap(2).
+        worn[0].pockets[0].push(Item::new(1, 0, items.list()));
+        worn[0].pockets[0].push(Item::new(2, 0, items.list()));
+        worn[0].pockets[1].push(Item::new(2, 1, items.list()));
+        worn[0].pockets[1].push(Item::new(2, 2, items.list()));
+        let taken = take_kind(&mut worn, 2, 2);
+        let materials: Vec<u16> = taken.iter().map(|i| i.material).collect();
+        assert_eq!(materials, vec![1, 2], "in the order they were found");
+        assert_eq!(
+            worn[0].pockets[0].len(),
+            2,
+            "the first scrap and the cutter stay"
+        );
+        assert!(worn[0].pockets[1].is_empty());
+    }
+
+    #[test]
+    fn asking_for_more_than_there_are_takes_all_there_are() {
+        let items = test_items();
+        let mut worn = vec![Item::new(0, 0, items.list())];
+        worn[0].pockets[1].push(Item::new(2, 0, items.list()));
+        assert_eq!(take_kind(&mut worn, 2, 5).len(), 1);
+        assert!(take_kind(&mut worn, 2, 1).is_empty());
     }
 }

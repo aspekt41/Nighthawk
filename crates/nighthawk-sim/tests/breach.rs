@@ -102,3 +102,69 @@ fn leaving_it_open_eventually_blacks_you_out() {
     );
     assert!(events.contains(&Event::BlackedOut(Cause::Air)));
 }
+
+const CRACK: Pos = Pos::new(23, 0, 1); // in the top-middle crew room's hull
+
+/// From the start: pick up the scrap at (9, 9), go up the ladder, along
+/// the corridor, through the crew room's door at (22, 4), and stand just
+/// inside the crack at (23, 1).
+fn walk_to_the_crack(world: &mut World) {
+    use nighthawk_sim::Action;
+    world.apply(Command::Move(Dir::SouthWest));
+    world.apply(Command::Interact {
+        at: Pos::new(9, 9, 0),
+        action: Action::PickUp,
+    });
+    let route = std::iter::repeat_n(Command::Move(Dir::North), 6)
+        .chain(std::iter::repeat_n(Command::Move(Dir::East), 24))
+        .chain([Command::Climb(Vertical::Up)])
+        .chain(std::iter::repeat_n(Command::Move(Dir::South), 3))
+        .chain(std::iter::repeat_n(Command::Move(Dir::West), 11))
+        // The first step north opens the door; the next goes through it.
+        .chain(std::iter::repeat_n(Command::Move(Dir::North), 3))
+        .chain([Command::Move(Dir::NorthEast), Command::Move(Dir::North)]);
+    for command in route {
+        world.apply(command);
+    }
+    assert_eq!(world.player(), Pos::new(23, 1, 1));
+}
+
+#[test]
+fn one_scrap_patches_the_crew_deck_crack_and_stops_the_leak() {
+    use nighthawk_sim::Action;
+    let mut world = start_world();
+    walk_to_the_crack(&mut world);
+    assert_eq!(world.structure_at(CRACK).unwrap().id, "hull_crack");
+    let scrap = world.item_type_index("scrap").unwrap();
+    let here = world.player();
+    let leaking = pressure(&world, here);
+    wait(&mut world, 2);
+    assert!(pressure(&world, here) < leaking, "the crack leaks at first");
+
+    let before = world.seconds();
+    let events = world.apply(Command::Interact {
+        at: CRACK,
+        action: Action::Repair,
+    });
+    let last = events.last().copied();
+    assert!(matches!(last, Some(Event::Repaired { at, .. }) if at == CRACK));
+    assert_eq!(world.seconds() - before, 60, "a minute");
+    assert_eq!(world.carried_count(scrap), 3);
+    assert_eq!(world.structure_at(CRACK).unwrap().id, "hull_plating");
+    assert_eq!(
+        world.material_at(CRACK).unwrap().id,
+        "steel",
+        "the patch is made of the scrap, not nanocarbon"
+    );
+    assert_eq!(world.map().get(CRACK), Some(Tile::Wall));
+
+    // With the crack sealed, the deck stops losing air.
+    let sealed = pressure(&world, here);
+    let events = wait(&mut world, 12);
+    assert!(!events.contains(&Event::AirEscaping), "{events:?}");
+    assert!(
+        pressure(&world, here) >= sealed,
+        "{sealed} Pa -> {} Pa",
+        pressure(&world, here)
+    );
+}

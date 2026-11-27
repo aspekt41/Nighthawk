@@ -1099,7 +1099,7 @@ mod material_tests {
         assert_eq!(loaded.map.material_index(wall), Some(0));
         assert_eq!(loaded.materials[0].id, "steel");
         assert_eq!(loaded.materials.len(), 2, "the whole list comes along");
-        assert_eq!(loaded.structures.len(), 7);
+        assert_eq!(loaded.structures.len(), 8);
     }
 
     #[test]

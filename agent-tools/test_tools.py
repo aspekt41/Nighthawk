@@ -78,6 +78,18 @@ class ShowTests(TempFile):
         self.assertEqual(out.count("   --"), 1)
         self.assertIn("    9  hit", out)
 
+    def test_after_and_before_set_each_side_of_the_context_on_its_own(self):
+        path = self.file("a.rs", RUST)
+        _, out, _ = run(show, [str(path), "fn shut", "-A", "2", "--no-format"])
+        numbers = [int(line.split()[0]) for line in out.splitlines()]
+        self.assertEqual(numbers, [1, 2, 3, 4], "-C 3 above (only 1 line), 2 below")
+        _, out, _ = run(show, [str(path), "fn shut", "-A", "2", "-B", "0", "--no-format"])
+        numbers = [int(line.split()[0]) for line in out.splitlines()]
+        self.assertEqual(numbers, [2, 3, 4])
+        _, out, _ = run(show, [str(path), "events$", "-B", "1", "-A", "0", "--no-format"])
+        self.assertEqual(out.splitlines()[-1], "    7          events")
+        self.assertEqual(len(out.splitlines()), 2)
+
     def test_plain_text_patterns_are_not_regexes(self):
         path = self.file("a.rs", RUST)
         status, out, _ = run(show, [str(path), "vec![", "-F", "-C", "0", "--no-format"])
@@ -192,6 +204,45 @@ class ReplaceTests(TempFile):
         path = self.file("a.txt", "let x = shut(at);\n")
         self.replace(path, edit_block("shut(at)", "close(at)"))
         self.assertEqual(path.read_text(), "let x = close(at);\n")
+
+    def crate(self):
+        """A throwaway crate, so cargo fmt has something real to format."""
+        folder = Path(self.folder.name)
+        (folder / "Cargo.toml").write_text(
+            '[package]\nname = "t"\nversion = "0.1.0"\nedition = "2024"\n'
+        )
+        (folder / "src").mkdir()
+        lib = folder / "src" / "lib.rs"
+        lib.write_text("pub fn f() -> u32 {\n    1\n}\n")
+        return lib
+
+    def test_an_edit_that_breaks_the_code_is_rolled_back(self):
+        lib = self.crate()
+        status, _, err = run(replace, [str(lib)], edit_block("1", "1,,"))
+        self.assertEqual(status, 1)
+        self.assertIn("the edit broke the code", err)
+        self.assertEqual(lib.read_text(), "pub fn f() -> u32 {\n    1\n}\n")
+
+    def test_a_good_edit_is_formatted_and_a_broken_one_kept_if_asked(self):
+        lib = self.crate()
+        status, _, _ = run(replace, [str(lib)], edit_block("1", "1+   2"))
+        self.assertEqual(status, 0)
+        self.assertIn("1 + 2", lib.read_text(), "rustfmt tidied it")
+        status, _, _ = run(replace, [str(lib), "--allow-broken"], edit_block("1 + 2", "(("))
+        self.assertEqual(status, 0)
+        self.assertIn("((", lib.read_text())
+
+    def test_an_old_ending_in_a_comma_never_leaves_two(self):
+        text = "enum E {\n    A {\n        recipe: String,\n    },\n}\n"
+        path = self.file("a.rs", text)
+        old = "    A {\n        recipe: String,"
+        new = "    A {\n        recipe: String,\n        item: String,"
+        status, _, err = self.replace(path, edit_block(old, new))
+        self.assertEqual(status, 0, err)
+        self.assertEqual(
+            path.read_text(),
+            "enum E {\n    A {\n        recipe: String,\n        item: String,\n    },\n}\n",
+        )
 
     def test_commas_before_closers_only_count_as_noise_in_rust(self):
         self.assertEqual(replace.normalise("f(a, b,\n)", True)[0], "f(a,b)")

@@ -265,6 +265,8 @@ pub(crate) mod tests {
             structure("door", "door", '+', r#", "open_glyph": "'""#),
             structure("hull_crack", "hull_crack", 'x', ""),
             structure("hull_breach", "hull_breach", 'X', ""),
+            // Walkable, and repairable into a door (see the test recipes).
+            structure("frame", "floor", '/', ""),
         ];
         format!(r#"{{ "structures": [ {} ] }}"#, all.join(", "))
     }
@@ -284,7 +286,7 @@ pub(crate) mod tests {
     #[test]
     fn a_valid_file_loads() {
         let structures = test_structures();
-        assert_eq!(structures.list().len(), 7);
+        assert_eq!(structures.list().len(), 8);
         assert_eq!(structures.index_of("door"), Some(4));
         assert_eq!(structures.index_of("cheese"), None);
         assert_eq!(structures.list()[4].open_glyph, Some('\''));

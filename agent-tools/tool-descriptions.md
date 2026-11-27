@@ -15,6 +15,7 @@ actually there.
 
 ```sh
 agent-tools/show.py crates/nighthawk-sim/src/world.rs "fn cut" -C 10
+agent-tools/show.py crates/nighthawk-sim/src/world.rs "fn cut" -A 30  # 30 lines after (-B: before)
 agent-tools/show.py crates/nighthawk-sim/src/world.rs "vec![" -F      # plain text, not a regex
 agent-tools/show.py data/README.md --lines 40:80
 agent-tools/show.py crates/nighthawk-sim/src/pos.rs                   # whole file (first 300 lines)
@@ -60,6 +61,11 @@ EDITS
 - Every OLD must match exactly one place. If any edit misses or matches
   more than once, nothing is written, and the error gives the line of the
   closest text or every matching line.
+- If OLD ends in a comma, the file's comma after the match is replaced
+  too, so NEW's own comma doesn't make two.
+- If the edited file no longer parses (rustfmt fails), it's put back as it
+  was and the tool exits 1, so a bad edit never leaves broken code behind.
+  `--allow-broken` keeps it anyway, for a change made in several steps.
 - `--dry-run` checks the edits without changing anything.
 
 Use it for every edit to an existing file instead of ad-hoc Python or `sed`

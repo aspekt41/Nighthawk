@@ -34,23 +34,40 @@ pub enum Action {
     Cut,
     /// Pick up the items lying there.
     PickUp,
+    /// Repair or patch it, using up items.
+    Repair,
 }
 
 impl Action {
     /// Every action, in the order the menu lists them.
-    pub const ALL: [Action; 4] = [Action::Open, Action::Close, Action::Cut, Action::PickUp];
+    pub const ALL: [Action; 5] = [
+        Action::Open,
+        Action::Close,
+        Action::Cut,
+        Action::Repair,
+        Action::PickUp,
+    ];
+
+    /// The kind of recipe this action follows, if it follows one.
+    pub fn recipe_action(self) -> Option<RecipeAction> {
+        match self {
+            Action::Cut => Some(RecipeAction::Cut),
+            Action::Repair => Some(RecipeAction::Repair),
+            Action::Open | Action::Close | Action::PickUp => None,
+        }
+    }
 
     /// How far away the action works, in steps (diagonals count as one).
     pub fn reach(self) -> u32 {
         match self {
-            Action::Open | Action::Close | Action::PickUp => HAND_REACH,
+            Action::Open | Action::Close | Action::PickUp | Action::Repair => HAND_REACH,
             Action::Cut => LASER_REACH,
         }
     }
 
     /// Whether the action makes sense at `at` at all: doors open and
-    /// close; things with a cut recipe can be cut (decision D40); items
-    /// lying there can be picked up.
+    /// close; things with a cut or repair recipe can be cut or repaired
+    /// (decision D40); items lying there can be picked up.
     fn applies_at(self, world: &World, at: Pos) -> bool {
         let Some(tile) = world.map().get(at) else {
             return false;
@@ -61,6 +78,7 @@ impl Action {
             // Something solid, with a recipe saying what it becomes.
             Action::Cut => !tile.holds_air() && world.recipe_for(RecipeAction::Cut, at).is_some(),
             Action::PickUp => world.items_at(at).next().is_some(),
+            Action::Repair => world.recipe_for(RecipeAction::Repair, at).is_some(),
         }
     }
 }
@@ -80,6 +98,11 @@ pub enum Blocked {
     Uncuttable,
     /// The action doesn't apply to this tile (opening a wall, say).
     NotPossible,
+    /// You don't carry enough of an item the recipe uses: `need` of item
+    /// type number `item`, and you have `have`.
+    Missing { item: u16, need: u32, have: u32 },
+    /// Items are lying on it, and would end up inside it.
+    Cluttered,
 }
 
 /// One line of the interact menu: an action, and why it can't be done, if
@@ -114,7 +137,31 @@ pub fn blocked(world: &World, at: Pos, action: Action) -> Option<Blocked> {
         Action::Open | Action::Close => hand_blocked(world, at),
         // Picking up from the tile you stand on is fine.
         Action::PickUp => too_far(world, at, HAND_REACH),
+        Action::Repair => repair_blocked(world, at),
     }
+}
+
+/// Repairs: you must be beside it (not on it), nothing may lie on it, and
+/// you must carry everything the recipe uses.
+fn repair_blocked(world: &World, at: Pos) -> Option<Blocked> {
+    hand_blocked(world, at)
+        .or_else(|| world.items_at(at).next().map(|_| Blocked::Cluttered))
+        .or_else(|| missing(world, at))
+}
+
+/// The first item the repair recipe at `at` uses that you don't carry
+/// enough of.
+fn missing(world: &World, at: Pos) -> Option<Blocked> {
+    let recipe = world.recipe_for(RecipeAction::Repair, at)?;
+    recipe.uses.iter().find_map(|used| {
+        let item = world.item_type_index(&used.item)?;
+        let have = world.carried_count(item);
+        (have < used.count).then_some(Blocked::Missing {
+            item,
+            need: used.count,
+            have,
+        })
+    })
 }
 
 /// Doors: you must be beside the door, and not standing in it.
@@ -315,6 +362,16 @@ mod tests {
         assert_eq!(Action::Open.reach(), 1);
         assert_eq!(Action::Close.reach(), 1);
         assert_eq!(Action::Cut.reach(), 2);
+        assert_eq!(Action::Repair.reach(), 1);
+    }
+
+    #[test]
+    fn cutting_and_repairing_follow_recipes_and_the_rest_do_not() {
+        assert_eq!(Action::Cut.recipe_action(), Some(RecipeAction::Cut));
+        assert_eq!(Action::Repair.recipe_action(), Some(RecipeAction::Repair));
+        for action in [Action::Open, Action::Close, Action::PickUp] {
+            assert_eq!(action.recipe_action(), None);
+        }
     }
 
     #[test]
