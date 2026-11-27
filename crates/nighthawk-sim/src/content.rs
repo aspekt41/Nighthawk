@@ -1,15 +1,33 @@
-//! Content files: the JSON in `data/` (decision D17).
+//! Content: the JSON in `data/` (decisions D17 and D43).
 //!
-//! Each kind of content (materials, structures, later items and recipes)
-//! has a folder, and every `.json` file in it is read, so content can be
-//! grouped into as many files as reads best (`metals.json`,
-//! `fabrics.json`…). The sim never touches the disk (decision D18): the
-//! front-end reads the files and passes in each one's name and text, and
-//! the name is used to say which file a mistake is in.
+//! Each kind of content (materials, structures, items, recipes) has a
+//! folder, and every `.json` file in it is read, so content can be grouped
+//! into as many files as reads best (`metals.json`, `fabrics.json`…). The
+//! sim never touches the disk (decision D18): the front-end reads the files
+//! and passes in each one's name and text, and the name is used to say
+//! which file a mistake is in.
+//!
+//! All of it is loaded in one go, by [`Content::load`], into one
+//! [`Content`]. A front-end only says how to read a folder; which folders
+//! there are, in what order, and how each is checked is decided here. So a
+//! new kind of content is added in this file (and its own module), and no
+//! front-end or test helper has to change.
 
 use std::collections::HashSet;
+use std::fmt;
 
 use serde::de::DeserializeOwned;
+use serde::{Deserialize, Serialize};
+
+use crate::item::{ItemError, ItemType, ItemTypes, parse_items};
+use crate::material::{Material, MaterialError, Materials, parse_materials};
+use crate::recipe::{Recipe, RecipeError, Recipes, parse_recipes};
+use crate::structure::{Structure, StructureError, Structures, parse_structures};
+
+/// The content folders, in the order they're loaded. A kind may refer to
+/// the kinds before it (structures name materials; recipes name structures
+/// and items), which is why the order matters.
+pub const CONTENT_FOLDERS: [&str; 4] = ["materials", "structures", "items", "recipes"];
 
 /// One content file: its name, for error messages, and its text.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -69,6 +87,142 @@ pub(crate) fn first_duplicate<'a>(ids: impl Iterator<Item = &'a str>) -> Option<
     ids.into_iter().find(|&id| !seen.insert(id))
 }
 
+/// Everything a game is made of: every material, structure, item type and
+/// recipe, checked against each other.
+///
+/// The world keeps its own copy, saved with the game, so editing the data
+/// files never changes a game already in progress (decision D35). Tiles,
+/// items and recipes refer to entries by their place in these lists.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Content {
+    pub(crate) materials: Materials,
+    pub(crate) structures: Structures,
+    pub(crate) item_types: ItemTypes,
+    pub(crate) recipes: Recipes,
+}
+
+impl Content {
+    /// Loads and checks every kind of content. `read_folder` is how the
+    /// front-end reads one folder of [`CONTENT_FOLDERS`]: given its name, it
+    /// returns the files in it, or the front-end's own error.
+    ///
+    /// The `E: From<ContentError>` bound means "any error type that a
+    /// [`ContentError`] can be turned into". It lets the `?` operator turn a
+    /// mistake in the content into the caller's error type, so callers get
+    /// one kind of error back whether a file couldn't be read or was wrong.
+    pub fn load<E: From<ContentError>>(
+        mut read_folder: impl FnMut(&str) -> Result<Vec<ContentFile>, E>,
+    ) -> Result<Self, E> {
+        // Taking the names apart like this ties each step to its place in
+        // CONTENT_FOLDERS: a fifth folder there won't compile until it's
+        // loaded here too.
+        let [materials, structures, items, recipes] = CONTENT_FOLDERS;
+        let materials =
+            parse_materials(&read_folder(materials)?).map_err(ContentError::Materials)?;
+        let structures = parse_structures(&read_folder(structures)?, &materials)
+            .map_err(ContentError::Structures)?;
+        let item_types =
+            parse_items(&read_folder(items)?, &materials).map_err(ContentError::Items)?;
+        let recipes = parse_recipes(&read_folder(recipes)?, &structures, &item_types)
+            .map_err(ContentError::Recipes)?;
+        Ok(Self {
+            materials,
+            structures,
+            item_types,
+            recipes,
+        })
+    }
+
+    /// Every material, in the order tiles and items refer to them.
+    pub fn materials(&self) -> &[Material] {
+        self.materials.list()
+    }
+
+    /// Every structure, in the order tiles refer to them.
+    pub fn structures(&self) -> &[Structure] {
+        self.structures.list()
+    }
+
+    /// Every kind of item, in the order items refer to them.
+    pub fn item_types(&self) -> &[ItemType] {
+        self.item_types.list()
+    }
+
+    /// Every recipe: how one structure becomes another.
+    pub fn recipes(&self) -> &[Recipe] {
+        self.recipes.list()
+    }
+
+    /// The number of the material with this id, if there is one.
+    pub fn material_index(&self, id: &str) -> Option<u16> {
+        self.materials.index_of(id)
+    }
+
+    /// The number of the structure with this id, if there is one.
+    pub fn structure_index(&self, id: &str) -> Option<u16> {
+        self.structures.index_of(id)
+    }
+
+    /// The number of the item type with this id, if there is one.
+    pub fn item_type_index(&self, id: &str) -> Option<u16> {
+        self.item_types.index_of(id)
+    }
+
+    /// The materials, changeable, for tests in other modules.
+    #[cfg(test)]
+    pub(crate) fn materials_mut(&mut self) -> &mut Vec<Material> {
+        self.materials.list_mut()
+    }
+
+    /// The small set of test content every unit test's map uses (see
+    /// `parse_map_for_tests`).
+    #[cfg(test)]
+    pub(crate) fn for_tests() -> Self {
+        Self {
+            materials: crate::material::tests::test_materials(),
+            structures: crate::structure::tests::test_structures(),
+            item_types: crate::item::tests::test_items(),
+            recipes: crate::recipe::tests::test_recipes(),
+        }
+    }
+}
+
+/// A mistake in one of the content folders. Each error names its file.
+#[derive(Debug)]
+pub enum ContentError {
+    Materials(MaterialError),
+    Structures(StructureError),
+    Items(ItemError),
+    Recipes(RecipeError),
+}
+
+impl ContentError {
+    /// The folder the mistake is in, like `"materials"`.
+    pub fn folder(&self) -> &'static str {
+        let [materials, structures, items, recipes] = CONTENT_FOLDERS;
+        match self {
+            ContentError::Materials(_) => materials,
+            ContentError::Structures(_) => structures,
+            ContentError::Items(_) => items,
+            ContentError::Recipes(_) => recipes,
+        }
+    }
+}
+
+impl fmt::Display for ContentError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ContentError::Materials(e) => write!(f, "{e}"),
+            ContentError::Structures(e) => write!(f, "{e}"),
+            ContentError::Items(e) => write!(f, "{e}"),
+            ContentError::Recipes(e) => write!(f, "{e}"),
+        }
+    }
+}
+
+impl std::error::Error for ContentError {}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -106,5 +260,95 @@ mod tests {
     fn duplicates_are_found() {
         assert_eq!(first_duplicate(["a", "b", "a"].into_iter()), Some("a"));
         assert_eq!(first_duplicate(["a", "b"].into_iter()), None);
+    }
+
+    /// The smallest valid contents of each folder: one steel material, one
+    /// structure, one item, no recipes.
+    fn minimal(folder: &str) -> Vec<ContentFile> {
+        let text = match folder {
+            "materials" => {
+                r#"{ "materials": [ { "id": "steel", "name": "Steel", "description": "S.",
+                     "colour": "grey", "density": 7850, "specific_heat": 490,
+                     "thermal_conductivity": 45000, "hardness": 150 } ] }"#
+            }
+            "structures" => {
+                r#"{ "structures": [ { "id": "deck", "name": "deck", "description": "D.",
+                     "glyph": ".", "behaviour": "floor", "material": "steel" } ] }"#
+            }
+            "items" => {
+                r#"{ "items": [ { "id": "bolt", "name": "bolt", "description": "B.",
+                     "glyph": "*", "material": "steel", "volume_ml": 1, "solid_percent": 100 } ] }"#
+            }
+            _ => r#"{ "recipes": [] }"#,
+        };
+        vec![ContentFile::new(format!("{folder}.json"), text)]
+    }
+
+    #[test]
+    fn loading_reads_each_content_folder_once_in_order() {
+        let mut asked = Vec::new();
+        let content = Content::load(|folder| {
+            asked.push(folder.to_string());
+            Ok::<_, ContentError>(minimal(folder))
+        })
+        .unwrap();
+        assert_eq!(asked, CONTENT_FOLDERS);
+        assert_eq!(content.materials()[0].id, "steel");
+        assert_eq!(content.structures()[0].id, "deck");
+        assert_eq!(content.item_types()[0].id, "bolt");
+        assert!(content.recipes().is_empty());
+        assert_eq!(content.material_index("steel"), Some(0));
+        assert_eq!(content.structure_index("deck"), Some(0));
+        assert_eq!(content.item_type_index("bolt"), Some(0));
+        assert_eq!(content.item_type_index("nut"), None);
+    }
+
+    /// A front-end's own error type: it couldn't read a folder, or the
+    /// content in it was wrong.
+    #[derive(Debug)]
+    enum FrontEndError {
+        Unreadable(String),
+        Wrong(ContentError),
+    }
+
+    impl From<ContentError> for FrontEndError {
+        fn from(error: ContentError) -> Self {
+            FrontEndError::Wrong(error)
+        }
+    }
+
+    #[test]
+    fn a_folder_that_cannot_be_read_stops_loading_with_the_callers_error() {
+        let err = Content::load(|folder| match folder {
+            "items" => Err(FrontEndError::Unreadable(folder.into())),
+            _ => Ok(minimal(folder)),
+        })
+        .unwrap_err();
+        assert!(matches!(err, FrontEndError::Unreadable(ref f) if f == "items"));
+    }
+
+    /// Loads minimal content with an empty object in place of the files
+    /// of the folder `broken`.
+    fn load_with_broken(broken: &str) -> Result<Content, FrontEndError> {
+        let files = |folder: &str| match folder == broken {
+            true => vec![ContentFile::new("zz.json", "{}")],
+            false => minimal(folder),
+        };
+        Content::load(|folder| Ok(files(folder)))
+    }
+
+    #[test]
+    fn a_mistake_in_any_folder_names_the_folder_and_the_file() {
+        for broken in CONTENT_FOLDERS {
+            let FrontEndError::Wrong(err) = load_with_broken(broken).unwrap_err() else {
+                panic!("{broken}: expected a content error");
+            };
+            assert_eq!(err.folder(), broken);
+            assert!(
+                err.to_string()
+                    .starts_with(&format!("invalid {broken} file zz.json")),
+                "{err}"
+            );
+        }
     }
 }

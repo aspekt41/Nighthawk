@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::body::{self, BREATH_FULL, BreathLevel, Cause, WARMTH_FULL, WarmthLevel};
 use crate::calendar::{DateTime, SHIP_START};
+use crate::content::Content;
 use crate::hash::Fnv64;
 use crate::interact::{self, Action, Blocked};
 use crate::item::{self, FloorItem, Item, ItemContext, ItemPath, ItemRef, ItemType};
@@ -174,24 +175,15 @@ pub struct World {
     breath: u32,
     /// The player's warmth meter, 0 to [`WARMTH_FULL`].
     warmth: u32,
-    /// Every material the ship can be made of. Each tile's material is an
-    /// index into this list. It's a copy of `materials.json` taken when
-    /// the game began, saved with the game, so editing the data file never
-    /// changes a game in progress (decision D35).
-    materials: Vec<Material>,
-    /// Every structure the ship can be built from (decision D37), copied
-    /// from `data/structures/` when the game began, like the materials.
-    /// Each tile's structure is an index into this list.
-    structures: Vec<Structure>,
-    /// Every kind of item (decision D39), copied from `data/items/` when
-    /// the game began. Each item's `kind` is an index into this list.
-    item_types: Vec<ItemType>,
+    /// Every material, structure, item type and recipe, copied from
+    /// `data/` when the game began and saved with it, so editing the data
+    /// files never changes a game in progress (decisions D35 and D43).
+    /// Tiles and items refer to entries by their place in its lists.
+    content: Content,
     /// The items lying on the floor around the ship.
     floor_items: Vec<FloorItem>,
     /// What the player is wearing; carried items are in its pockets.
     worn: Vec<Item>,
-    /// Every recipe (decision D40): how one structure becomes another.
-    recipes: Vec<Recipe>,
 }
 
 impl World {
@@ -207,12 +199,9 @@ impl World {
             ambient_rng: GameRng::new(seed, Stream::Ambient),
             breath: BREATH_FULL,
             warmth: WARMTH_FULL,
-            materials: loaded.materials,
-            structures: loaded.structures,
-            item_types: loaded.item_types,
+            content: loaded.content,
             floor_items: loaded.floor_items,
             worn: loaded.worn,
-            recipes: loaded.recipes,
         }
     }
 
@@ -236,7 +225,7 @@ impl World {
     /// What the tile at `p` is made of, or `None` off the map.
     pub fn material_at(&self, p: Pos) -> Option<&Material> {
         let index = self.map.material_index(p)?;
-        self.materials.get(usize::from(index))
+        self.materials().get(usize::from(index))
     }
 
     /// The items lying at `p`, in the order they were put there.
@@ -279,44 +268,48 @@ impl World {
 
     /// The number of the item type with this id, if there is one.
     pub fn item_type_index(&self, id: &str) -> Option<u16> {
-        let i = self.item_types.iter().position(|t| t.id == id)?;
-        u16::try_from(i).ok()
+        self.content.item_type_index(id)
     }
 
     /// Every kind of item in this game.
     pub fn item_types(&self) -> &[ItemType] {
-        &self.item_types
+        self.content.item_types()
+    }
+
+    /// Everything this game is made of.
+    pub fn content(&self) -> &Content {
+        &self.content
     }
 
     /// The item types and materials together, for working out an item's
     /// weight and whether it fits a pocket.
     pub fn item_context(&self) -> ItemContext<'_> {
         ItemContext {
-            types: &self.item_types,
-            materials: &self.materials,
+            types: self.content.item_types(),
+            materials: self.content.materials(),
         }
     }
 
     /// What the tile at `p` is, or `None` off the map.
     pub fn structure_at(&self, p: Pos) -> Option<&Structure> {
         let index = self.map.structure_index(p)?;
-        self.structures.get(usize::from(index))
+        self.structures().get(usize::from(index))
     }
 
     /// Every structure in this game, in the order tiles refer to them.
     pub fn structures(&self) -> &[Structure] {
-        &self.structures
+        self.content.structures()
     }
 
     /// Every material in this game, in the order tiles refer to them.
     pub fn materials(&self) -> &[Material] {
-        &self.materials
+        self.content.materials()
     }
 
     /// The materials, changeable, for tests in other modules.
     #[cfg(test)]
     pub(crate) fn materials_mut(&mut self) -> &mut Vec<Material> {
-        &mut self.materials
+        self.content.materials_mut()
     }
 
     pub fn player(&self) -> Pos {
@@ -449,7 +442,7 @@ impl World {
             self.map.set_material(at, first.material);
         }
         let to = self.structure_index_of(&recipe.to);
-        let tile = self.structures[usize::from(to)].behaviour.tile(false);
+        let tile = self.structures()[usize::from(to)].behaviour.tile(false);
         self.map.set(at, tile);
         self.map.set_structure(at, to);
         // Last, after everything heard while working, so it's the line the
@@ -477,15 +470,17 @@ impl World {
     /// The index of the structure with this id. Recipes are checked on load
     /// to name only real structures, so it's always there.
     fn structure_index_of(&self, id: &str) -> u16 {
-        let i = self.structures.iter().position(|s| s.id == id);
-        u16::try_from(i.expect("recipes name real structures")).expect("checked on load")
+        self.content
+            .structure_index(id)
+            .expect("recipes name real structures")
     }
 
     /// The recipe for `action` on whatever structure is at `at`, if there
     /// is one.
     pub fn recipe_for(&self, action: RecipeAction, at: Pos) -> Option<&Recipe> {
         let structure = self.structure_at(at)?;
-        self.recipes
+        self.content
+            .recipes()
             .iter()
             .find(|r| r.action == action && r.from == structure.id)
     }
@@ -498,7 +493,7 @@ impl World {
         self.worn
             .iter()
             .chain(carried)
-            .filter_map(|item| self.item_types.get(usize::from(item.kind)))
+            .filter_map(|item| self.item_types().get(usize::from(item.kind)))
             .filter_map(|kind| kind.qualities.get(&quality).copied())
             .max()
             .unwrap_or(0)
@@ -515,8 +510,8 @@ impl World {
         // Borrowing two fields to read while changing two others is fine:
         // Rust tracks borrows of separate fields of `self` separately.
         let ctx = ItemContext {
-            types: &self.item_types,
-            materials: &self.materials,
+            types: self.content.item_types(),
+            materials: self.content.materials(),
         };
         let mut events = Vec::new();
         let mut picked = 0;
@@ -674,10 +669,10 @@ impl World {
         self.check_structures()?;
         self.check_items()?;
         let highest = usize::from(self.map.highest_material());
-        if highest >= self.materials.len() {
+        if highest >= self.materials().len() {
             return Err(format!(
                 "a tile is made of material {highest}, but there are only {}",
-                self.materials.len()
+                self.materials().len()
             ));
         }
         match self.map.get(self.player) {
@@ -739,7 +734,7 @@ impl World {
         }
         for worn in &self.worn {
             item::check_item(worn, ctx)?;
-            let kind = &self.item_types[usize::from(worn.kind)];
+            let kind = &self.item_types()[usize::from(worn.kind)];
             if kind.wear.is_none() {
                 return Err(format!(
                     "the player is wearing a {}, which can't be worn",
@@ -771,15 +766,15 @@ impl World {
             .u64(self.ambient_rng.fingerprint())
             .u64(u64::from(self.breath))
             .u64(u64::from(self.warmth))
-            .u64(self.materials.len() as u64);
-        for material in &self.materials {
+            .u64(self.materials().len() as u64);
+        for material in self.materials() {
             material.hash_into(&mut h);
         }
-        h.u64(self.structures.len() as u64);
-        for structure in &self.structures {
+        h.u64(self.structures().len() as u64);
+        for structure in self.structures() {
             structure.hash_into(&mut h);
         }
-        item::hash_types(&self.item_types, &mut h);
+        item::hash_types(self.item_types(), &mut h);
         h.u64(self.floor_items.len() as u64);
         for floor in &self.floor_items {
             h.i32(floor.at.x).i32(floor.at.y).i32(floor.at.z);
@@ -789,7 +784,7 @@ impl World {
         for worn in &self.worn {
             worn.hash_into(&mut h);
         }
-        recipe::hash_recipes(&self.recipes, &mut h);
+        recipe::hash_recipes(self.content.recipes(), &mut h);
         h.finish()
     }
 }
@@ -1594,9 +1589,23 @@ mod tests {
     }
 
     #[test]
+    fn the_world_keeps_all_its_content_in_one_bundle() {
+        let world = test_world();
+        let content = world.content();
+        assert_eq!(content.materials(), world.materials());
+        assert_eq!(content.structures(), world.structures());
+        assert_eq!(content.item_types(), world.item_types());
+        assert_eq!(
+            content,
+            &Content::for_tests(),
+            "a copy of what it was made from"
+        );
+    }
+
+    #[test]
     fn the_material_list_is_part_of_the_state_hash() {
         let mut changed = test_world();
-        changed.materials[1].hardness += 1;
+        changed.content.materials.list_mut()[1].hardness += 1;
         assert_ne!(test_world().state_hash(), changed.state_hash());
     }
 
@@ -1675,7 +1684,7 @@ mod tests {
     #[test]
     fn the_structure_list_is_part_of_the_state_hash() {
         let mut changed = test_world();
-        changed.structures[0].name.push('!');
+        changed.content.structures.list_mut()[0].name.push('!');
         assert_ne!(test_world().state_hash(), changed.state_hash());
     }
 
@@ -1738,7 +1747,8 @@ mod tests {
         let mut world = world_with_items();
         // Fill both pockets with cutters (800 ml each), leaving 200 ml free.
         for p in 0..2 {
-            world.worn[0].pockets[p].push(Item::new(1, 0, &world.item_types));
+            let cutter = Item::new(1, 0, world.item_types());
+            world.worn[0].pockets[p].push(cutter);
         }
         let events = without_ambient(pick_up_pile(&mut world));
         // Each pocket has 200 ml left: room for two scraps each, so all
@@ -1840,7 +1850,7 @@ mod tests {
         assert!(world.check_consistent().unwrap_err().contains("pockets"));
 
         let mut world = world_with_items();
-        world.worn = vec![Item::new(2, 0, &world.item_types)];
+        world.worn = vec![Item::new(2, 0, world.item_types())];
         assert_eq!(
             world.check_consistent(),
             Err("the player is wearing a scrap, which can't be worn".to_string())
@@ -1853,9 +1863,10 @@ mod tests {
         let mut moved = world_with_items();
         moved.floor_items[0].at = Pos::new(4, 1, 0);
         let mut carrying = world_with_items();
-        carrying.worn[0].pockets[0].push(Item::new(2, 0, &carrying.item_types));
+        let scrap = Item::new(2, 0, carrying.item_types());
+        carrying.worn[0].pockets[0].push(scrap);
         let mut retyped = world_with_items();
-        retyped.item_types[2].glyph = '%';
+        retyped.content.item_types.list_mut()[2].glyph = '%';
         for other in [moved, carrying, retyped] {
             assert_ne!(base, other.state_hash());
         }
@@ -1874,8 +1885,10 @@ mod tests {
                   "decks": [ {{ "rows": {rows:?} }} ] }}"##
         );
         let mut world = World::new(parse_map(&json).unwrap(), TEST_SEED);
-        world.item_types[1].qualities.insert(Quality::Laser, level);
-        let cutter = Item::new(1, 0, &world.item_types);
+        world.content.item_types.list_mut()[1]
+            .qualities
+            .insert(Quality::Laser, level);
+        let cutter = Item::new(1, 0, world.item_types());
         world.worn[0].pockets[0].push(cutter);
         world
     }
@@ -1954,7 +1967,7 @@ mod tests {
     #[test]
     fn recipes_are_part_of_the_state_hash() {
         let mut changed = cutting_world(2);
-        changed.recipes[0].seconds += 1;
+        changed.content.recipes.list_mut()[0].seconds += 1;
         assert_ne!(cutting_world(2).state_hash(), changed.state_hash());
     }
 
@@ -1980,7 +1993,7 @@ mod tests {
         let mut world = World::new(parse_map(&json).unwrap(), TEST_SEED);
         for n in 0..scraps {
             let material = u16::from(n == 0);
-            let scrap = Item::new(2, material, &world.item_types);
+            let scrap = Item::new(2, material, world.item_types());
             world.worn[0].pockets[0].push(scrap);
         }
         world
@@ -2048,7 +2061,7 @@ mod tests {
             Some(Blocked::StandingInIt)
         );
         world.apply(Command::Move(Dir::West));
-        let lying = Item::new(2, 0, &world.item_types);
+        let lying = Item::new(2, 0, world.item_types());
         world.floor_items.push(FloorItem {
             at: FRAME,
             item: lying,

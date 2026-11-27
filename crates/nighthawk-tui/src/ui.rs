@@ -845,7 +845,7 @@ mod tests {
         );
         let data = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../data");
         let content = crate::content::load_content(&data).unwrap();
-        World::new(parse_map(&json, content.catalogue()).unwrap(), 1)
+        World::new(parse_map(&json, &content).unwrap(), 1)
     }
 
     /// Renders the map into an off-screen buffer and returns its rows as text.

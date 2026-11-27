@@ -44,11 +44,13 @@ rather than accepting a skipped step.
 ## Architecture rules (do not break)
 
 1. **The sim is pure.** No terminal, file I/O or clock in `nighthawk-sim`.
-   Front-ends read files and pass text in: each content folder as a list
-   of `ContentFile { name, text }` (`parse_materials`, `parse_structures`,
-   `parse_items`, `parse_recipes`), then a map with `parse_map(&str,
-   Catalogue { materials, structures, items, recipes })`. They pass the
-   seed in (`World::new(map, seed)`).
+   Front-ends read files and pass text in. `Content::load(read_folder)`
+   asks the front-end for each folder in `CONTENT_FOLDERS` as a list of
+   `ContentFile { name, text }` and checks it all; then a map is parsed
+   with `parse_map(&str, &content)`. They pass the seed in
+   (`World::new(map, seed)`). A new kind of content is added in
+   `crates/nighthawk-sim/src/content.rs` (and its own module) only; no
+   front-end or test helper changes (D43).
 2. **The sim is deterministic (D22).** Randomness only via `GameRng`
    (`crates/nighthawk-sim/src/rng.rs`): add a new `Stream` variant with a
    new number for each new system; never renumber or reuse one; never use
@@ -82,7 +84,11 @@ Use them by default:
   blocks on standard input, not ad-hoc Python or `sed`. It formats, matches
   ignoring whitespace and rustfmt's trailing commas, refuses an OLD that
   matches nowhere or twice (pointing at the closest text), and writes all
-  edits or none.
+  edits or none. `--all` replaces every match, for renames.
+- **Update a snapshot with `agent-tools/bless.py TEST FILE CONST`** when a
+  stored copy of some output (like `EXPECTED_SAVE` in `save.rs`) should
+  change on purpose: it takes the failing test's actual value and writes
+  it into the constant. Read the diff before committing.
 
 When a mistake keeps recurring, consider a new tool: add it with tests in
 `agent-tools/test_tools.py` and a section in `tool-descriptions.md`.

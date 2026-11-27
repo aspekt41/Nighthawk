@@ -6,7 +6,7 @@
 //! ```json
 //! {
 //!   "format": "nighthawk-save",
-//!   "version": 11,
+//!   "version": 12,
 //!   "world": { "deck_names": ["Stasis bay"], "seconds": 36, ... }
 //! }
 //! ```
@@ -33,7 +33,7 @@ pub const SAVE_FORMAT: &str = "nighthawk-save";
 
 /// The save layout this build reads and writes. Bump it when `World` (or
 /// anything inside it) changes shape, and update the save-format test.
-pub const SAVE_VERSION: u32 = 11;
+pub const SAVE_VERSION: u32 = 12;
 
 /// Everything that can be wrong with a save file.
 #[derive(Debug)]
@@ -189,13 +189,13 @@ mod tests {
     fn save_text_is_tagged_and_versioned() {
         let text = save_to_string(&small_world());
         assert!(text.contains(r#""format": "nighthawk-save""#));
-        assert!(text.contains(r#""version": 11"#));
+        assert!(text.contains(r#""version": 12"#));
     }
 
     /// The exact text of the tiny save in `the_save_format_is_stable`.
     const EXPECTED_SAVE: &str = r#"{
   "format": "nighthawk-save",
-  "version": 11,
+  "version": 12,
   "world": {
     "deck_names": [
       "Deck 0"
@@ -252,49 +252,52 @@ mod tests {
     },
     "breath": 1000,
     "warmth": 1000000,
-    "materials": [
-      {
-        "id": "steel",
-        "name": "Steel",
-        "description": "Steel.",
-        "colour": "grey",
-        "density": 7850,
-        "melting_point": 1450,
-        "specific_heat": 490,
-        "thermal_conductivity": 45000,
-        "hardness": 150,
-        "cut_by": {
-          "LASER": 2
+    "content": {
+      "materials": [
+        {
+          "id": "steel",
+          "name": "Steel",
+          "description": "Steel.",
+          "colour": "grey",
+          "density": 7850,
+          "melting_point": 1450,
+          "specific_heat": 490,
+          "thermal_conductivity": 45000,
+          "hardness": 150,
+          "cut_by": {
+            "LASER": 2
+          }
         }
-      }
-    ],
-    "structures": [
-      {
-        "id": "deck_plating",
-        "name": "deck plating",
-        "description": "Plating.",
-        "glyph": ".",
-        "open_glyph": null,
-        "behaviour": "floor",
-        "material": "steel",
-        "colour": null
-      }
-    ],
-    "item_types": [
-      {
-        "id": "smock",
-        "name": "smock",
-        "description": "A smock.",
-        "glyph": "[",
-        "material": "steel",
-        "volume_ml": 1,
-        "solid_percent": 1,
-        "qualities": {},
-        "wear": {
-          "pockets": []
+      ],
+      "structures": [
+        {
+          "id": "deck_plating",
+          "name": "deck plating",
+          "description": "Plating.",
+          "glyph": ".",
+          "open_glyph": null,
+          "behaviour": "floor",
+          "material": "steel",
+          "colour": null
         }
-      }
-    ],
+      ],
+      "item_types": [
+        {
+          "id": "smock",
+          "name": "smock",
+          "description": "A smock.",
+          "glyph": "[",
+          "material": "steel",
+          "volume_ml": 1,
+          "solid_percent": 1,
+          "qualities": {},
+          "wear": {
+            "pockets": []
+          }
+        }
+      ],
+      "recipes": []
+    },
     "floor_items": [],
     "worn": [
       {
@@ -302,16 +305,14 @@ mod tests {
         "material": 0,
         "pockets": []
       }
-    ],
-    "recipes": []
+    ]
   }
 }"#;
 
     /// A two-tile world built from one material and one structure, so its
     /// save is short enough to write out in full.
     fn tiny_world() -> World {
-        use crate::content::ContentFile;
-        use crate::map_file::Catalogue;
+        use crate::content::{Content, ContentFile};
         let materials = crate::material::parse_materials(&[ContentFile::new(
             "metals.json",
             r#"{ "materials": [ { "id": "steel", "name": "Steel", "description": "Steel.",
@@ -348,13 +349,13 @@ mod tests {
                  "decks": [ {{ "rows": {rows:?} }} ] }}"#
         );
         let recipes = crate::recipe::parse_recipes(&[], &structures, &items).unwrap();
-        let catalogue = Catalogue {
-            materials: &materials,
-            structures: &structures,
-            items: &items,
-            recipes: &recipes,
+        let content = Content {
+            materials,
+            structures,
+            item_types: items,
+            recipes,
         };
-        World::new(crate::map_file::parse_map(&json, catalogue).unwrap(), 7)
+        World::new(crate::map_file::parse_map(&json, &content).unwrap(), 7)
     }
 
     #[test]
@@ -387,21 +388,21 @@ mod tests {
 
     #[test]
     fn a_save_without_a_version_is_not_a_save() {
-        let text = save_with("\"version\": 11,", "");
+        let text = save_with("\"version\": 12,", "");
         assert!(matches!(load_from_str(&text), Err(SaveError::NotASave)));
     }
 
     #[test]
     fn saves_from_other_versions_are_rejected_clearly() {
-        // A save from before repairs (its recipes have no `uses`): exactly
-        // what an old save file on disk looks like after this build is
+        // A save from before content was kept in one bundle: exactly what
+        // an old save file on disk looks like after this build is
         // installed.
-        let text = save_with(r#""version": 11"#, r#""version": 10"#);
+        let text = save_with(r#""version": 12"#, r#""version": 11"#);
         let err = load_from_str(&text).unwrap_err();
-        assert!(matches!(err, SaveError::UnsupportedVersion { found: 10 }));
+        assert!(matches!(err, SaveError::UnsupportedVersion { found: 11 }));
         assert_eq!(
             err.to_string(),
-            "save file is version 10, but this build only reads version 11"
+            "save file is version 11, but this build only reads version 12"
         );
     }
 

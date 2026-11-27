@@ -115,8 +115,10 @@ impl Structure {
     }
 }
 
-/// Every structure from the files in `data/structures/`.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// Every structure from the files in `data/structures/`, saved as just
+/// the list.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
 pub struct Structures {
     list: Vec<Structure>,
 }
@@ -132,6 +134,12 @@ impl Structures {
     pub fn index_of(&self, id: &str) -> Option<u16> {
         let i = self.list.iter().position(|s| s.id == id)?;
         Some(u16::try_from(i).expect("structure count was checked on load"))
+    }
+
+    /// The list, changeable, for tests in other modules.
+    #[cfg(test)]
+    pub(crate) fn list_mut(&mut self) -> &mut Vec<Structure> {
+        &mut self.list
     }
 }
 
@@ -199,7 +207,7 @@ struct StructuresFile {
 
 /// Parses and checks every structures file. Each structure's material must
 /// be one of `materials`.
-pub fn parse_structures(
+pub(crate) fn parse_structures(
     files: &[ContentFile],
     materials: &Materials,
 ) -> Result<Structures, StructureError> {

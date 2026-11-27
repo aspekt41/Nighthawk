@@ -13,6 +13,7 @@ text to put in its place:
 
     agent-tools/replace.py FILE < edits.txt
     agent-tools/replace.py FILE --dry-run < edits.txt   # check, change nothing
+    agent-tools/replace.py FILE --all < edits.txt       # replace every match (a rename)
 
 Why not just search and replace:
 - Rust files are run through `cargo fmt` first, so OLD is matched against the
@@ -23,7 +24,10 @@ Why not just search and replace:
   matches.
 - Every OLD must match exactly one place. If any edit matches nowhere, or in
   more than one place, nothing at all is written, and the error says where
-  the closest text is (or where all the matches are).
+  the closest text is (or where all the matches are). With --all, an OLD
+  may match any number of places (at least one) and every one is replaced:
+  for renames. Make OLD distinctive (`catalogue.` rather than `cat`), as
+  every match is replaced.
 - NEW goes in exactly as written (then rustfmt tidies Rust files).
 
 To insert, put the line you're inserting after in OLD, and that line plus the
@@ -137,19 +141,18 @@ def closest(file_text, norm_file, origin, norm_old):
     return best
 
 
-def locate(file_text, old, rust):
-    """The (start, end) of the one place `old` matches, or an error message."""
+def locate(file_text, old, rust, many=False):
+    """The (start, end) spans where `old` matches (exactly one, or with
+    `many` at least one, none overlapping), or an error message."""
     norm_file, origin = normalise(file_text, rust)
     norm_old, _ = normalise(old, rust)
     if not norm_old:
         return "OLD is empty"
     starts = find_all(norm_file, norm_old)
-    if len(starts) == 1:
-        first = starts[0]
-        end = origin[first + len(norm_old) - 1] + 1
-        if rust and old.rstrip().endswith(","):
-            end = swallow_comma(file_text, end)
-        return origin[first], end
+    if many:
+        starts = without_overlaps(starts, len(norm_old))
+    if len(starts) == 1 or (many and starts):
+        return [span(file_text, origin, first, norm_old, old, rust) for first in starts]
     if starts:
         lines = ", ".join(str(line_of(file_text, origin[s])) for s in starts)
         return f"matches {len(starts)} places (lines {lines}); add more context to OLD"
@@ -163,15 +166,34 @@ def locate(file_text, old, rust):
     )
 
 
-def apply(file_text, edits, rust):
+def without_overlaps(starts, length):
+    """`starts`, skipping any that begin inside the match before ("aa" in
+    "aaa" matches once, not twice)."""
+    kept = []
+    for s in starts:
+        if not kept or s >= kept[-1] + length:
+            kept.append(s)
+    return kept
+
+
+def span(file_text, origin, first, norm_old, old, rust):
+    """The (start, end) in the file of the match at `first` in the
+    normalised text."""
+    end = origin[first + len(norm_old) - 1] + 1
+    if rust and old.rstrip().endswith(","):
+        end = swallow_comma(file_text, end)
+    return origin[first], end
+
+
+def apply(file_text, edits, rust, many=False):
     """The text with every edit applied, or a list of error messages."""
     spans, errors = [], []
     for number, (old, new) in enumerate(edits, start=1):
-        found = locate(file_text, old, rust)
+        found = locate(file_text, old, rust, many)
         if isinstance(found, str):
             errors.append(f"edit {number}: {found}")
         else:
-            spans.append((found[0], found[1], new, number))
+            spans.extend((start, end, new, number) for start, end in found)
     spans.sort()
     for (_, end_a, _, a), (start_b, _, _, b) in zip(spans, spans[1:]):
         if start_b < end_a:
@@ -202,6 +224,7 @@ def main(argv=None, stdin=None):
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("file", type=Path)
     parser.add_argument("--dry-run", action="store_true", help="check only; change nothing")
+    parser.add_argument("--all", action="store_true", help="replace every match of each OLD")
     parser.add_argument("--no-format", action="store_true", help="don't run cargo fmt")
     parser.add_argument(
         "--allow-broken",
@@ -221,7 +244,7 @@ def main(argv=None, stdin=None):
     if not args.no_format:
         format_rust(args.file)
     original = args.file.read_text()
-    result = apply(original, edits, rust)
+    result = apply(original, edits, rust, args.all)
     if isinstance(result, list):
         print("\n".join(result) + "\nnothing was changed", file=sys.stderr)
         return 1
@@ -236,7 +259,8 @@ def main(argv=None, stdin=None):
         args.file.write_text(original)
         print(warning + "\nthe edit broke the code, so nothing was changed", file=sys.stderr)
         return 1
-    print(f"applied {len(edits)} edits to {args.file}")
+    count = f"{len(edits)} edits" if not args.all else f"{len(edits)} edits, every match"
+    print(f"applied {count} to {args.file}")
     if warning:
         print(warning, file=sys.stderr)
     return 0

@@ -101,8 +101,10 @@ pub(crate) fn hash_types(types: &[ItemType], h: &mut Fnv64) {
     }
 }
 
-/// Every item type from the files in `data/items/`.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// Every item type from the files in `data/items/`, saved as just the
+/// list.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
 pub struct ItemTypes {
     list: Vec<ItemType>,
 }
@@ -116,6 +118,12 @@ impl ItemTypes {
     pub fn index_of(&self, id: &str) -> Option<u16> {
         let i = self.list.iter().position(|t| t.id == id)?;
         Some(u16::try_from(i).expect("item type count was checked on load"))
+    }
+
+    /// The list, changeable, for tests in other modules.
+    #[cfg(test)]
+    pub(crate) fn list_mut(&mut self) -> &mut Vec<ItemType> {
+        &mut self.list
     }
 }
 
@@ -382,7 +390,10 @@ struct ItemsFile {
 
 /// Parses and checks every items file. Each item's material must be one of
 /// `materials`.
-pub fn parse_items(files: &[ContentFile], materials: &Materials) -> Result<ItemTypes, ItemError> {
+pub(crate) fn parse_items(
+    files: &[ContentFile],
+    materials: &Materials,
+) -> Result<ItemTypes, ItemError> {
     let list = read_all(files, |f: ItemsFile| f.items).map_err(ItemError::File)?;
     check_list(&list)?;
     list.iter().try_for_each(|t| check_one(t, materials))?;

@@ -67,12 +67,38 @@ EDITS
   was and the tool exits 1, so a bad edit never leaves broken code behind.
   `--allow-broken` keeps it anyway, for a change made in several steps.
 - `--dry-run` checks the edits without changing anything.
+- `--all` lets each OLD match any number of places (at least one) and
+  replaces them all: for renames, like `catalogue.` → `content.`. Make
+  OLD distinctive, since every match is replaced.
 
 Use it for every edit to an existing file instead of ad-hoc Python or `sed`
 replacements. (`sed` with patterns is risky anyway: in a regex `.` matches
 anything, and `.` is also the floor glyph in maps.) To insert, put the
 anchor line in OLD and the anchor plus the new lines in NEW; to delete,
 leave NEW empty. New files are still best written whole.
+
+## `bless.py`: update a snapshot on purpose
+
+Some tests compare output with a stored copy, like the save-format test,
+which checks a tiny save against `const EXPECTED_SAVE: &str = r#"..."#` in
+`crates/nighthawk-sim/src/save.rs`. When the output changes on purpose
+(the save layout changed, and `SAVE_VERSION` was bumped), this runs the
+test, takes the actual text from its `left:` line, writes it into the
+constant, and runs the test again to check it passes.
+
+```sh
+agent-tools/bless.py the_save_format_is_stable crates/nighthawk-sim/src/save.rs EXPECTED_SAVE
+agent-tools/bless.py ... -p nighthawk-sim    # test one crate, if another doesn't build yet
+agent-tools/bless.py ... --dry-run           # print the new text, change nothing
+```
+
+- The test must be `assert_eq!(actual, CONST)`, with the actual value first.
+- If the tests don't compile, it says so and lists the errors, instead of
+  failing to find a `left:` line.
+- Blessing says "the new output is right", so read the diff before
+  committing, as with any snapshot.
+
+Use it instead of copying a long expected value out of test output by hand.
 
 ## `play.py`: play the game and see the screen, in one command
 

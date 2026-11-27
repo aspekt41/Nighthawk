@@ -9,10 +9,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use nighthawk_sim::{
-    Catalogue, ContentFile, ItemTypes, LoadedMap, Materials, Recipes, Structures, World,
-    parse_items, parse_map, parse_materials, parse_recipes, parse_structures,
-};
+use nighthawk_sim::{Content, ContentError, ContentFile, LoadedMap, World, parse_map};
 
 /// The repository's `data/` folder.
 pub fn data_dir() -> PathBuf {
@@ -38,42 +35,17 @@ fn file_name(path: &Path) -> String {
     path.file_name().unwrap().to_string_lossy().into_owned()
 }
 
-/// All the shipped content.
-pub struct Content {
-    pub materials: Materials,
-    pub structures: Structures,
-    pub items: ItemTypes,
-    pub recipes: Recipes,
-}
-
-/// The shipped materials, structures, items and recipes.
-pub fn catalogue() -> Content {
-    let materials = parse_materials(&read_folder("materials"))
-        .unwrap_or_else(|e| panic!("data/materials: {e}"));
-    let structures = parse_structures(&read_folder("structures"), &materials)
-        .unwrap_or_else(|e| panic!("data/structures: {e}"));
-    let items = parse_items(&read_folder("items"), &materials)
-        .unwrap_or_else(|e| panic!("data/items: {e}"));
-    let recipes = parse_recipes(&read_folder("recipes"), &structures, &items)
-        .unwrap_or_else(|e| panic!("data/recipes: {e}"));
-    Content {
-        materials,
-        structures,
-        items,
-        recipes,
-    }
+/// All the shipped content: every folder `Content::load` asks for, read
+/// from `data/`. Reading can't fail here (it panics instead), so the
+/// closure's error type is just `ContentError`.
+pub fn content() -> Content {
+    Content::load(|folder| Ok::<_, ContentError>(read_folder(folder)))
+        .unwrap_or_else(|e| panic!("data/{}: {e}", e.folder()))
 }
 
 /// Parses a map's text against the shipped content.
 pub fn parse(text: &str) -> LoadedMap {
-    let content = catalogue();
-    let catalogue = Catalogue {
-        materials: &content.materials,
-        structures: &content.structures,
-        items: &content.items,
-        recipes: &content.recipes,
-    };
-    parse_map(text, catalogue).unwrap_or_else(|e| panic!("map: {e}"))
+    parse_map(text, &content()).unwrap_or_else(|e| panic!("map: {e}"))
 }
 
 /// A new game on the starting map.

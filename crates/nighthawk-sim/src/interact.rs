@@ -419,8 +419,8 @@ mod tests {
     /// `world` module.
     fn with_laser(world: World, level: u8) -> World {
         let mut json: serde_json::Value = serde_json::to_value(&world).unwrap();
-        json["item_types"][1]["qualities"]["LASER"] = level.into();
-        json["item_types"][1]["wear"] = serde_json::json!({ "pockets": [] });
+        json["content"]["item_types"][1]["qualities"]["LASER"] = level.into();
+        json["content"]["item_types"][1]["wear"] = serde_json::json!({ "pockets": [] });
         json["worn"] = serde_json::json!([ { "kind": 1, "material": 0, "pockets": [] } ]);
         serde_json::from_value(json).unwrap()
     }

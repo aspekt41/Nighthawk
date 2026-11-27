@@ -134,7 +134,11 @@ impl Material {
 }
 
 /// Every material from the files in `data/materials/`.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// `#[serde(transparent)]` saves it as just the list inside, with no
+/// `{ "list": ... }` wrapped around it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
 pub struct Materials {
     list: Vec<Material>,
 }
@@ -150,6 +154,12 @@ impl Materials {
     pub fn index_of(&self, id: &str) -> Option<u16> {
         let i = self.list.iter().position(|m| m.id == id)?;
         Some(u16::try_from(i).expect("material count was checked on load"))
+    }
+
+    /// The list, changeable, for tests in other modules.
+    #[cfg(test)]
+    pub(crate) fn list_mut(&mut self) -> &mut Vec<Material> {
+        &mut self.list
     }
 }
 
@@ -207,7 +217,7 @@ struct MaterialsFile {
 }
 
 /// Parses and checks every materials file.
-pub fn parse_materials(files: &[ContentFile]) -> Result<Materials, MaterialError> {
+pub(crate) fn parse_materials(files: &[ContentFile]) -> Result<Materials, MaterialError> {
     let list = read_all(files, |f: MaterialsFile| f.materials).map_err(MaterialError::File)?;
     check_list(&list)?;
     Ok(Materials { list })

@@ -15,6 +15,7 @@ import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 
+import bless
 import play
 import replace
 import show
@@ -168,6 +169,27 @@ class ReplaceTests(TempFile):
         status, _, err = self.replace(path, edit_block("x = 1", "x = 3"))
         self.assertEqual(status, 1)
         self.assertIn("matches 2 places (lines 1, 3)", err)
+
+    def test_all_replaces_every_match_and_still_needs_one(self):
+        path = self.file("a.rs", RUST)
+        status, out, _ = self.replace(path, edit_block("Event::", "Happening::"), "--all")
+        self.assertEqual(status, 0, out)
+        self.assertIn("every match", out)
+        self.assertEqual(path.read_text().count("Happening::"), 2)
+        self.assertNotIn("Event::", path.read_text())
+        status, _, err = self.replace(path, edit_block("Event::", "X::"), "--all")
+        self.assertEqual(status, 1)
+        self.assertIn("matches nowhere", err)
+
+    def test_all_counts_overlapping_matches_once(self):
+        path = self.file("a.txt", "aaa\n")
+        status, _, _ = self.replace(path, edit_block("aa", "b"), "--all")
+        self.assertEqual(status, 0)
+        self.assertEqual(path.read_text(), "ba\n")
+        path = self.file("b.txt", "aaa\n")
+        status, _, err = self.replace(path, edit_block("aa", "b"))
+        self.assertEqual(status, 1, "without --all, overlapping matches are ambiguous")
+        self.assertIn("matches 2 places", err)
 
     def test_overlapping_edits_are_refused(self):
         path = self.file("a.txt", "one two three\n")
@@ -351,6 +373,91 @@ class PlayOutputTests(unittest.TestCase):
 
 
 GAME = show.repo_root(Path(__file__).resolve().parent) / "target" / "debug" / "nighthawk-tui"
+
+
+class BlessTests(TempFile):
+    SNAPSHOT = 'const EXPECTED: &str = r#"{\n  "old": 1\n}"#;\nconst OTHER: &str = r#"x"#;\n'
+    FAILURE = (
+        "thread 'the_format_is_stable' panicked at src/a.rs:9:5:\n"
+        "assertion `left == right` failed\n"
+        '  left: "{\\n  \\"new\\": 2,\\n  \\"tab\\": \\"\\t\\\\\\u{e9}\\"\\n}"\n'
+        ' right: "{\\n  \\"old\\": 1\\n}"\n'
+    )
+
+    def fake_runner(self, outcomes):
+        """A test runner that gives each (passed, output) in turn."""
+        calls = iter(outcomes)
+        return lambda root, test: next(calls)
+
+    def test_rust_debug_strings_are_unescaped(self):
+        self.assertEqual(bless.debug_unescape(r'"a\n\"b\" \\ \t \u{e9}"'), 'a\n"b" \\ \t \u00e9')
+        with self.assertRaises(ValueError):
+            bless.debug_unescape("no quotes")
+
+    def test_the_left_value_goes_into_the_constant_and_nothing_else_changes(self):
+        path = self.file("a.txt", self.SNAPSHOT)
+        runner = self.fake_runner([(False, self.FAILURE), (True, "ok")])
+        out = io.StringIO()
+        with redirect_stdout(out):
+            status = bless.main(["the_format", str(path), "EXPECTED"], runner)
+        self.assertEqual(status, 0)
+        text = path.read_text()
+        self.assertIn('r#"{\n  "new": 2,\n  "tab": "\t\\\u00e9"\n}"#;', text)
+        self.assertIn('const OTHER: &str = r#"x"#;', text, "other constants are untouched")
+
+    def test_a_passing_test_needs_no_blessing(self):
+        path = self.file("a.txt", self.SNAPSHOT)
+        status, out, _ = run_with(bless, ["t", str(path), "EXPECTED"], self.fake_runner([(True, "")]))
+        self.assertEqual(status, 0)
+        self.assertIn("already passes", out)
+        self.assertEqual(path.read_text(), self.SNAPSHOT)
+
+    def test_mistakes_change_nothing(self):
+        path = self.file("a.txt", self.SNAPSHOT)
+        no_left = self.fake_runner([(False, "error[E0425]: cannot find value")])
+        status, _, err = run_with(bless, ["t", str(path), "EXPECTED"], no_left)
+        self.assertEqual(status, 1)
+        self.assertIn("no `left:` line", err)
+        wrong_name = self.fake_runner([(False, self.FAILURE)])
+        status, _, err = run_with(bless, ["t", str(path), "MISSING"], wrong_name)
+        self.assertIn("no `const MISSING", err)
+        self.assertEqual(path.read_text(), self.SNAPSHOT)
+
+    def test_a_build_failure_says_so_with_its_errors(self):
+        path = self.file("a.txt", self.SNAPSHOT)
+        broken = "error[E0432]: unresolved import `x::Y`\n  --> src/a.rs:3:5\nmore\nerror: could not compile `a`\n"
+        status, _, err = run_with(bless, ["t", str(path), "EXPECTED"], self.fake_runner([(False, broken)]))
+        self.assertEqual(status, 1)
+        self.assertIn("didn't compile", err)
+        self.assertIn("--> src/a.rs:3:5", err)
+        self.assertNotIn("more", err)
+
+    def test_a_test_that_still_fails_is_reported(self):
+        path = self.file("a.txt", self.SNAPSHOT)
+        runner = self.fake_runner([(False, self.FAILURE), (False, "still broken")])
+        status, _, err = run_with(bless, ["t", str(path), "EXPECTED"], runner)
+        self.assertEqual(status, 1)
+        self.assertIn("still fails", err)
+
+    def test_dry_run_prints_without_writing(self):
+        path = self.file("a.txt", self.SNAPSHOT)
+        runner = self.fake_runner([(False, self.FAILURE)])
+        status, out, _ = run_with(bless, ["t", str(path), "EXPECTED", "--dry-run"], runner)
+        self.assertEqual(status, 0)
+        self.assertIn('"new": 2', out)
+        self.assertEqual(path.read_text(), self.SNAPSHOT)
+
+    def test_a_value_that_would_close_the_raw_string_is_refused(self):
+        with self.assertRaises(ValueError):
+            bless.replace_const(self.SNAPSHOT, "EXPECTED", 'a "# b')
+
+
+def run_with(module, argv, runner):
+    """Like `run`, for a main() that also takes a test runner."""
+    out, err = io.StringIO(), io.StringIO()
+    with redirect_stdout(out), redirect_stderr(err):
+        status = module.main(argv, runner)
+    return status, out.getvalue(), err.getvalue()
 
 
 @unittest.skipUnless(shutil.which("tmux") and GAME.exists(), "needs tmux and a built game")

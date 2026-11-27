@@ -26,13 +26,12 @@ use std::fmt;
 use serde::Deserialize;
 
 use crate::air::Mix;
+use crate::content::Content;
 use crate::heat::{MAX_CELSIUS, MIN_CELSIUS, celsius_to_mk};
-use crate::item::{FloorItem, Item, ItemType, ItemTypes};
+use crate::item::{FloorItem, Item};
 use crate::map::{Map, StairsError, Tile};
-use crate::material::{Material, Materials};
 use crate::pos::Pos;
-use crate::recipe::{Recipe, Recipes};
-use crate::structure::{Behaviour, Structure, Structures};
+use crate::structure::Behaviour;
 
 /// The glyph that marks the player's starting position.
 const PLAYER_START: char = '@';
@@ -46,19 +45,13 @@ pub struct LoadedMap {
     pub deck_names: Vec<String>,
     pub map: Map,
     pub player_start: Pos,
-    /// Every material, in the order the map's tiles refer to them (the
-    /// world keeps its own copy, so a save never depends on data files).
-    pub materials: Vec<Material>,
-    /// Every structure, in the order the map's tiles refer to them.
-    pub structures: Vec<Structure>,
-    /// Every item type, in the order items refer to them.
-    pub item_types: Vec<ItemType>,
+    /// All the content the map's tiles and items refer to (the world keeps
+    /// its own copy, so a save never depends on data files).
+    pub content: Content,
     /// The items lying on the floor, in reading order.
     pub floor_items: Vec<FloorItem>,
     /// What the player starts out wearing.
     pub worn: Vec<Item>,
-    /// Every recipe: how one structure becomes another.
-    pub recipes: Vec<Recipe>,
 }
 
 /// A mistake in a list of items in a map (on the floor, or worn).
@@ -345,20 +338,11 @@ struct DeckFile {
 /// The highest starting pressure a deck may ask for, in percent.
 const MAX_PRESSURE_PERCENT: u32 = 200;
 
-/// The structures, materials and items a map can name.
-#[derive(Clone, Copy)]
-pub struct Catalogue<'a> {
-    pub materials: &'a Materials,
-    pub structures: &'a Structures,
-    pub items: &'a ItemTypes,
-    pub recipes: &'a Recipes,
-}
-
 /// Parses and validates a map file's text. Its legend names structures from
-/// `catalogue`, made of its materials.
-pub fn parse_map(json: &str, catalogue: Catalogue) -> Result<LoadedMap, MapError> {
+/// `content`, made of its materials, with its items lying about.
+pub fn parse_map(json: &str, content: &Content) -> Result<LoadedMap, MapError> {
     let file: MapFile = serde_json::from_str(json).map_err(MapError::Json)?;
-    let legend = glyph_legend(&file.legend, catalogue)?;
+    let legend = glyph_legend(&file.legend, content)?;
     let (width, height) = dimensions(&file.decks)?;
 
     let Built {
@@ -370,7 +354,7 @@ pub fn parse_map(json: &str, catalogue: Catalogue) -> Result<LoadedMap, MapError
     map.check_stairs().map_err(MapError::Stairs)?;
     fill_air(&mut map, &file.decks)?;
     let deck_names = deck_names(&file.decks);
-    let worn = worn_items(&file.player_wears, catalogue)?;
+    let worn = worn_items(&file.player_wears, content)?;
 
     match starts[..] {
         [player_start] => Ok(LoadedMap {
@@ -379,12 +363,9 @@ pub fn parse_map(json: &str, catalogue: Catalogue) -> Result<LoadedMap, MapError
             deck_names,
             map,
             player_start,
-            materials: catalogue.materials.list().to_vec(),
-            structures: catalogue.structures.list().to_vec(),
-            item_types: catalogue.items.list().to_vec(),
+            content: content.clone(),
             floor_items,
             worn,
-            recipes: catalogue.recipes.list().to_vec(),
         }),
         _ => Err(MapError::PlayerStartCount {
             found: starts.len(),
@@ -484,22 +465,22 @@ struct Placement {
 }
 
 /// The items an item list in a map stands for: `count` new items each.
-fn make_items(specs: &[ItemSpec], catalogue: Catalogue) -> Result<Vec<Item>, ItemSpecError> {
+fn make_items(specs: &[ItemSpec], content: &Content) -> Result<Vec<Item>, ItemSpecError> {
     let mut items = Vec::new();
     for spec in specs {
         let kind =
-            catalogue
-                .items
+            content
+                .item_types
                 .index_of(&spec.item)
                 .ok_or_else(|| ItemSpecError::UnknownItem {
                     item: spec.item.clone(),
                 })?;
-        let types = catalogue.items.list();
+        let types = content.item_types.list();
         let material_id = spec
             .material
             .as_ref()
             .unwrap_or(&types[usize::from(kind)].material);
-        let material = catalogue.materials.index_of(material_id).ok_or_else(|| {
+        let material = content.materials.index_of(material_id).ok_or_else(|| {
             ItemSpecError::UnknownMaterial {
                 item: spec.item.clone(),
                 material: material_id.clone(),
@@ -521,9 +502,9 @@ fn floor_items(
     glyph: char,
     specs: &[ItemSpec],
     tile: Tile,
-    catalogue: Catalogue,
+    content: &Content,
 ) -> Result<Vec<Item>, LegendError> {
-    let items = make_items(specs, catalogue).map_err(|error| LegendError::Item { glyph, error })?;
+    let items = make_items(specs, content).map_err(|error| LegendError::Item { glyph, error })?;
     if !items.is_empty() && !tile.is_walkable() {
         return Err(LegendError::ItemsInSolid { glyph });
     }
@@ -531,9 +512,9 @@ fn floor_items(
 }
 
 /// What the player starts out wearing: items that can all be worn.
-fn worn_items(specs: &[ItemSpec], catalogue: Catalogue) -> Result<Vec<Item>, MapError> {
-    let items = make_items(specs, catalogue).map_err(MapError::Wearing)?;
-    let types = catalogue.items.list();
+fn worn_items(specs: &[ItemSpec], content: &Content) -> Result<Vec<Item>, MapError> {
+    let items = make_items(specs, content).map_err(MapError::Wearing)?;
+    let types = content.item_types.list();
     match items
         .iter()
         .find(|i| types[usize::from(i.kind)].wear.is_none())
@@ -549,7 +530,7 @@ fn worn_items(specs: &[ItemSpec], catalogue: Catalogue) -> Result<Vec<Item>, Map
 /// entry into what it places.
 fn glyph_legend(
     legend: &HashMap<String, LegendEntry>,
-    catalogue: Catalogue,
+    content: &Content,
 ) -> Result<HashMap<char, Placement>, MapError> {
     legend
         .iter()
@@ -559,27 +540,27 @@ fn glyph_legend(
                 (Some(c), None) => c,
                 _ => return Err(LegendError::BadKey { key: key.clone() }),
             };
-            Ok((glyph, place(glyph, entry, catalogue)?))
+            Ok((glyph, place(glyph, entry, content)?))
         })
         .collect::<Result<_, LegendError>>()
         .map_err(MapError::Legend)
 }
 
 /// What a legend entry places.
-fn place(glyph: char, entry: &LegendEntry, catalogue: Catalogue) -> Result<Placement, LegendError> {
+fn place(glyph: char, entry: &LegendEntry, content: &Content) -> Result<Placement, LegendError> {
     let (id, material, open, specs) = match entry {
         LegendEntry::Id(id) => (id, None, false, &[][..]),
         LegendEntry::Placed(p) => (&p.structure, p.material.as_ref(), p.open, &p.items[..]),
     };
     let structure =
-        catalogue
+        content
             .structures
             .index_of(id)
             .ok_or_else(|| LegendError::UnknownStructure {
                 glyph,
                 structure: id.clone(),
             })?;
-    let made = &catalogue.structures.list()[usize::from(structure)];
+    let made = &content.structures.list()[usize::from(structure)];
     if open && made.behaviour != Behaviour::Door {
         return Err(LegendError::NotADoor { glyph });
     }
@@ -591,14 +572,14 @@ fn place(glyph: char, entry: &LegendEntry, catalogue: Catalogue) -> Result<Place
     }
     let material_id = material.unwrap_or(&made.material);
     let material =
-        catalogue
+        content
             .materials
             .index_of(material_id)
             .ok_or_else(|| LegendError::UnknownMaterial {
                 glyph,
                 material: material_id.clone(),
             })?;
-    let items = floor_items(glyph, specs, tile, catalogue)?;
+    let items = floor_items(glyph, specs, tile, content)?;
     Ok(Placement {
         tile,
         structure,
@@ -672,27 +653,18 @@ fn to_i32(n: usize) -> i32 {
 /// `parse_map`.
 #[cfg(test)]
 pub(crate) fn parse_map_for_tests(json: &str) -> Result<LoadedMap, MapError> {
-    let materials = crate::material::tests::test_materials();
-    let structures = crate::structure::tests::test_structures();
-    let items = crate::item::tests::test_items();
-    let recipes = crate::recipe::tests::test_recipes();
-    let catalogue = Catalogue {
-        materials: &materials,
-        structures: &structures,
-        items: &items,
-        recipes: &recipes,
-    };
+    let content = Content::for_tests();
     // Add `"@": "floor"` to the legend, if the JSON is valid enough to
     // have one and it doesn't say. Otherwise parse it as it is, so tests of
     // broken JSON see the real error.
     let mut value: serde_json::Value = match serde_json::from_str(json) {
         Ok(value) => value,
-        Err(_) => return parse_map(json, catalogue),
+        Err(_) => return parse_map(json, &content),
     };
     if let Some(legend) = value.get_mut("legend").and_then(|l| l.as_object_mut()) {
         legend.entry("@").or_insert_with(|| "floor".into());
     }
-    parse_map(&value.to_string(), catalogue)
+    parse_map(&value.to_string(), &content)
 }
 
 #[cfg(test)]
@@ -1097,9 +1069,13 @@ mod material_tests {
         let wall = Pos::new(2, 0, 0);
         assert_eq!(loaded.map.structure_index(wall), Some(1));
         assert_eq!(loaded.map.material_index(wall), Some(0));
-        assert_eq!(loaded.materials[0].id, "steel");
-        assert_eq!(loaded.materials.len(), 2, "the whole list comes along");
-        assert_eq!(loaded.structures.len(), 8);
+        assert_eq!(loaded.content.materials()[0].id, "steel");
+        assert_eq!(
+            loaded.content.materials().len(),
+            2,
+            "the whole list comes along"
+        );
+        assert_eq!(loaded.content.structures().len(), 8);
     }
 
     #[test]
@@ -1193,7 +1169,7 @@ mod item_tests {
         assert!(loaded.floor_items.iter().all(|f| f.at == Pos::new(1, 0, 0)));
         assert_eq!(loaded.floor_items[0].item.kind, 1);
         assert_eq!(loaded.floor_items[3].item.kind, 2);
-        assert_eq!(loaded.item_types.len(), 3);
+        assert_eq!(loaded.content.item_types().len(), 3);
         assert!(loaded.worn.is_empty(), "nothing worn unless the map says");
     }
 

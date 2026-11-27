@@ -10,7 +10,7 @@ use std::collections::{HashSet, VecDeque};
 use std::fs;
 use std::path::PathBuf;
 
-use nighthawk_sim::{Catalogue, Dir, LoadedMap, MapError, Pos, Quality, Tile, Vertical, parse_map};
+use nighthawk_sim::{Dir, LoadedMap, MapError, Pos, Quality, Tile, Vertical, parse_map};
 
 fn maps_dir() -> PathBuf {
     // CARGO_MANIFEST_DIR is this crate's folder, crates/nighthawk-sim.
@@ -19,14 +19,7 @@ fn maps_dir() -> PathBuf {
 
 /// Parses a map's text against the shipped materials and structures.
 fn load(text: &str) -> Result<LoadedMap, MapError> {
-    let content = common::catalogue();
-    let catalogue = Catalogue {
-        materials: &content.materials,
-        structures: &content.structures,
-        items: &content.items,
-        recipes: &content.recipes,
-    };
-    parse_map(text, catalogue)
+    parse_map(text, &common::content())
 }
 
 #[test]
@@ -191,13 +184,13 @@ fn every_shipped_structure_is_on_the_starting_map_or_made_by_a_recipe() {
     // A structure nothing uses is probably a typo in a map's legend or a
     // recipe.
     let world = common::start_world(1);
-    let content = common::catalogue();
+    let content = common::content();
     let mut used: HashSet<&str> = world
         .map()
         .positions()
         .map(|p| world.structure_at(p).unwrap().id.as_str())
         .collect();
-    used.extend(content.recipes.list().iter().map(|r| r.to.as_str()));
+    used.extend(content.recipes().iter().map(|r| r.to.as_str()));
     for structure in world.structures() {
         assert!(
             used.contains(structure.id.as_str()),
@@ -211,10 +204,10 @@ fn every_shipped_structure_is_on_the_starting_map_or_made_by_a_recipe() {
 fn the_shipped_materials_have_the_agreed_laser_levels() {
     // Levels are set by hand (decision D35). This test is the list to
     // update on purpose when they're retuned.
-    let materials = common::catalogue().materials;
+    let content = common::content();
     let level = |id: &str| {
-        let i = usize::from(materials.index_of(id).unwrap());
-        materials.list()[i].cut_by.get(&Quality::Laser).copied()
+        let i = usize::from(content.material_index(id).unwrap());
+        content.materials()[i].cut_by.get(&Quality::Laser).copied()
     };
     assert_eq!(level("aluminium_alloy"), Some(1));
     assert_eq!(level("steel"), Some(2));

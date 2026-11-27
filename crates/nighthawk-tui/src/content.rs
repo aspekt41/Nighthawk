@@ -8,11 +8,7 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
-use nighthawk_sim::{
-    Catalogue, ContentFile, ItemError, ItemTypes, LoadedMap, MapError, MaterialError, Materials,
-    RecipeError, Recipes, StructureError, Structures, parse_items, parse_map, parse_materials,
-    parse_recipes, parse_structures,
-};
+use nighthawk_sim::{Content, ContentError, ContentFile, LoadedMap, MapError, parse_map};
 
 /// The map a new game starts on, as a file name in `data/maps/` (no `.json`).
 pub const START_MAP: &str = "aft_ring";
@@ -34,26 +30,17 @@ pub enum LoadError {
         path: PathBuf,
         source: MapError,
     },
-    /// A mistake in `data/materials/` (the error names the file).
-    Materials {
-        path: PathBuf,
-        source: MaterialError,
-    },
-    /// A mistake in `data/structures/` (the error names the file).
-    Structures {
-        path: PathBuf,
-        source: StructureError,
-    },
-    /// A mistake in `data/items/` (the error names the file).
-    Items {
-        path: PathBuf,
-        source: ItemError,
-    },
-    /// A mistake in `data/recipes/` (the error names the file).
-    Recipes {
-        path: PathBuf,
-        source: RecipeError,
-    },
+    /// A mistake in one of the content folders, like `data/materials/`
+    /// (the error names the folder and the file).
+    Content(ContentError),
+}
+
+/// Lets `?` turn a content mistake into a `LoadError`, which is what
+/// `Content::load` needs to hand its errors back in our error type.
+impl From<ContentError> for LoadError {
+    fn from(error: ContentError) -> Self {
+        LoadError::Content(error)
+    }
 }
 
 impl fmt::Display for LoadError {
@@ -70,10 +57,7 @@ impl fmt::Display for LoadError {
                 write!(f, "could not read {}: {source}", path.display())
             }
             LoadError::Map { path, source } => write!(f, "{}: {source}", path.display()),
-            LoadError::Structures { path, source } => write!(f, "{}: {source}", path.display()),
-            LoadError::Items { path, source } => write!(f, "{}: {source}", path.display()),
-            LoadError::Recipes { path, source } => write!(f, "{}: {source}", path.display()),
-            LoadError::Materials { path, source } => write!(f, "{}: {source}", path.display()),
+            LoadError::Content(source) => write!(f, "data/{}: {source}", source.folder()),
         }
     }
 }
@@ -132,47 +116,11 @@ fn read_folder(dir: &Path) -> Result<Vec<ContentFile>, LoadError> {
         .collect()
 }
 
-/// All the content a map can refer to.
-pub struct Content {
-    pub materials: Materials,
-    pub structures: Structures,
-    pub items: ItemTypes,
-    pub recipes: Recipes,
-}
-
-impl Content {
-    /// The content as the sim's `Catalogue`, which borrows each list.
-    pub fn catalogue(&self) -> Catalogue<'_> {
-        Catalogue {
-            materials: &self.materials,
-            structures: &self.structures,
-            items: &self.items,
-            recipes: &self.recipes,
-        }
-    }
-}
-
-/// Loads and checks `data/materials/`, `data/structures/`, `data/items/`
-/// and `data/recipes/`.
+/// Loads and checks every content folder in `data_dir` (`materials/`,
+/// `structures/` and so on). The sim decides which folders there are; this
+/// only says how to read one.
 pub fn load_content(data_dir: &Path) -> Result<Content, LoadError> {
-    let path = data_dir.join("materials");
-    let materials = parse_materials(&read_folder(&path)?)
-        .map_err(|source| LoadError::Materials { path, source })?;
-    let path = data_dir.join("structures");
-    let structures = parse_structures(&read_folder(&path)?, &materials)
-        .map_err(|source| LoadError::Structures { path, source })?;
-    let path = data_dir.join("items");
-    let items = parse_items(&read_folder(&path)?, &materials)
-        .map_err(|source| LoadError::Items { path, source })?;
-    let path = data_dir.join("recipes");
-    let recipes = parse_recipes(&read_folder(&path)?, &structures, &items)
-        .map_err(|source| LoadError::Recipes { path, source })?;
-    Ok(Content {
-        materials,
-        structures,
-        items,
-        recipes,
-    })
+    Content::load(|folder| read_folder(&data_dir.join(folder)))
 }
 
 /// Loads and checks `data/maps/<map_id>.json`, along with the structures
@@ -181,7 +129,7 @@ pub fn load_map(data_dir: &Path, map_id: &str) -> Result<LoadedMap, LoadError> {
     let content = load_content(data_dir)?;
     let path = data_dir.join("maps").join(format!("{map_id}.json"));
     let text = read(&path)?;
-    parse_map(&text, content.catalogue()).map_err(|source| LoadError::Map { path, source })
+    parse_map(&text, &content).map_err(|source| LoadError::Map { path, source })
 }
 
 /// Finds the data folder and loads the map every new game starts on.
@@ -258,7 +206,7 @@ mod tests {
     /// structures in it.
     fn data_dir_with_content() -> tempfile::TempDir {
         let dir = tempfile::tempdir().unwrap();
-        for folder in ["materials", "structures", "items", "recipes"] {
+        for folder in nighthawk_sim::CONTENT_FOLDERS {
             fs::create_dir(dir.path().join(folder)).unwrap();
             for entry in fs::read_dir(repo_data_dir().join(folder)).unwrap() {
                 let from = entry.unwrap().path();
@@ -294,45 +242,20 @@ mod tests {
 
     #[test]
     fn broken_content_names_the_folder_and_the_file() {
-        let dir = data_dir_with_content();
-        fs::write(dir.path().join("materials/zz_broken.json"), "{}").unwrap();
-        let err = load_map(dir.path(), "aft_ring").unwrap_err();
-        assert!(matches!(err, LoadError::Materials { .. }));
-        assert!(
-            err.to_string()
-                .contains("invalid materials file zz_broken.json"),
-            "{err}"
-        );
-
-        let dir = data_dir_with_content();
-        fs::write(dir.path().join("structures/zz_broken.json"), "{}").unwrap();
-        let err = load_map(dir.path(), "aft_ring").unwrap_err();
-        assert!(matches!(err, LoadError::Structures { .. }));
-        assert!(
-            err.to_string()
-                .contains("invalid structures file zz_broken.json"),
-            "{err}"
-        );
-
-        let dir = data_dir_with_content();
-        fs::write(dir.path().join("items/zz_broken.json"), "{}").unwrap();
-        let err = load_map(dir.path(), "aft_ring").unwrap_err();
-        assert!(matches!(err, LoadError::Items { .. }));
-        assert!(
-            err.to_string()
-                .contains("invalid items file zz_broken.json"),
-            "{err}"
-        );
-
-        let dir = data_dir_with_content();
-        fs::write(dir.path().join("recipes/zz_broken.json"), "{}").unwrap();
-        let err = load_map(dir.path(), "aft_ring").unwrap_err();
-        assert!(matches!(err, LoadError::Recipes { .. }));
-        assert!(
-            err.to_string()
-                .contains("invalid recipes file zz_broken.json"),
-            "{err}"
-        );
+        // Every content folder the sim asks for, one at a time.
+        for folder in nighthawk_sim::CONTENT_FOLDERS {
+            let dir = data_dir_with_content();
+            fs::write(dir.path().join(folder).join("zz_broken.json"), "{}").unwrap();
+            let err = load_map(dir.path(), "aft_ring").unwrap_err();
+            assert!(matches!(err, LoadError::Content(_)), "{folder}: {err}");
+            let message = err.to_string();
+            assert!(
+                message.starts_with(&format!(
+                    "data/{folder}: invalid {folder} file zz_broken.json"
+                )),
+                "{message}"
+            );
+        }
     }
 
     #[test]
@@ -345,9 +268,9 @@ mod tests {
     #[test]
     fn the_real_content_loads() {
         let content = load_content(&repo_data_dir()).unwrap();
-        assert!(content.materials.index_of("nanocarbon_alloy").is_some());
-        assert!(content.structures.index_of("hull_plating").is_some());
-        assert!(content.items.index_of("basic_laser_cutter").is_some());
+        assert!(content.material_index("nanocarbon_alloy").is_some());
+        assert!(content.structure_index("hull_plating").is_some());
+        assert!(content.item_type_index("basic_laser_cutter").is_some());
     }
 
     #[test]

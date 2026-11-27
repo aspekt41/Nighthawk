@@ -97,8 +97,9 @@ impl Recipe {
     }
 }
 
-/// Every recipe from the files in `data/recipes/`.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// Every recipe from the files in `data/recipes/`, saved as just the list.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
 pub struct Recipes {
     list: Vec<Recipe>,
 }
@@ -106,6 +107,12 @@ pub struct Recipes {
 impl Recipes {
     pub fn list(&self) -> &[Recipe] {
         &self.list
+    }
+
+    /// The list, changeable, for tests in other modules.
+    #[cfg(test)]
+    pub(crate) fn list_mut(&mut self) -> &mut Vec<Recipe> {
+        &mut self.list
     }
 }
 
@@ -186,7 +193,7 @@ struct RecipesFile {
 
 /// Parses and checks every recipes file. Each recipe's structures must be
 /// in `structures`, and the items it uses in `items`.
-pub fn parse_recipes(
+pub(crate) fn parse_recipes(
     files: &[ContentFile],
     structures: &Structures,
     items: &ItemTypes,
