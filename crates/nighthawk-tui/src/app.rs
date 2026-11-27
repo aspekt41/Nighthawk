@@ -988,13 +988,16 @@ mod tests {
 
     // --- Interact menu -----------------------------------------------------------
 
-    /// A new game standing beside the first crew-deck door: at (16, 6) with
-    /// the cabin door at (16, 7) just south, and another door at (16, 4)
-    /// two tiles north.
+    /// A new game standing beside a crew-deck door with the hand lamp, so
+    /// there's light to see by: at (22, 6) with the cabin door at (22, 7)
+    /// just south, and another door at (22, 4) two tiles north.
     fn by_a_door() -> (App, tempfile::TempDir) {
         let (mut app, dir) = new_app(Some(7));
-        let route = std::iter::repeat_n('k', 5)
-            .chain(std::iter::repeat_n('l', 23))
+        // Pick up the lamp at (11, 8) first: step onto it, then `e` `g`.
+        let route = ['n', 'e', 'g']
+            .into_iter()
+            .chain(std::iter::repeat_n('k', 6))
+            .chain(std::iter::repeat_n('l', 22))
             .chain(['>'])
             .chain(std::iter::repeat_n('j', 4))
             .chain(std::iter::repeat_n('h', 11));

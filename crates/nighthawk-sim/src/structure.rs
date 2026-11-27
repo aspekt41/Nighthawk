@@ -19,6 +19,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::content::{ContentFile, FileError, first_duplicate, read_all};
 use crate::hash::Fnv64;
+use crate::light::MAX_LIGHT;
 use crate::map::Tile;
 use crate::material::{Colour, Materials};
 use crate::pos::Vertical;
@@ -58,6 +59,11 @@ pub struct Structure {
     /// structures block sight.
     #[serde(default)]
     pub see_through: bool,
+    /// How many tiles its light reaches, if it's a light (like an
+    /// emergency light set into a bulkhead), from 1 to 20. Optional: it
+    /// gives no light.
+    #[serde(default)]
+    pub light: u8,
 }
 
 impl Structure {
@@ -68,6 +74,7 @@ impl Structure {
             leak_cm2: self.leak_cm2,
             climb: self.climb,
             see_through: self.see_through,
+            light: self.light,
         }
     }
 
@@ -80,7 +87,8 @@ impl Structure {
             .u8(u8::from(self.walkable))
             .u64(u64::from(self.leak_cm2))
             .u8(self.climb.map_or(u8::MAX, Vertical::hash_id))
-            .u8(u8::from(self.see_through));
+            .u8(u8::from(self.see_through))
+            .u8(self.light);
     }
 }
 
@@ -204,6 +212,10 @@ fn check_list(list: &[Structure]) -> Result<(), StructureError> {
     }
 }
 
+/// What's wrong with a light that reaches too far. The number is
+/// [`MAX_LIGHT`], checked by a test.
+const TOO_BRIGHT: &str = "light can reach at most 20 tiles";
+
 /// Checks one structure: its material exists, and its properties go
 /// together.
 fn check_one(structure: &Structure, materials: &Materials) -> Result<(), StructureError> {
@@ -213,17 +225,25 @@ fn check_one(structure: &Structure, materials: &Materials) -> Result<(), Structu
             material: structure.material.clone(),
         });
     }
-    let problem = if structure.walkable && structure.leak_cm2 > 0 {
-        Some("only solid structures can leak (leak_cm2), and this one is walkable")
-    } else if !structure.walkable && structure.climb.is_some() {
-        Some("only walkable structures can be ladders (climb)")
-    } else if structure.walkable && structure.see_through {
-        Some("walkable structures never block sight, so see_through is only for solid ones")
-    } else {
-        None
-    };
-    match problem {
-        Some(problem) => Err(StructureError::Mismatch {
+    // A table of (what's wrong, what to say): the first that's true is
+    // the error. Easier to read and extend than a chain of `else if`s.
+    let problems = [
+        (
+            structure.walkable && structure.leak_cm2 > 0,
+            "only solid structures can leak (leak_cm2), and this one is walkable",
+        ),
+        (
+            !structure.walkable && structure.climb.is_some(),
+            "only walkable structures can be ladders (climb)",
+        ),
+        (
+            structure.walkable && structure.see_through,
+            "walkable structures never block sight, so see_through is only for solid ones",
+        ),
+        (structure.light > MAX_LIGHT, TOO_BRIGHT),
+    ];
+    match problems.into_iter().find(|&(wrong, _)| wrong) {
+        Some((_, problem)) => Err(StructureError::Mismatch {
             structure: structure.id.clone(),
             problem,
         }),
@@ -263,6 +283,8 @@ pub(crate) mod tests {
             structure("frame", '/', WALKABLE),
             // What the test recipes open a door into, and close back.
             structure("open_door", '\'', WALKABLE),
+            // A light set into a wall, bright enough for any test room.
+            structure("lamp", '*', r#", "light": 20"#),
         ];
         format!(r#"{{ "structures": [ {} ] }}"#, all.join(", "))
     }
@@ -282,7 +304,7 @@ pub(crate) mod tests {
     #[test]
     fn a_valid_file_loads() {
         let structures = test_structures();
-        assert_eq!(structures.list().len(), 9);
+        assert_eq!(structures.list().len(), 10);
         assert_eq!(structures.index_of("door"), Some(4));
         assert_eq!(structures.index_of("open_door"), Some(8));
         assert_eq!(structures.index_of("cheese"), None);
@@ -341,6 +363,33 @@ pub(crate) mod tests {
         );
         let parsed = parse_structures(&[ContentFile::new("w.json", window)], &test_materials());
         assert!(parsed.unwrap().list()[0].tile().see_through);
+    }
+
+    #[test]
+    fn a_light_reaches_as_far_as_it_says_up_to_the_limit() {
+        let light = |reach: u8| {
+            format!(
+                r#"{{ "structures": [ {} ] }}"#,
+                structure("emergency_light", '*', &format!(r#", "light": {reach}"#))
+            )
+        };
+        let files = [ContentFile::new("l.json", light(MAX_LIGHT))];
+        let parsed = parse_structures(&files, &test_materials()).unwrap();
+        assert_eq!(parsed.list()[0].tile().light, MAX_LIGHT);
+        assert_eq!(
+            test_structures().list()[0].tile().light,
+            0,
+            "none by default"
+        );
+        let too_far = error_of(&light(MAX_LIGHT + 1));
+        assert!(
+            too_far.contains("light can reach at most 20 tiles"),
+            "{too_far}"
+        );
+        assert!(
+            TOO_BRIGHT.contains(&MAX_LIGHT.to_string()),
+            "the message is right"
+        );
     }
 
     #[test]
@@ -416,7 +465,8 @@ pub(crate) mod tests {
             h.finish()
         };
         let base = test_structures().list()[4].clone();
-        let changes: [fn(&mut Structure); 8] = [
+        let changes: [fn(&mut Structure); 9] = [
+            |s| s.light += 1,
             |s| s.see_through = !s.see_through,
             |s| s.glyph = '=',
             |s| s.walkable = !s.walkable,

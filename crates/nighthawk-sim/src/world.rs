@@ -9,6 +9,7 @@ use crate::content::Content;
 use crate::hash::Fnv64;
 use crate::interact::{self, Blocked};
 use crate::item::{self, FloorItem, Item, ItemContext, ItemPath, ItemRef, ItemType};
+use crate::light::Light;
 use crate::map::{Map, Tile};
 use crate::map_file::LoadedMap;
 use crate::material::Material;
@@ -199,11 +200,57 @@ impl World {
     /// remembers it. Done after every command, since anything that changes
     /// (where you are, a door, an item) changes what you see.
     fn refresh_view(&mut self) {
+        let lights = self.lights();
         // `items` and `self.view` are different fields of `self`, so one
         // can be read while the other changes.
         let items = &self.floor_items;
         let top_item = |p: Pos| items.iter().find(|f| f.at == p).map(|f| f.item.kind);
-        self.view.refresh(&self.map, self.player, &top_item);
+        self.view
+            .refresh(&self.map, self.player, &lights, &top_item);
+    }
+
+    /// Every light on the player's deck (only those can light what the
+    /// player sees): structures that give light, items lying there that
+    /// do, and the brightest thing the player wears or carries.
+    fn lights(&self) -> Vec<Light> {
+        let z = self.player.z;
+        let light_of = |kind: u16| {
+            self.content
+                .item_types()
+                .get(usize::from(kind))
+                .map_or(0, |t| t.light)
+        };
+        let built = self.map.positions().filter(|p| p.z == z).map(|at| Light {
+            at,
+            reach: self.map.get(at).map_or(0, |tile| tile.light),
+        });
+        let lying = self
+            .floor_items
+            .iter()
+            .filter(|f| f.at.z == z)
+            .map(|f| Light {
+                at: f.at,
+                reach: light_of(f.item.kind),
+            });
+        let held = self
+            .worn
+            .iter()
+            .chain(self.carried().into_iter().map(|(_, item)| item));
+        let carried = Light {
+            at: self.player,
+            reach: held.map(|item| light_of(item.kind)).max().unwrap_or(0),
+        };
+        built
+            .chain(lying)
+            .chain([carried])
+            .filter(|light| light.reach > 0)
+            .collect()
+    }
+
+    /// Whether the tile at `p` is lit right now. Only the player's deck is
+    /// ever lit: light elsewhere can't be seen.
+    pub fn is_lit(&self, p: Pos) -> bool {
+        self.view.is_lit(&self.map, p)
     }
 
     /// Whether the player can see the tile at `p` right now.
@@ -1183,12 +1230,13 @@ mod tests {
         );
     }
 
-    /// A corridor with a closed door: `#@+.#`, door at (2, 1).
+    /// A corridor with a closed door: `#@+.#`, door at (2, 1), and a lamp
+    /// in the wall above the door, lighting both sides.
     fn door_world() -> World {
-        let rows = ["#####", "#@+.#", "#####"];
+        let rows = ["##*##", "#@+.#", "#####"];
         let json = format!(
             r##"{{ "id": "t", "name": "T", "legend": {{ "#": "wall", ".": "floor",
-                     "+": "door" }},
+                     "+": "door", "*": "lamp" }},
                   "decks": [ {{ "rows": {rows:?} }} ] }}"##
         );
         World::new(parse_map(&json).expect("test map is valid"), TEST_SEED)
@@ -1731,10 +1779,86 @@ mod tests {
         world.view = {
             // ...as if the player had looked away: keep memory, see nothing
             let mut blind = world.view.clone();
-            blind.refresh(&world.map, Pos::new(99, 99, 0), &|_| None);
+            blind.refresh(&world.map, Pos::new(99, 99, 0), &[], &|_| None);
             blind
         };
         assert_eq!(world.remembered(DOOR).unwrap().structure, OPENED);
+    }
+
+    /// A dark corridor, with no light but a lamp (light 2) lying at the far
+    /// end, at (7, 1). The player wears the test suit, to carry it in:
+    ///
+    /// ```text
+    /// #########
+    /// #@.....!#
+    /// #########
+    /// ```
+    fn dark_corridor() -> World {
+        let rows = ["#########", "#@.....!#", "#########"];
+        let json = format!(
+            r##"{{ "id": "t", "name": "T", "player_wears": [ {{ "item": "suit" }} ],
+                  "legend": {{ "#": "wall", ".": "floor",
+                     "!": {{ "structure": "floor", "items": [ {{ "item": "lamp" }} ] }} }},
+                  "decks": [ {{ "rows": {rows:?} }} ] }}"##
+        );
+        World::new(parse_map(&json).expect("test map is valid"), TEST_SEED)
+    }
+
+    #[test]
+    fn in_the_dark_you_see_only_beside_you_and_what_a_lamp_lights() {
+        let world = dark_corridor();
+        let at = |x| Pos::new(x, 1, 0);
+        assert!(world.is_visible(at(2)), "beside you");
+        assert!(!world.is_visible(at(3)) && !world.is_visible(at(4)), "dark");
+        assert!(!world.is_lit(at(4)));
+        // The lamp lights two tiles round it, and you see that from afar.
+        for x in 5..=8 {
+            assert!(world.is_lit(at(x)) && world.is_visible(at(x)), "{x}");
+        }
+        assert_eq!(world.remembered(at(3)), None, "never seen");
+    }
+
+    #[test]
+    fn a_lamp_you_carry_lights_the_way_around_you() {
+        let mut world = dark_corridor();
+        let at = |x| Pos::new(x, 1, 0);
+        for _ in 0..5 {
+            world.apply(Command::Move(Dir::East));
+        }
+        world.apply(Command::Interact {
+            at: at(7),
+            action: PICK_UP,
+        });
+        assert!(
+            world.is_lit(at(4)) && world.is_lit(at(8)),
+            "around you at 6"
+        );
+        for _ in 0..5 {
+            world.apply(Command::Move(Dir::West));
+        }
+        assert_eq!(world.player(), at(1));
+        assert!(world.is_lit(at(3)) && world.is_visible(at(3)));
+        assert!(!world.is_lit(at(8)) && !world.is_visible(at(8)), "dark now");
+        assert!(world.remembered(at(8)).is_some(), "but remembered");
+    }
+
+    #[test]
+    fn only_lights_on_your_own_deck_are_worked_out() {
+        let lower = ["#####", "#@.<#", "#####"];
+        let upper = ["##*##", "#..>#", "#####"];
+        let json = format!(
+            r##"{{ "id": "t", "name": "Test", "legend": {{ "#": "wall", ".": "floor",
+                     "*": "lamp", "<": "stairs_up", ">": "stairs_down" }},
+                  "decks": [ {{ "rows": {lower:?} }}, {{ "rows": {upper:?} }} ] }}"##
+        );
+        let mut world = World::new(parse_map(&json).unwrap(), TEST_SEED);
+        let upstairs = Pos::new(1, 1, 1);
+        assert!(!world.is_lit(upstairs), "you're downstairs");
+        world.apply(Command::Move(Dir::East));
+        world.apply(Command::Move(Dir::East));
+        world.apply(Command::Climb(Vertical::Up));
+        assert!(world.is_lit(upstairs) && world.is_visible(upstairs));
+        assert!(!world.is_lit(Pos::new(1, 1, 0)));
     }
 
     #[test]
@@ -1774,7 +1898,7 @@ mod tests {
         assert_eq!(world.structure_at(Pos::new(0, 0, 0)).unwrap().id, "wall");
         assert_eq!(world.structure_at(Pos::new(1, 1, 0)).unwrap().id, "floor");
         assert_eq!(world.structure_at(Pos::new(-1, 0, 0)), None);
-        assert_eq!(world.structures().len(), 9);
+        assert_eq!(world.structures().len(), 10);
     }
 
     #[test]
@@ -1841,7 +1965,7 @@ mod tests {
         assert_eq!(world.items_at(PILE).count(), 4);
         assert_eq!(world.items_at(world.player()).count(), 0);
         assert_eq!(world.floor_items().len(), 4);
-        assert_eq!(world.item_types().len(), 3);
+        assert_eq!(world.item_types().len(), 4);
         assert_eq!(world.worn().len(), 1);
     }
 

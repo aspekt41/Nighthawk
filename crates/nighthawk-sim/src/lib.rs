@@ -27,6 +27,7 @@ mod hash;
 mod heat;
 mod interact;
 mod item;
+mod light;
 mod map;
 mod map_file;
 mod material;
@@ -56,6 +57,7 @@ pub use interact::{ActionOption, Blocked, blocked, options_at};
 pub use item::{
     FloorItem, Item, ItemContext, ItemError, ItemPath, ItemRef, ItemType, PocketType, Wear,
 };
+pub use light::MAX_LIGHT;
 pub use map::{Map, StairsError, Tile};
 pub use map_file::{ItemSpecError, LegendError, LoadedMap, MapError, parse_map};
 pub use material::{Colour, Material, MaterialError};

@@ -97,6 +97,14 @@
           "default": 0,
           "minimum": 0
         },
+        "light": {
+          "description": "How many tiles its light reaches, if it's a light (like an\nemergency light set into a bulkhead), from 1 to 20. Optional: it\ngives no light.",
+          "type": "integer",
+          "format": "uint8",
+          "default": 0,
+          "maximum": 255,
+          "minimum": 0
+        },
         "material": {
           "description": "The id of the material it's made of, unless a map says otherwise.",
           "type": "string"

@@ -222,20 +222,21 @@ mod tests {
 
     /// A test room. `@` at (1, 1); a closed door `+` at (1, 3) two tiles
     /// south; an open door `'` at (2, 1) beside the player; a hard-alloy
-    /// wall `H` at (5, 1); a two-tile pillar `##` at (3, 2) and (4, 2).
+    /// wall `H` at (5, 1); a two-tile pillar `##` at (3, 2) and (4, 2);
+    /// lamps `*` in the walls above and below it.
     ///
     /// ```text
-    /// #######
+    /// ###*###
     /// #@'..H#
     /// #..##.#
     /// #+....#
-    /// #######
+    /// ###*###
     /// ```
     fn world() -> World {
-        let rows = ["#######", "#@'..H#", "#..##.#", "#+....#", "#######"];
+        let rows = ["###*###", "#@'..H#", "#..##.#", "#+....#", "###*###"];
         let json = format!(
             r##"{{ "id": "t", "name": "T",
-                 "legend": {{ "#": "wall", ".": "floor", "+": "door",
+                 "legend": {{ "#": "wall", ".": "floor", "+": "door", "*": "lamp",
                              "'": "open_door",
                              "H": {{ "structure": "wall", "material": "hard_alloy" }} }},
                  "decks": [ {{ "rows": {rows:?} }} ] }}"##
@@ -340,13 +341,13 @@ mod tests {
         // From (1, 1), the wall at (3, 2) is seen past the corner of the
         // wall at (2, 2), but the laser's straight line runs through it.
         //
-        //     #####
+        //     ##*##
         //     #@..#
         //     #.###
         //     #####
-        let rows = ["#####", "#@..#", "#.###", "#####"];
+        let rows = ["##*##", "#@..#", "#.###", "#####"];
         let json = format!(
-            r##"{{ "id": "t", "name": "T", "legend": {{ "#": "wall", ".": "floor" }},
+            r##"{{ "id": "t", "name": "T", "legend": {{ "#": "wall", ".": "floor", "*": "lamp" }},
                  "decks": [ {{ "rows": {rows:?} }} ] }}"##
         );
         let w = with_laser(World::new(parse_map(&json).unwrap(), 1), 2);

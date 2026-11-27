@@ -29,6 +29,8 @@ pub struct Tile {
     /// A solid tile you can see through, like a window. (Walkable tiles
     /// never block sight.)
     pub see_through: bool,
+    /// How many tiles its light reaches, if it gives light (0 if not).
+    pub light: u8,
 }
 
 impl Tile {
@@ -61,6 +63,7 @@ impl Tile {
         leak_cm2: 0,
         climb: None,
         see_through: false,
+        light: 0,
     };
     pub(crate) const WINDOW: Tile = Tile {
         see_through: true,

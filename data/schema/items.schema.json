@@ -40,6 +40,14 @@
           "description": "How maps refer to it, like `\"basic_laser_cutter\"`.",
           "type": "string"
         },
+        "light": {
+          "description": "How many tiles its light reaches, if it gives light (like a hand\nlamp), from 1 to 20: around it where it lies, or around you when\nyou carry it. Optional: it gives no light.",
+          "type": "integer",
+          "format": "uint8",
+          "default": 0,
+          "maximum": 255,
+          "minimum": 0
+        },
         "material": {
           "description": "The id of the material it's made of, unless a map says otherwise.",
           "type": "string"

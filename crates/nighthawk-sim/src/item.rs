@@ -19,6 +19,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::content::{ContentFile, FileError, first_duplicate, read_all};
 use crate::hash::Fnv64;
+use crate::light::MAX_LIGHT;
 use crate::material::{Material, Materials};
 use crate::pos::Pos;
 use crate::quality::{LevelError, Levels, Qualities, hash_levels};
@@ -66,6 +67,11 @@ pub struct ItemType {
     /// If it can be worn, what wearing it gives.
     #[serde(default)]
     pub wear: Option<Wear>,
+    /// How many tiles its light reaches, if it gives light (like a hand
+    /// lamp), from 1 to 20: around it where it lies, or around you when
+    /// you carry it. Optional: it gives no light.
+    #[serde(default)]
+    pub light: u8,
 }
 
 impl ItemType {
@@ -79,7 +85,8 @@ impl ItemType {
         h.u64(u64::from(self.glyph))
             .str(&self.material)
             .u64(u64::from(self.volume_ml))
-            .u64(u64::from(self.solid_percent));
+            .u64(u64::from(self.solid_percent))
+            .u8(self.light);
         hash_levels(&self.qualities, h);
         let pockets = self.wear.as_ref().map(|w| w.pockets.as_slice());
         h.u64(pockets.map_or(u64::MAX, |p| p.len() as u64));
@@ -342,6 +349,11 @@ pub enum ItemError {
         item: String,
         error: LevelError,
     },
+    /// Its light reaches further than any light can ([`MAX_LIGHT`]).
+    TooBright {
+        item: String,
+        light: u8,
+    },
 }
 
 impl fmt::Display for ItemError {
@@ -368,6 +380,10 @@ impl fmt::Display for ItemError {
             ItemError::Qualities { item, error } => {
                 write!(f, "item {item:?}'s qualities: {error}")
             }
+            ItemError::TooBright { item, light } => write!(
+                f,
+                "item {item:?} has a light of {light}, but light can reach at most {MAX_LIGHT} tiles"
+            ),
         }
     }
 }
@@ -431,6 +447,12 @@ fn check_one(item: &ItemType, materials: &Materials) -> Result<(), ItemError> {
             item: item.id.clone(),
         });
     }
+    if item.light > MAX_LIGHT {
+        return Err(ItemError::TooBright {
+            item: item.id.clone(),
+            light: item.light,
+        });
+    }
     Ok(())
 }
 
@@ -441,8 +463,9 @@ pub(crate) mod tests {
     use crate::quality::tests::test_qualities;
 
     /// Test items: a "suit" with two 1 L pockets (2.5 kg each), a "cutter"
-    /// (LASER 1, 800 ml, half solid) and "scrap" (100 ml, solid), all
-    /// made of the test "steel" (1000 kg/m³ in the test materials).
+    /// (LASER 1, 800 ml, half solid), "scrap" (100 ml, solid) and a
+    /// "lamp" (light 2, 100 ml, half solid), all made of the test "steel"
+    /// (1000 kg/m³ in the test materials).
     pub(crate) fn test_items_json() -> String {
         r#"{ "items": [
             { "id": "suit", "name": "suit", "description": "A suit.", "glyph": "[",
@@ -454,7 +477,9 @@ pub(crate) mod tests {
               "material": "steel", "volume_ml": 800, "solid_percent": 50,
               "qualities": { "LASER": 1 } },
             { "id": "scrap", "name": "scrap", "description": "Scrap.", "glyph": "*",
-              "material": "steel", "volume_ml": 100, "solid_percent": 100 }
+              "material": "steel", "volume_ml": 100, "solid_percent": 100 },
+            { "id": "lamp", "name": "lamp", "description": "A lamp.", "glyph": "!",
+              "material": "steel", "volume_ml": 100, "solid_percent": 50, "light": 2 }
         ] }"#
             .to_string()
     }
@@ -481,7 +506,7 @@ pub(crate) mod tests {
     #[test]
     fn a_valid_file_loads() {
         let items = test_items();
-        assert_eq!(items.list().len(), 3);
+        assert_eq!(items.list().len(), 4);
         assert_eq!(items.index_of("cutter"), Some(1));
         assert_eq!(items.index_of("cheese"), None);
         assert_eq!(items.list()[0].pockets().len(), 2);
@@ -562,6 +587,20 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn an_item_s_light_reaches_at_most_the_limit() {
+        let lamp =
+            |reach: u8| test_items_json().replace("\"light\": 2", &format!("\"light\": {reach}"));
+        let files = [ContentFile::new("lamp.json", lamp(MAX_LIGHT))];
+        let items = parse_items(&files, &test_materials(), &test_qualities()).unwrap();
+        assert_eq!(items.list()[3].light, MAX_LIGHT);
+        assert_eq!(items.list()[0].light, 0, "none by default");
+        assert_eq!(
+            error_of(&lamp(MAX_LIGHT + 1)),
+            r#"item "lamp" has a light of 21, but light can reach at most 20 tiles"#
+        );
+    }
+
+    #[test]
     fn sizes_and_levels_must_make_sense() {
         let solid = test_items_json().replace("\"solid_percent\": 100", "\"solid_percent\": 101");
         assert_eq!(
@@ -602,7 +641,8 @@ pub(crate) mod tests {
         let base = test_items().list().to_vec();
         // Each change, and which type (0 the suit, 1 the cutter) it's made to.
         type Change = (usize, fn(&mut ItemType));
-        let changes: [Change; 5] = [
+        let changes: [Change; 6] = [
+            (1, |t| t.light += 1),
             (0, |t| t.glyph = '%'),
             (0, |t| t.volume_ml += 1),
             (1, |t| t.qualities.clear()),

@@ -1071,7 +1071,7 @@ mod material_tests {
             2,
             "the whole list comes along"
         );
-        assert_eq!(loaded.content.structures().len(), 9);
+        assert_eq!(loaded.content.structures().len(), 10);
     }
 
     #[test]
@@ -1160,7 +1160,7 @@ mod item_tests {
         assert!(loaded.floor_items.iter().all(|f| f.at == Pos::new(1, 0, 0)));
         assert_eq!(loaded.floor_items[0].item.kind, 1);
         assert_eq!(loaded.floor_items[3].item.kind, 2);
-        assert_eq!(loaded.content.item_types().len(), 3);
+        assert_eq!(loaded.content.item_types().len(), 4);
         assert!(loaded.worn.is_empty(), "nothing worn unless the map says");
     }
 

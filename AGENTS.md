@@ -197,15 +197,18 @@ precise error and exits with code 1 before entering raw mode.
   `OPEN`, `CLOSE`, `CUT`… in `crate::action::tests`), materials,
   structures (one for each kind of tile, named for it
   it: `"wall"`, `"floor"`, `"door"`, `"open_door"`…, plus `"frame"`, a
-  floor) and items
-  (`"suit"` with two 1 L pockets, `"cutter"` with LASER 1, `"scrap"`) and
+  floor, and `"lamp"`, a wall with light 20) and items
+  (`"suit"` with two 1 L pockets, `"cutter"` with LASER 1, `"scrap"`,
+  `"lamp"` with light 2) and
   recipes (cutting a `"door"` or a `"wall"` leaves `"floor"`, in 60 s;
   repairing a `"hull_crack"` with 2 scrap makes a `"wall"` of the scrap's
   material, in 30 s; repairing a `"frame"` with 1 scrap makes a `"door"`,
   in 20 s; welding a `"hull_crack"` with WELD 2 makes a `"wall"`, in 40 s;
   opening a `"door"` makes an `"open_door"` and closing turns it back, 2 s),
   and puts the player on
-  `"floor"` if the legend doesn't say what `@` is. Integration tests share
+  `"floor"` if the legend doesn't say what `@` is. Test rooms are dark
+  (you see only the tiles beside you) unless their map has a light: put a
+  `*` in a wall with `"*": "lamp"` in the legend. Integration tests share
   `crates/nighthawk-sim/tests/common/mod.rs`, which loads the real `data/`;
   every test file must call `common::start_world` so no helper is unused
   (never silence that with `#[allow]`).

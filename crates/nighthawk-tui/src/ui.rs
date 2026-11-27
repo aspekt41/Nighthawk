@@ -980,12 +980,14 @@ mod tests {
     use super::*;
     use nighthawk_sim::{Command, Dir, parse_map};
 
-    /// A 7×5 room with the player in the middle.
+    /// A 7×5 room with the player in the middle, lit by an emergency
+    /// light in the top wall.
     fn test_world() -> World {
-        let rows = ["#######", "#.....#", "#..@..#", "#.....#", "#######"];
+        let rows = ["###E###", "#.....#", "#..@..#", "#.....#", "#######"];
         let json = format!(
             r##"{{ "id": "t", "name": "T",
-                 "legend": {{ "#": "bulkhead", ".": "deck_plating", "@": "deck_plating" }},
+                 "legend": {{ "#": "bulkhead", ".": "deck_plating", "@": "deck_plating",
+                             "E": "emergency_light" }},
                  "decks": [ {{ "rows": {rows:?} }} ] }}"##
         );
         let data = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../data");
@@ -1158,6 +1160,7 @@ mod tests {
         assert_eq!(glyph(6, 7, 0), "+", "the side room's door");
         assert_eq!(glyph(23, 0, 1), "x", "the crack");
         assert_eq!(glyph(11, 13, 1), "X", "the breach");
+        assert_eq!(glyph(15, 6, 0), "¤", "an emergency light");
         assert_eq!(glyph(-5, 0, 0), " ", "off the map");
     }
 
@@ -1184,19 +1187,26 @@ mod tests {
         let mut world = real_world();
         let (inside, hull) = (Pos::new(5, 7, 0), Pos::new(0, 7, 0));
         assert_eq!(glyph_at(&world, inside, None), (" ".into(), Style::new()));
-        // Walk to the side room's door, open it to look in, and shut it.
+        // Walk to the side room's door, open it, step into the doorway to
+        // peer into the dark, then step back and shut it.
         for _ in 0..3 {
             world.apply(Command::Move(Dir::West));
         }
         world.apply(Command::Move(Dir::West)); // opens it
+        world.apply(Command::Move(Dir::West)); // into the doorway
         let floor = Style::new().fg(Color::DarkGray);
         assert_eq!(glyph_at(&world, inside, None), (".".into(), floor));
+        world.apply(Command::Move(Dir::East));
         world.apply(Command::Interact {
             at: Pos::new(6, 7, 0),
             action: number(&world, "close"),
         });
         assert_eq!(glyph_at(&world, inside, None), (".".into(), REMEMBERED));
-        assert_eq!(glyph_at(&world, hull, None), ("#".into(), REMEMBERED));
+        assert_eq!(
+            glyph_at(&world, hull, None),
+            (" ".into(), Style::new()),
+            "too dark in there to see the far wall"
+        );
         let overlaid = glyph_at(&world, inside, Some(Overlay::Air));
         assert_eq!(
             overlaid.1, REMEMBERED,
@@ -1241,7 +1251,7 @@ mod tests {
     #[test]
     fn looking_out_of_sight_shows_only_memory() {
         let world = upstairs_world();
-        let hull = Pos::new(20, 0, 0);
+        let hull = Pos::new(10, 0, 0);
         let lines = look_texts(&world, hull);
         assert_eq!(lines[2], "Hull plating");
         assert!(
@@ -1479,8 +1489,7 @@ mod tests {
 
     #[test]
     fn the_air_overlay_shows_thin_air_upstairs_and_is_labelled() {
-        let map = crate::content::load_start_map().unwrap();
-        let mut world = World::new(map, 1);
+        let mut world = with_the_lamp();
         let full = draw_screen(80, 24, |f| render_game(&world, &[], air(), f));
         assert!(full.contains("[air overlay]"));
         assert!(full.contains("███"), "the stasis bay is at full pressure");
@@ -1488,9 +1497,9 @@ mod tests {
         // Climb to the crew deck, which starts at 60% pressure.
         use nighthawk_sim::Command::{Climb, Move};
         // The corridor soon fills from the shaft, so go along it and open
-        // a cabin door to look in.
-        let route = std::iter::repeat_n(Move(Dir::North), 5)
-            .chain(std::iter::repeat_n(Move(Dir::East), 23))
+        // a cabin door to look in by the lamp's light.
+        let route = std::iter::repeat_n(Move(Dir::North), 6)
+            .chain(std::iter::repeat_n(Move(Dir::East), 22))
             .chain([Climb(nighthawk_sim::Vertical::Up)])
             .chain(std::iter::repeat_n(Move(Dir::South), 3))
             .chain(std::iter::repeat_n(Move(Dir::West), 11))
@@ -1521,6 +1530,20 @@ mod tests {
         World::new(crate::content::load_start_map().unwrap(), 1)
     }
 
+    /// The real world, after picking up the hand lamp at (11, 8) beside
+    /// the start: the player stands there, with light to see by anywhere.
+    fn with_the_lamp() -> World {
+        let mut world = real_world();
+        world.apply(Command::Move(Dir::SouthEast));
+        world.apply(Command::Interact {
+            at: Pos::new(11, 8, 0),
+            action: number(&world, "pick_up"),
+        });
+        let lamp = world.item_type_index("hand_lamp").unwrap();
+        assert_eq!(world.carried_count(lamp), 1);
+        world
+    }
+
     fn look_texts(world: &World, at: Pos) -> Vec<String> {
         look_lines(world, at)
             .iter()
@@ -1531,8 +1554,8 @@ mod tests {
     #[test]
     fn looking_at_the_hull_shows_its_material_and_laser_level() {
         let world = real_world();
-        let lines = look_texts(&world, Pos::new(20, 0, 0));
-        assert_eq!(lines[0], "Look  20, 0  deck 0");
+        let lines = look_texts(&world, Pos::new(10, 0, 0));
+        assert_eq!(lines[0], "Look  10, 0  deck 0");
         assert_eq!(lines[2], "Hull plating");
         assert_eq!(lines[3], "Nanocarbon Alloy");
         assert!(lines.contains(&"Cut by   LASER 5".to_string()));
@@ -1595,7 +1618,7 @@ mod tests {
         let view = View {
             overlay: None,
             cursor: Some(Cursor {
-                at: Pos::new(20, 0, 0),
+                at: Pos::new(10, 0, 0),
                 mode: CursorMode::Look,
             }),
             inventory: None,
@@ -1632,7 +1655,7 @@ mod tests {
     #[test]
     fn walls_are_drawn_in_their_materials_colour() {
         let world = real_world();
-        let hull = glyph_at(&world, Pos::new(20, 0, 0), None);
+        let hull = glyph_at(&world, Pos::new(10, 0, 0), None);
         let pillar = glyph_at(&world, Pos::new(15, 5, 0), None);
         assert_eq!(hull, ("#".to_string(), Style::new().fg(Color::DarkGray)));
         assert_eq!(pillar, ("#".to_string(), Style::new().fg(Color::Gray)));
@@ -1690,7 +1713,7 @@ mod tests {
     #[test]
     fn the_hull_offers_nothing_to_do_until_there_is_a_recipe_for_it() {
         let world = real_world();
-        let lines = interact_texts(&world, Pos::new(20, 0, 0));
+        let lines = interact_texts(&world, Pos::new(10, 0, 0));
         assert_eq!(lines[1], "Hull plating");
         assert_eq!(lines[4], "Nothing to do here.");
     }

@@ -165,6 +165,7 @@ other change.
 | `leak_cm2` | Optional. A hole to space of this many cm² (a hull crack is 4, a breach 400): the space beside it leaks, faster the bigger the hole. Solid structures only. |
 | `climb` | Optional. A ladder: `"up"` to the deck above or `"down"` to the one below (see [Stairs](#stairs)). Walkable structures only. |
 | `see_through` | Optional. You can see through it though it's solid, like a window. Left out, solid structures block sight. Walkable structures never block it, so it's for solid ones only. |
+| `light` | Optional. It gives light, reaching this many tiles (1 to 20) in a circle, with walls casting shadows; the emergency lights reach 10. Without light the ship is dark: you see only the tiles right around you. A light set into a wall shines out of every side of it. |
 | `material` | The material it's made of, unless a map legend says otherwise. |
 | `colour` | Optional. Draw it in this colour (same names as materials). Otherwise ladders are cyan, leaks red (bold from 100 cm²), floor dark grey, and solid structures their material's colour. Doors are `light_red`; a damaged door is `red`. |
 
@@ -226,6 +227,7 @@ is, plus whatever is in its pockets.
 | `solid_percent` | How much of that volume is solid material, 1 to 100: 100 for a lump of scrap, 50 for a tool full of air and wiring. |
 | `qualities` | Optional. Tool qualities it has, levels 1 to 10, like `{ "LASER": 1 }`. Each must be a quality from `qualities/`. |
 | `wear` | Optional. Makes it wearable; `pockets` lists what it gives you to carry things in, each with a `name`, a `volume_ml` and a `max_mass_g`. |
+| `light` | Optional. It gives light, reaching this many tiles (1 to 20): around it where it lies, or around you when you wear or carry it (the brightest thing you have counts). The hand lamp reaches 4. |
 
 ## Maps (`maps/*.json`)
 
@@ -354,5 +356,6 @@ greyed with "needs WELD 1" until you carry the torch.
 ### A new kind of tile
 
 A floor grate is a walkable structure; a weak, leaky panel is a solid one
-with a `leak_cm2`. Properties are all there is to a tile's simulation:
-`walkable`, `leak_cm2` and `climb` (see [Structures](#structures-structuresjson)).
+with a `leak_cm2`; a ceiling lamp over a walkway is a walkable one with a
+`light`. Properties are all there is to a tile's simulation:
+`walkable`, `leak_cm2`, `climb`, `see_through` and `light` (see [Structures](#structures-structuresjson)).

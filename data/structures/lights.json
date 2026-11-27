@@ -1,0 +1,14 @@
+{
+  "$schema": "../schema/structures.schema.json",
+  "structures": [
+    {
+      "id": "emergency_light",
+      "name": "emergency light",
+      "description": "A bulkhead panel with an emergency lamp behind scratched glass. It still glows a dull amber, and it flickers.",
+      "glyph": "¤",
+      "material": "steel",
+      "colour": "yellow",
+      "light": 10
+    }
+  ]
+}

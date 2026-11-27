@@ -10,7 +10,7 @@ use std::collections::{HashSet, VecDeque};
 use std::fs;
 use std::path::PathBuf;
 
-use nighthawk_sim::{Dir, LoadedMap, MapError, Pos, Tile, parse_map};
+use nighthawk_sim::{Command, Dir, LoadedMap, MapError, Pos, Tile, Vertical, World, parse_map};
 
 /// The number of the shipped action with this id, like `"cut"`.
 fn action(world: &nighthawk_sim::World, id: &str) -> u16 {
@@ -273,7 +273,7 @@ fn you_start_in_a_jumpsuit_with_four_one_litre_pockets() {
 }
 
 #[test]
-fn a_laser_cutter_and_four_steel_scraps_lie_near_the_start() {
+fn a_laser_cutter_a_hand_lamp_and_four_steel_scraps_lie_near_the_start() {
     let world = common::start_world(1);
     let ctx = world.item_context();
     let near: Vec<(&str, &str, u64)> = world
@@ -290,6 +290,7 @@ fn a_laser_cutter_and_four_steel_scraps_lie_near_the_start() {
         near,
         vec![
             ("basic_laser_cutter", "aluminium_alloy", 1080),
+            ("hand_lamp", "aluminium_alloy", 432),
             ("scrap", "steel", 785),
             ("scrap", "steel", 785),
             ("scrap", "steel", 785),
@@ -298,6 +299,37 @@ fn a_laser_cutter_and_four_steel_scraps_lie_near_the_start() {
     );
     let laser = &world.item_types()[usize::from(world.floor_items()[0].item.kind)];
     assert_eq!(laser.qualities.get("LASER"), Some(&1));
+    let lamp = &world.item_types()[usize::from(world.floor_items()[1].item.kind)];
+    assert_eq!(lamp.light, 4);
+}
+
+#[test]
+fn emergency_lights_light_the_stasis_bay_and_one_end_of_the_crew_hall() {
+    let mut world = common::start_world(1);
+    let lit = |world: &World, x, y, z| world.is_lit(Pos::new(x, y, z));
+    assert!(lit(&world, 10, 7, 0), "where you wake");
+    assert!(
+        lit(&world, 6, 7, 0),
+        "the side room's door, to cut from afar"
+    );
+    assert!(lit(&world, 33, 2, 0), "the ladder up");
+    assert!(!lit(&world, 3, 7, 0), "the side room is dark");
+    // Up the ladder: the hall is lit only at its far west end, and the
+    // cabins are dark.
+    let route = std::iter::repeat_n(Command::Move(Dir::North), 5)
+        .chain(std::iter::repeat_n(Command::Move(Dir::East), 23))
+        .chain([Command::Climb(Vertical::Up)]);
+    for command in route {
+        world.apply(command);
+    }
+    assert_eq!(world.player(), Pos::new(33, 2, 1));
+    assert!(
+        lit(&world, 8, 5, 1) && lit(&world, 14, 6, 1),
+        "the west end"
+    );
+    assert!(!lit(&world, 25, 5, 1), "the middle of the hall");
+    assert!(!lit(&world, 33, 2, 1), "the ladder up here");
+    assert!(!lit(&world, 23, 2, 1) && !lit(&world, 10, 10, 1), "cabins");
 }
 
 #[test]

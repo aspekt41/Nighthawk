@@ -12,6 +12,16 @@
       "qualities": {
         "LASER": 1
       }
+    },
+    {
+      "id": "hand_lamp",
+      "name": "hand lamp",
+      "description": "A rubber-cased hand lamp on a wrist loop. Its cell still holds a charge, enough to light a few metres around you.",
+      "glyph": "!",
+      "material": "aluminium_alloy",
+      "volume_ml": 400,
+      "solid_percent": 40,
+      "light": 4
     }
   ]
 }
