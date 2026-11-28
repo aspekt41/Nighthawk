@@ -14,8 +14,8 @@
 //! ```
 
 use nighthawk_sim::{
-    ActionOption, BREATH_FULL, Colour, CraftMaterial, Dress, Item, ItemAt, ItemPath, ItemRef,
-    Levels, Material, Mix, Piece, PocketType, Pos, Tile, Use, WARMTH_FULL, Wear, World,
+    ActionOption, BREATH_FULL, Colour, CraftMaterial, Dir, Dress, Item, ItemAt, ItemPath, ItemRef,
+    Levels, Material, Mix, Piece, PocketType, Pos, Survey, Tile, Use, WARMTH_FULL, Wear, World,
     celsius_to_mk, mk_to_tenths_celsius, options_at,
 };
 use ratatui::Frame;
@@ -50,7 +50,7 @@ impl Overlay {
     /// The note added to the map panel's title while this overlay is on.
     fn label(self) -> &'static str {
         match self {
-            Overlay::Air => " [air overlay]",
+            Overlay::Air => " [air overlay, red: venting]",
             Overlay::Heat => " [heat overlay]",
         }
     }
@@ -328,6 +328,9 @@ pub struct MapView<'a> {
 impl Widget for MapView<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
         let centre = self.cursor.unwrap_or(self.world.player());
+        // Which spaces are venting, worked out once for the whole view
+        // rather than once per cell.
+        let survey = self.world.map().survey();
         // The map position that lands in the top-left cell of `area`.
         let origin_x = centre.x - i32::from(area.width) / 2;
         let origin_y = centre.y - i32::from(area.height) / 2;
@@ -339,7 +342,7 @@ impl Widget for MapView<'_> {
                     origin_y + i32::from(row),
                     centre.z,
                 );
-                let (glyph, style) = self.cell(pos);
+                let (glyph, style) = self.cell(pos, &survey);
                 buf[(area.x + col, area.y + row)]
                     .set_symbol(&glyph)
                     .set_style(style);
@@ -351,8 +354,8 @@ impl Widget for MapView<'_> {
 impl MapView<'_> {
     /// The character and style for the map cell at `pos`, highlighted
     /// (drawn in reverse) if it's under the look cursor.
-    fn cell(&self, pos: Pos) -> (String, Style) {
-        let (glyph, style) = glyph_at(self.world, pos, self.overlay);
+    fn cell(&self, pos: Pos, survey: &Survey) -> (String, Style) {
+        let (glyph, style) = glyph_with(self.world, pos, self.overlay, survey);
         if Some(pos) == self.cursor {
             return (glyph, style.add_modifier(Modifier::REVERSED));
         }
@@ -363,21 +366,38 @@ impl MapView<'_> {
 /// The character and colour for one map cell. The player is drawn on top of
 /// whatever tile they stand on. Tiles out of sight are drawn as
 /// remembered; off-map cells are blank.
+#[cfg(test)]
 fn glyph_at(world: &World, pos: Pos, overlay: Option<Overlay>) -> (String, Style) {
+    glyph_with(world, pos, overlay, &world.map().survey())
+}
+
+/// The same, with the map's spaces already surveyed, so the air overlay
+/// can draw venting spaces in red (decision D65).
+fn glyph_with(
+    world: &World,
+    pos: Pos,
+    overlay: Option<Overlay>,
+    survey: &Survey,
+) -> (String, Style) {
     if pos == world.player() {
         let style = Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD);
         return ("@".into(), style);
     }
     // Off the map is never in sight, so it goes the way of the unseen.
     match world.map().get(pos).filter(|_| world.is_visible(pos)) {
-        Some(tile) => visible_glyph(world, pos, tile, overlay),
+        Some(tile) => visible_glyph(world, pos, tile, (overlay, survey)),
         None => remembered_glyph(world, pos),
     }
 }
 
 /// How a tile in sight looks: the top item lying on it, an overlay's
 /// shading, or what stands there.
-fn visible_glyph(world: &World, pos: Pos, tile: Tile, overlay: Option<Overlay>) -> (String, Style) {
+fn visible_glyph(
+    world: &World,
+    pos: Pos,
+    tile: Tile,
+    (overlay, survey): (Option<Overlay>, &Survey),
+) -> (String, Style) {
     let map = world.map();
     // Items lying on the floor show on top, unless an overlay is shading it.
     if overlay.is_none()
@@ -390,7 +410,10 @@ fn visible_glyph(world: &World, pos: Pos, tile: Tile, overlay: Option<Overlay>) 
     let in_the_way = world.furniture_kind_at(pos).is_some_and(|k| !k.walkable);
     let open_space = tile.walkable && tile.climb.is_none() && !in_the_way;
     let shaded = match overlay {
-        Some(Overlay::Air) if open_space => air_glyph(map.air(pos).unwrap_or(Mix::VACUUM)),
+        Some(Overlay::Air) if open_space => {
+            let mix = map.air(pos).unwrap_or(Mix::VACUUM);
+            air_glyph(mix, survey.is_venting(pos))
+        }
         Some(Overlay::Heat) if open_space => heat_glyph(map.temperature(pos)),
         _ => return standing_glyph(world, pos, tile),
     };
@@ -522,16 +545,20 @@ const HOT: (u32, &str, Color) = (u32::MAX, "█", Color::Red);
 /// How full of air a floor tile looks on the air overlay: solid for normal
 /// pressure, fading through lighter shades to `.` for near vacuum. The
 /// shape alone tells the story; colour (cyan for air, red for vacuum) helps.
-fn air_glyph(mix: Mix) -> (&'static str, Style) {
+fn air_glyph(mix: Mix, venting: bool) -> (&'static str, Style) {
     // Pressure in eighths of normal ship air, so 8 is normal.
     let eighths = mix.total() * 8 / Mix::STANDARD.total();
-    let air = Style::new().fg(Color::Cyan);
+    // A space open to space is drawn in red, however much air is still in
+    // it: it's losing it (D65). Vacuum that's sealed is grey: empty, but
+    // air let in would stay.
+    let air = Style::new().fg(if venting { Color::Red } else { Color::Cyan });
+    let vacuum = Style::new().fg(if venting { Color::Red } else { Color::Gray });
     match eighths {
         7.. => ("█", air),
         5..=6 => ("▓", air),
         3..=4 => ("▒", air),
         1..=2 => ("░", air),
-        0 => (".", Style::new().fg(Color::Red)),
+        0 => (".", vacuum),
     }
 }
 
@@ -585,7 +612,7 @@ fn sidebar_lines(world: &World) -> Vec<Line<'static>> {
         meter_line("Breath", world.breath(), BREATH_FULL),
         meter_line("Warmth", world.warmth(), WARMTH_FULL),
     ];
-    lines.extend(air_lines(world.map().air(p).unwrap_or(Mix::VACUUM)));
+    lines.extend(air_lines_at(world, p));
     lines.push(temperature_line(world.map().temperature(p)));
     lines.extend([
         Line::raw(""),
@@ -813,12 +840,57 @@ fn worked_by(m: &Material, action: &str) -> String {
 /// The air at a looked-at tile: its pressure and temperature, or that
 /// it's solid.
 fn air_here(world: &World, at: Pos, tile: Tile) -> Vec<Line<'static>> {
+    let has_gauges = world
+        .structure_at(at)
+        .is_some_and(|s| s.interlock_tiles.is_some());
+    if has_gauges {
+        return gauge_lines(world, at);
+    }
     if !tile.holds_air() {
         return vec![Line::raw("Solid: no air")];
     }
-    let mix = world.map().air(at).unwrap_or(Mix::VACUUM);
-    let [pressure, ..] = air_lines(mix);
+    let [pressure, ..] = air_lines_at(world, at);
     vec![pressure, temperature_line(world.map().temperature(at))]
+}
+
+/// The air lines for the tile at `at`. A space open to space says so in
+/// place of "Air", in red (D65).
+fn air_lines_at(world: &World, at: Pos) -> [Line<'static>; 3] {
+    let mix = world.map().air(at).unwrap_or(Mix::VACUUM);
+    let mut lines = air_lines(mix);
+    if world.map().survey().is_venting(at) {
+        let kpa = kilopascals(mix.total());
+        lines[0] = Line::styled(format!("Venting {kpa} kPa"), Style::new().fg(Color::Red));
+    }
+    lines
+}
+
+/// A pressure door's gauges (decision D65): the air on each side of it,
+/// and whether that side is venting to space, one line per side, in the
+/// two lines a floor tile uses for its air. Real hatches have them, so you
+/// can tell what's behind one before you open it.
+fn gauge_lines(world: &World, at: Pos) -> Vec<Line<'static>> {
+    let mut lines = Vec::new();
+    for (dir, side) in world.map().survey().beside(at) {
+        let kpa = kilopascals(side.pressure_pa);
+        let reading = format!("{} {kpa:>5} kPa", side_letter(dir));
+        lines.push(if side.is_venting() {
+            Line::styled(format!("{reading} venting"), Style::new().fg(Color::Red))
+        } else {
+            Line::raw(reading)
+        });
+    }
+    lines
+}
+
+/// "N", "E", "S" or "W": which side of a door a gauge reads.
+fn side_letter(dir: Dir) -> &'static str {
+    match dir {
+        Dir::North => "N",
+        Dir::East => "E",
+        Dir::South => "S",
+        _ => "W",
+    }
 }
 
 /// What to call the tile at `at`: the furniture standing there, or its
@@ -2051,7 +2123,7 @@ mod tests {
 
     #[test]
     fn the_overlay_shades_floor_by_pressure() {
-        let shade = |percent| air_glyph(Mix::STANDARD.scaled(percent)).0;
+        let shade = |percent| air_glyph(Mix::STANDARD.scaled(percent), false).0;
         assert_eq!(shade(100), "█");
         assert_eq!(shade(150), "█", "over-pressure is still full");
         assert_eq!(shade(70), "▓");
@@ -2181,11 +2253,72 @@ mod tests {
         }
     }
 
+    /// A little airlock on the real content, lit by two emergency lights:
+    /// a bay, an airlock door, a one-tile lock where you stand, another
+    /// airlock door, and a passage with a hull breach at its end.
+    fn airlock_world() -> World {
+        let rows = ["HHHEHHEHH", "H..A@B..X", "HHHHHHHHH"];
+        let json = format!(
+            r##"{{ "id": "t", "name": "T",
+                 "legend": {{ "H": "hull_plating", ".": "deck_plating", "@": "deck_plating",
+                             "A": "airlock_door", "B": "airlock_door", "X": "hull_breach",
+                             "E": "emergency_light" }},
+                 "decks": [ {{ "rows": {rows:?} }} ] }}"##
+        );
+        let data = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../data");
+        let content = crate::content::load_content(&data).unwrap();
+        World::new(parse_map(&json, &content).unwrap(), 1)
+    }
+
+    #[test]
+    fn an_airlock_doors_gauges_read_the_air_on_each_side() {
+        let mut world = airlock_world();
+        let outer = Pos::new(5, 1, 0);
+        let texts = |world: &World| -> Vec<String> {
+            look_lines(world, outer)
+                .iter()
+                .map(ToString::to_string)
+                .collect()
+        };
+        let before = texts(&world);
+        assert!(before.contains(&"W 101.3 kPa".to_string()), "{before:?}");
+        assert!(
+            before.contains(&"E 101.3 kPa venting".to_string()),
+            "{before:?}"
+        );
+        world.apply(Command::Wait);
+        assert!(texts(&world).contains(&"E   0.0 kPa venting".to_string()));
+        let passage = look_lines(&world, Pos::new(6, 1, 0));
+        let said: Vec<String> = passage.iter().map(ToString::to_string).collect();
+        assert!(said.contains(&"Venting 0.0 kPa".to_string()), "{said:?}");
+        look_panel_fits(&world);
+    }
+
+    #[test]
+    fn the_air_overlay_draws_a_venting_space_in_red() {
+        let world = airlock_world();
+        let shade = |x| glyph_at(&world, Pos::new(x, 1, 0), Some(Overlay::Air));
+        assert_eq!(
+            shade(6),
+            ("█".into(), Style::new().fg(Color::Red)),
+            "venting"
+        );
+        assert_eq!(
+            shade(1),
+            ("█".into(), Style::new().fg(Color::Cyan)),
+            "the bay"
+        );
+        let (_, sealed_vacuum) = air_glyph(Mix::VACUUM, false);
+        let (_, open_vacuum) = air_glyph(Mix::VACUUM, true);
+        assert_eq!(sealed_vacuum.fg, Some(Color::Gray));
+        assert_eq!(open_vacuum.fg, Some(Color::Red));
+    }
+
     #[test]
     fn the_air_overlay_shows_thin_air_upstairs_and_is_labelled() {
         let mut world = with_the_gear();
         let full = draw_screen(80, 24, |f| render_game(&world, &[], air(), f));
-        assert!(full.contains("[air overlay]"));
+        assert!(full.contains("[air overlay, red: venting]"));
         assert!(full.contains("███"), "the stasis bay is at full pressure");
 
         // Climb to the crew deck, which starts at 60% pressure.

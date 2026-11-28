@@ -1373,7 +1373,7 @@ mod material_tests {
             2,
             "the whole list comes along"
         );
-        assert_eq!(loaded.content.structures().len(), 10);
+        assert_eq!(loaded.content.structures().len(), 11);
     }
 
     #[test]

@@ -64,6 +64,14 @@ pub struct Structure {
     /// gives no light.
     #[serde(default)]
     pub light: u8,
+    /// A pressure door's breach interlock (decision D65): it won't open
+    /// while the space on one side of it is venting to space and the space
+    /// on another side holds more than this many tiles of air. So only an
+    /// airlock, a chamber this small, can open onto a breach, and a
+    /// habitat can't be bled through it. Only for solid structures.
+    /// Optional: no interlock.
+    #[serde(default)]
+    pub interlock_tiles: Option<u32>,
 }
 
 impl Structure {
@@ -88,7 +96,8 @@ impl Structure {
             .u64(u64::from(self.leak_cm2))
             .u8(self.climb.map_or(u8::MAX, Vertical::hash_id))
             .u8(u8::from(self.see_through))
-            .u8(self.light);
+            .u8(self.light)
+            .u64(self.interlock_tiles.map_or(u64::MAX, u64::from));
     }
 }
 
@@ -241,6 +250,10 @@ fn check_one(structure: &Structure, materials: &Materials) -> Result<(), Structu
             "walkable structures never block sight, so see_through is only for solid ones",
         ),
         (structure.light > MAX_LIGHT, TOO_BRIGHT),
+        (
+            structure.walkable && structure.interlock_tiles.is_some(),
+            "only solid structures (shut doors) can have a breach interlock (interlock_tiles)",
+        ),
     ];
     match problems.into_iter().find(|&(wrong, _)| wrong) {
         Some((_, problem)) => Err(StructureError::Mismatch {
@@ -285,6 +298,9 @@ pub(crate) mod tests {
             structure("open_door", '\'', WALKABLE),
             // A light set into a wall, bright enough for any test room.
             structure("lamp", '*', r#", "light": 20"#),
+            // A pressure door that may open onto a breach only from a
+            // space of 2 tiles or fewer (the test recipes open it).
+            structure("airlock", '+', r#", "interlock_tiles": 2"#),
         ];
         format!(r#"{{ "structures": [ {} ] }}"#, all.join(", "))
     }
@@ -304,7 +320,7 @@ pub(crate) mod tests {
     #[test]
     fn a_valid_file_loads() {
         let structures = test_structures();
-        assert_eq!(structures.list().len(), 10);
+        assert_eq!(structures.list().len(), 11);
         assert_eq!(structures.index_of("door"), Some(4));
         assert_eq!(structures.index_of("open_door"), Some(8));
         assert_eq!(structures.index_of("cheese"), None);
@@ -363,6 +379,11 @@ pub(crate) mod tests {
         );
         let parsed = parse_structures(&[ContentFile::new("w.json", window)], &test_materials());
         assert!(parsed.unwrap().list()[0].tile().see_through);
+        let interlocked_floor = format!(
+            r#"{{ "structures": [ {} ] }}"#,
+            structure("hatch", '.', r#", "walkable": true, "interlock_tiles": 2"#)
+        );
+        assert!(error_of(&interlocked_floor).contains("only solid structures (shut doors)"));
     }
 
     #[test]
@@ -465,7 +486,8 @@ pub(crate) mod tests {
             h.finish()
         };
         let base = test_structures().list()[4].clone();
-        let changes: [fn(&mut Structure); 9] = [
+        let changes: [fn(&mut Structure); 10] = [
+            |s| s.interlock_tiles = Some(0),
             |s| s.light += 1,
             |s| s.see_through = !s.see_through,
             |s| s.glyph = '=',

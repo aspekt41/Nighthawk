@@ -33,7 +33,7 @@ pub const SAVE_FORMAT: &str = "nighthawk-save";
 
 /// The save layout this build reads and writes. Bump it when `World` (or
 /// anything inside it) changes shape, and update the save-format test.
-pub const SAVE_VERSION: u32 = 24;
+pub const SAVE_VERSION: u32 = 25;
 
 /// Everything that can be wrong with a save file.
 #[derive(Debug)]
@@ -189,13 +189,13 @@ mod tests {
     fn save_text_is_tagged_and_versioned() {
         let text = save_to_string(&small_world());
         assert!(text.contains(r#""format": "nighthawk-save""#));
-        assert!(text.contains(r#""version": 24"#));
+        assert!(text.contains(r#""version": 25"#));
     }
 
     /// The exact text of the tiny save in `the_save_format_is_stable`.
     const EXPECTED_SAVE: &str = r#"{
   "format": "nighthawk-save",
-  "version": 24,
+  "version": 25,
   "world": {
     "deck_names": [
       "Deck 0"
@@ -308,7 +308,8 @@ mod tests {
           "leak_cm2": 0,
           "climb": null,
           "see_through": false,
-          "light": 0
+          "light": 0,
+          "interlock_tiles": null
         }
       ],
       "furniture": [],
@@ -444,20 +445,20 @@ mod tests {
 
     #[test]
     fn a_save_without_a_version_is_not_a_save() {
-        let text = save_with("\"version\": 24,", "");
+        let text = save_with("\"version\": 25,", "");
         assert!(matches!(load_from_str(&text), Err(SaveError::NotASave)));
     }
 
     #[test]
     fn saves_from_other_versions_are_rejected_clearly() {
-        // A save from before waking up: exactly what an old save file on
-        // disk looks like after this build is installed.
-        let text = save_with(r#""version": 24"#, r#""version": 23"#);
+        // A save from before pressure doors: exactly what an old save file
+        // on disk looks like after this build is installed.
+        let text = save_with(r#""version": 25"#, r#""version": 24"#);
         let err = load_from_str(&text).unwrap_err();
-        assert!(matches!(err, SaveError::UnsupportedVersion { found: 23 }));
+        assert!(matches!(err, SaveError::UnsupportedVersion { found: 24 }));
         assert_eq!(
             err.to_string(),
-            "save file is version 23, but this build only reads version 24"
+            "save file is version 24, but this build only reads version 25"
         );
     }
 

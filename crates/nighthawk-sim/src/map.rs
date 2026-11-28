@@ -6,6 +6,7 @@ use crate::air::{Mix, vent_ppm, vented_amount};
 use crate::hash::Fnv64;
 use crate::heat::{self, ROOM_TEMPERATURE_MK};
 use crate::pos::{Dir, Pos, Vertical};
+use crate::space::{Space, Survey};
 
 /// What a tile is like, for the simulation: the properties of its
 /// structure (decision D47), like whether you can walk on it and whether it
@@ -394,6 +395,28 @@ impl Map {
             }
         }
         venting
+    }
+
+    /// Every connected open space, summed up, and which one each tile is
+    /// in (decision D65): what the breach interlock on a pressure door,
+    /// its gauges and the air overlay ask about.
+    pub fn survey(&self) -> Survey {
+        let mut space_of = vec![None; self.air.len()];
+        let mut spaces = Vec::new();
+        for (number, tiles) in self.connected_spaces().iter().enumerate() {
+            for &i in tiles {
+                space_of[i] = Some(number);
+            }
+            let air: u64 = tiles.iter().map(|&i| self.air[i].total()).sum();
+            // A space has at least one tile, so the division is safe.
+            let count = tiles.len() as u64;
+            spaces.push(Space {
+                tiles: u32::try_from(tiles.len()).unwrap_or(u32::MAX),
+                hole_cm2: self.hole_area_around(tiles),
+                pressure_pa: air / count,
+            });
+        }
+        Survey::new((self.width, self.height, self.depth), space_of, spaces)
     }
 
     /// The total hole area (cm²) of the hull damage touching `space`: every
@@ -1051,6 +1074,21 @@ mod tests {
             "{}",
             room_pressure(&map)
         );
+    }
+
+    #[test]
+    fn a_survey_sums_up_each_space_its_size_holes_and_pressure() {
+        let holed = holed_room(Tile::BREACH).survey();
+        let room = holed.at(Pos::new(2, 1, 0)).unwrap();
+        assert_eq!(room.tiles, 3);
+        assert_eq!(room.hole_cm2, 400);
+        assert_eq!(room.pressure_pa, Mix::STANDARD.total());
+        assert!(room.is_venting() && holed.is_venting(Pos::new(1, 1, 0)));
+        assert_eq!(holed.at(Pos::new(0, 1, 0)), None, "the breach holds no air");
+        let sealed = holed_room(Tile::WALL).survey();
+        assert!(!sealed.is_venting(Pos::new(2, 1, 0)));
+        let beside_breach = holed.beside(Pos::new(0, 1, 0));
+        assert_eq!(beside_breach, vec![(Dir::East, room)]);
     }
 
     #[test]

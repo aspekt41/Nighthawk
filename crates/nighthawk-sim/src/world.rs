@@ -902,17 +902,25 @@ impl World {
 
     /// Walking into the solid `tile` at `at`: does the first action marked
     /// `on_bump` that can be done there (walking into a shut door opens
-    /// it), or else bumps into it, which costs no time.
+    /// it), or else bumps into it, which costs no time. A pressure door
+    /// held shut by its breach interlock says so instead (D65), since
+    /// "you bump into it" wouldn't tell you why it won't open.
     fn bump(&mut self, at: Pos, tile: Tile) -> Vec<Event> {
-        let chosen = (0..)
-            .zip(self.content.actions())
-            .find(|&(number, action)| {
-                action.on_bump && interact::blocked(self, at, number).is_none()
-            })
-            .map(|(number, _)| number);
-        match chosen {
-            Some(action) => self.interact(at, action),
-            None => vec![Event::Bumped { at, tile }],
+        let on_bump = (0..).zip(self.content.actions()).filter(|(_, a)| a.on_bump);
+        let reasons: Vec<(u16, Option<Blocked>)> = on_bump
+            .map(|(number, _)| (number, interact::blocked(self, at, number)))
+            .collect();
+        let can_do = reasons.iter().find(|(_, blocked)| blocked.is_none());
+        let held = reasons
+            .iter()
+            .find(|(_, blocked)| *blocked == Some(Blocked::Interlocked));
+        match (can_do, held) {
+            (Some(&(action, _)), _) => self.interact(at, action),
+            (None, Some(&(action, _))) => vec![Event::Unable {
+                action,
+                blocked: Blocked::Interlocked,
+            }],
+            (None, None) => vec![Event::Bumped { at, tile }],
         }
     }
 
@@ -3612,7 +3620,7 @@ mod tests {
         assert_eq!(world.structure_at(Pos::new(0, 0, 0)).unwrap().id, "wall");
         assert_eq!(world.structure_at(Pos::new(1, 1, 0)).unwrap().id, "floor");
         assert_eq!(world.structure_at(Pos::new(-1, 0, 0)), None);
-        assert_eq!(world.structures().len(), 10);
+        assert_eq!(world.structures().len(), 11);
     }
 
     #[test]

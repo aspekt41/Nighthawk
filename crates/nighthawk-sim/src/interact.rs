@@ -19,6 +19,7 @@ use crate::pos::Pos;
 use crate::power;
 use crate::quality::Levels;
 use crate::recipe::Use;
+use crate::space::Space;
 use crate::world::World;
 
 /// Why an action can't be done right now.
@@ -77,6 +78,11 @@ pub enum Blocked {
     /// For putting something on: you're already wearing item type number
     /// `item` in its slot (decision D61).
     Wearing { item: u16 },
+    /// A pressure door's breach interlock holds it shut: the space on one
+    /// side is venting to space, and the space on another holds more air
+    /// than an airlock (decision D65). Close the airlock's other door, or
+    /// seal the breach.
+    Interlocked,
 }
 
 /// One line of the interact menu: an action (its number), and why it can't
@@ -142,8 +148,33 @@ fn rules(world: &World, at: Pos, action: &Action) -> Option<Blocked> {
         .or_else(|| too_far(world, at, action.reach))
         .or_else(|| blocked_line(world, at, action))
         .or_else(|| cluttered(world, at, action))
+        .or_else(|| interlocked(world, at, action))
         .or_else(|| tool_needed(world, at, action))
         .or_else(|| missing(world, at, action))
+}
+
+/// `Interlocked` if the recipe for `action` would open a pressure door
+/// (turn it into something you can walk through, and air with you) while
+/// one side of it is venting to space and another side holds more than
+/// its `interlock_tiles` of air (decision D65).
+fn interlocked(world: &World, at: Pos, action: &Action) -> Option<Blocked> {
+    let limit = world.structure_at(at)?.interlock_tiles?;
+    let recipe = world.recipe_for(&action.id, at)?;
+    let becomes = recipe.to.as_deref().and_then(|id| {
+        let structures = world.structures();
+        structures.iter().find(|s| s.id == id)
+    });
+    if !becomes.is_some_and(|s| s.walkable) {
+        return None;
+    }
+    let survey = world.map().survey();
+    let sides: Vec<Space> = survey.beside(at).into_iter().map(|(_, s)| s).collect();
+    // A side venting, and a *different* side too big to open onto it.
+    let bleeds = sides.iter().enumerate().any(|(i, side)| {
+        let too_big = |(j, other): (usize, &Space)| j != i && other.tiles > limit;
+        side.is_venting() && sides.iter().enumerate().any(too_big)
+    });
+    bleeds.then_some(Blocked::Interlocked)
 }
 
 /// `Unworkable` for an action that needs a tool at the material's level,
@@ -336,6 +367,7 @@ mod tests {
     use super::*;
     use crate::action::tests::{CLOSE, CUT, OPEN, PICK_UP, REPAIR, WELD};
     use crate::map_file::parse_map_for_tests as parse_map;
+    use crate::world::Command;
 
     /// A test room. `@` at (1, 1); a closed door `+` at (1, 3) two tiles
     /// south; an open door `'` at (2, 1) beside the player; a hard-alloy
@@ -363,6 +395,81 @@ mod tests {
 
     fn only(world: &World, at: Pos) -> Vec<ActionOption> {
         options_at(world, at)
+    }
+
+    /// A row of three spaces: a 3-tile bay, an airlock door `A`, a
+    /// one-tile lock where you stand, another airlock door `B`, and a
+    /// one-tile passage with `end` at the far end: a hull breach `X` (the
+    /// passage vents) or a wall `#` (it's sealed).
+    ///
+    /// ```text
+    /// #########
+    /// #...A@B.X
+    /// #########
+    /// ```
+    fn airlock(end: char) -> World {
+        let rows = [
+            "#########".to_string(),
+            format!("#...A@B.{end}"),
+            "#########".into(),
+        ];
+        let json = format!(
+            r##"{{ "id": "t", "name": "T",
+                 "legend": {{ "#": "wall", ".": "floor", "A": "airlock", "B": "airlock",
+                             "X": "hull_breach" }},
+                 "decks": [ {{ "rows": {rows:?} }} ] }}"##
+        );
+        World::new(parse_map(&json).unwrap(), 1)
+    }
+
+    const INNER: Pos = Pos::new(4, 1, 0);
+    const OUTER: Pos = Pos::new(6, 1, 0);
+
+    #[test]
+    fn an_airlock_door_opens_onto_a_breach_only_from_the_small_lock() {
+        let mut w = airlock('X');
+        assert_eq!(blocked(&w, OUTER, OPEN), None, "from the shut lock: fine");
+        w.apply(Command::Interact {
+            at: INNER,
+            action: OPEN,
+        });
+        assert_eq!(
+            blocked(&w, OUTER, OPEN),
+            Some(Blocked::Interlocked),
+            "with the inner door open, the bay would bleed out"
+        );
+    }
+
+    #[test]
+    fn with_the_outer_door_open_the_inner_one_stays_shut() {
+        let mut w = airlock('X');
+        w.apply(Command::Interact {
+            at: OUTER,
+            action: OPEN,
+        });
+        assert_eq!(blocked(&w, INNER, OPEN), Some(Blocked::Interlocked));
+        // Walking into it says why it won't open, and takes no time.
+        let before = w.seconds();
+        let events = w.apply(Command::Move(crate::pos::Dir::West));
+        let held = crate::world::Event::Unable {
+            action: OPEN,
+            blocked: Blocked::Interlocked,
+        };
+        assert_eq!(events, [held]);
+        assert_eq!(w.seconds(), before);
+    }
+
+    #[test]
+    fn once_nothing_vents_the_interlock_lets_both_doors_open() {
+        let mut w = airlock('#');
+        w.apply(Command::Interact {
+            at: INNER,
+            action: OPEN,
+        });
+        assert_eq!(blocked(&w, OUTER, OPEN), None);
+        // An interlock only stops a door opening; closing one is never
+        // refused.
+        assert_eq!(blocked(&w, INNER, CLOSE), None);
     }
 
     #[test]

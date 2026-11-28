@@ -90,6 +90,16 @@
           "description": "How maps refer to it, like `\"bulkhead\"`.",
           "type": "string"
         },
+        "interlock_tiles": {
+          "description": "A pressure door's breach interlock (decision D65): it won't open\nwhile the space on one side of it is venting to space and the space\non another side holds more than this many tiles of air. So only an\nairlock, a chamber this small, can open onto a breach, and a\nhabitat can't be bled through it. Only for solid structures.\nOptional: no interlock.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "default": null,
+          "minimum": 0
+        },
         "leak_cm2": {
           "description": "A hole to space, in cm² (a hull crack is 4, a breach 400): the space\nbeside it leaks. Only for solid structures. Optional: none.",
           "type": "integer",

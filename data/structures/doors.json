@@ -27,6 +27,25 @@
       "colour": "light_red"
     },
     {
+      "id": "airlock_door",
+      "name": "airlock door",
+      "description": "A heavy pressure hatch with a thick viewport and a gauge on each side. Its breach interlock won't open it onto a compartment venting to space unless the other side is a sealed airlock, so a breach can't bleed the ship through it.",
+      "glyph": "+",
+      "material": "steel",
+      "colour": "magenta",
+      "see_through": true,
+      "interlock_tiles": 4
+    },
+    {
+      "id": "airlock_door_open",
+      "name": "open airlock door",
+      "description": "A heavy pressure hatch, swung open. Air passes through it.",
+      "glyph": "'",
+      "material": "steel",
+      "colour": "magenta",
+      "walkable": true
+    },
+    {
       "id": "damaged_door",
       "name": "damaged door",
       "description": "A door frame with the door cut out of it, the edges still bright from the laser. Air passes freely, and it won't shut again until it's repaired.",

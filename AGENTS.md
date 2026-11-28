@@ -199,7 +199,8 @@ precise error and exits with code 1 before entering raw mode.
   alloy, both tagged `metal`),
   structures (one for each kind of tile, named for it
   it: `"wall"`, `"floor"`, `"door"`, `"open_door"`…, plus `"frame"`, a
-  floor, and `"lamp"`, a wall with light 20) and items
+  floor, `"lamp"`, a wall with light 20, and `"airlock"`, a door with a
+  breach interlock of 2 tiles) and items
   (`"suit"`, worn on the `"body"`, with two 1 L pockets, `"cutter"` with LASER 1, `"scrap"`,
   `"lamp"` with light 2 and no cell; then `"cell"`, a 10 kJ power cell,
   `"torch"`, a light 3 lamp drawing 10 W, and `"saw"`, LASER 2 drawing
@@ -211,7 +212,8 @@ precise error and exits with code 1 before entering raw mode.
   and dismantling it (SCREW 1) gives 3 steel and 1 hard-alloy scrap;
   smashing a `"cabinet"` gives nothing; repairing a `"frame"` with 1 scrap makes a `"door"`,
   in 20 s; welding a `"hull_crack"` with WELD 2 makes a `"wall"`, in 40 s;
-  opening a `"door"` makes an `"open_door"` and closing turns it back, 2 s)
+  opening a `"door"` makes an `"open_door"` and closing turns it back, 2 s;
+  opening an `"airlock"` makes an `"open_door"` too, 2 s)
   and crafts (craft 0 makes a `"cutter"` from 2 metal scrap, of the scrap's
   material, 60 s; craft 1 makes 2 `"lamp"`s from a scrap and a cutter
   with LASER 1, 30 s), and puts the player on

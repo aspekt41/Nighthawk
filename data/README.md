@@ -172,6 +172,7 @@ other change.
 | `climb` | Optional. A ladder: `"up"` to the deck above or `"down"` to the one below (see [Stairs](#stairs)). Walkable structures only. |
 | `see_through` | Optional. You can see through it though it's solid, like a window. Left out, solid structures block sight. Walkable structures never block it, so it's for solid ones only. |
 | `light` | Optional. It gives light, reaching this many tiles (1 to 20) in a circle, with walls casting shadows; the emergency lights reach 10. Without light the ship is dark: you see only the tiles right around you. A light set into a wall shines out of every side of it. |
+| `interlock_tiles` | Optional, solid structures only. A pressure door's breach interlock: it won't open while the space on one side is venting to space and the space on another side holds more than this many tiles of air, so only a small sealed airlock can open onto a breach. Look mode shows such a door's gauges, the air on each side. The airlock doors use 4. |
 | `material` | The material it's made of, unless a map legend says otherwise. |
 | `colour` | Optional. Draw it in this colour (same names as materials). Otherwise ladders are cyan, leaks red (bold from 100 cm²), floor dark grey, and solid structures their material's colour. Doors are `light_red`; a damaged door is `red`. |
 
@@ -443,4 +444,4 @@ greyed with "needs WELD 1" until you carry the torch.
 A floor grate is a walkable structure; a weak, leaky panel is a solid one
 with a `leak_cm2`; a ceiling lamp over a walkway is a walkable one with a
 `light`. Properties are all there is to a tile's simulation:
-`walkable`, `leak_cm2`, `climb`, `see_through` and `light` (see [Structures](#structures-structuresjson)).
+`walkable`, `leak_cm2`, `climb`, `see_through`, `light` and `interlock_tiles` (see [Structures](#structures-structuresjson)).

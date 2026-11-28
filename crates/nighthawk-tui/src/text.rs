@@ -406,6 +406,7 @@ fn blocked_short_fixed(blocked: Blocked) -> String {
         Blocked::CantSee => "can't see it".into(),
         Blocked::NotKnown => "not known yet".into(),
         Blocked::Full => "full".into(),
+        Blocked::Interlocked => "breach interlock".into(),
         _ => "not possible".into(),
     }
 }
@@ -445,6 +446,11 @@ pub fn blocked_text(blocked: Blocked, action: u16, world: Option<&World>) -> Str
     }
 }
 
+/// Why a pressure door won't open (decision D65).
+/// One log line, so it fits the 78-column log.
+const INTERLOCKED: &str =
+    "Breach interlock: it opens onto a venting space only from a sealed airlock.";
+
 /// The log lines that need no names.
 fn blocked_text_fixed(blocked: Blocked) -> String {
     match blocked {
@@ -459,6 +465,7 @@ fn blocked_text_fixed(blocked: Blocked) -> String {
         Blocked::CantSee => "You can't see there.".into(),
         Blocked::NotKnown => "You don't know how to make that yet.".into(),
         Blocked::Full => "There's no room left in there.".into(),
+        Blocked::Interlocked => INTERLOCKED.into(),
         _ => "You can't do that there.".into(),
     }
 }
@@ -1270,5 +1277,16 @@ mod tests {
             .as_deref(),
             Some("Something is lying on it. Move it out of the way first.")
         );
+    }
+
+    #[test]
+    fn a_door_held_by_its_breach_interlock_says_why_in_one_log_line() {
+        assert_eq!(
+            blocked_short(Blocked::Interlocked, 0, None),
+            "breach interlock"
+        );
+        let held = blocked_text(Blocked::Interlocked, 0, None);
+        assert!(held.starts_with("Breach interlock"), "{held}");
+        assert!(held.chars().count() <= 78, "fits the log: {held}");
     }
 }

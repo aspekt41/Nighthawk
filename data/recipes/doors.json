@@ -16,6 +16,20 @@
       "seconds": 2
     },
     {
+      "id": "open_airlock_door",
+      "action": "open",
+      "from": "airlock_door",
+      "to": "airlock_door_open",
+      "seconds": 2
+    },
+    {
+      "id": "close_airlock_door",
+      "action": "close",
+      "from": "airlock_door_open",
+      "to": "airlock_door",
+      "seconds": 2
+    },
+    {
       "id": "pry_jammed_door",
       "action": "pry",
       "from": "jammed_door",
