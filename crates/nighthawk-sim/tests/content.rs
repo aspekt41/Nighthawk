@@ -130,7 +130,10 @@ fn the_starting_map_has_hull_damage_to_vent_through() {
         .positions()
         .map(|p| map.get(p).unwrap().hole_cm2())
         .sum();
-    assert_eq!(holes, 404, "one breach (400 cm²) and one crack (4 cm²)");
+    assert_eq!(
+        holes, 804,
+        "two breaches (400 cm² each: the bunk room's and the generator passage's) and one crack (4 cm²)"
+    );
 }
 
 /// Every map file in `data/maps`, loaded.
@@ -205,23 +208,30 @@ fn the_starting_map_has_more_than_one_deck() {
 #[test]
 fn the_hull_is_nanocarbon_hull_structures_and_the_inside_is_neither() {
     // Every tile on the map's border is a hull structure (plating, a crack
-    // or a breach), made of Nanocarbon Alloy; nothing inside the ship is.
+    // or a breach), made of Nanocarbon Alloy. Inside the ship, hull only
+    // thickens the border where it touches it (as at the generator
+    // passage's breach, which sits one tile in, D64); everything else
+    // inside is neither.
     let world = common::start_world(1);
     let map = world.map();
+    let on_edge =
+        |p: Pos| p.x == 0 || p.y == 0 || p.x == map.width() - 1 || p.y == map.height() - 1;
     for p in map.positions() {
-        let on_edge = p.x == 0 || p.y == 0 || p.x == map.width() - 1 || p.y == map.height() - 1;
         let structure = world.structure_at(p).unwrap().id.as_str();
         let material = world.material_at(p).unwrap().id.as_str();
-        assert_eq!(
-            on_edge,
-            structure.starts_with("hull_"),
+        let hull = structure.starts_with("hull_");
+        let thickening = Dir::ALL
+            .iter()
+            .any(|&d| on_edge(p.step(d)) && map.get(p.step(d)).is_some());
+        assert!(
+            if on_edge(p) {
+                hull
+            } else {
+                !hull || thickening
+            },
             "{p:?} is {structure}"
         );
-        assert_eq!(
-            on_edge,
-            material == "nanocarbon_alloy",
-            "{p:?} is {material}"
-        );
+        assert_eq!(hull, material == "nanocarbon_alloy", "{p:?} is {material}");
     }
 }
 
@@ -564,11 +574,14 @@ fn only_metal_patches_the_hull_or_mends_a_door() {
         uses.map(|u| (u.item.clone(), u.tag.clone())).collect()
     };
     let metal = Some("metal".to_string());
+    // Recipes that make hull plating or a door, that is: fixing the
+    // generator takes a fuse instead.
+    let makes_hull_or_door = |to: Option<&str>| matches!(to, Some("hull_plating" | "door"));
     for recipe in world
         .content()
         .recipes()
         .iter()
-        .filter(|r| r.action == "repair")
+        .filter(|r| r.action == "repair" && makes_hull_or_door(r.to.as_deref()))
     {
         for used in &recipe.uses {
             let kit = used.item == "hull_patch_kit";

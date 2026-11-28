@@ -173,6 +173,9 @@ other change.
 | `see_through` | Optional. You can see through it though it's solid, like a window. Left out, solid structures block sight. Walkable structures never block it, so it's for solid ones only. |
 | `light` | Optional. It gives light, reaching this many tiles (1 to 20) in a circle, with walls casting shadows; the emergency lights reach 10. Without light the ship is dark: you see only the tiles right around you. A light set into a wall shines out of every side of it. |
 | `interlock_tiles` | Optional, solid structures only. A pressure door's breach interlock: it won't open while the space on one side is venting to space and the space on another side holds more than this many tiles of air, so only a small sealed airlock can open onto a breach. Look mode shows such a door's gauges, the air on each side. The airlock doors use 4. |
+| `supplies` | Optional. The circuit it feeds while it stands, like `"emergency"`: it's a running power source, like a working generator. Until the power network (M3) a circuit is only a name: anything supplying it powers everything on it, anywhere on the ship. |
+| `circuit` | Optional. The circuit it's on: its `light` shines only while something feeds that circuit, and it's drawn dark grey while nothing does. Some structure must supply the circuit (a typo is a load error); a structure can't both feed a circuit and be on one. |
+| `unpowered_description` | Optional, only with `circuit`. What look mode says about it while its circuit has no power, in place of `description`: a dark lamp, or a readout showing the fault. |
 | `material` | The material it's made of, unless a map legend says otherwise. |
 | `colour` | Optional. Draw it in this colour (same names as materials). Otherwise ladders are cyan, leaks red (bold from 100 cm²), floor dark grey, and solid structures their material's colour. Doors are `light_red`; a damaged door is `red`. |
 
@@ -347,6 +350,7 @@ once, and the legend says what it stands on (something walkable).
 | `legend[].turned` | Optional, with `furniture`: turns it a quarter, swapping its width and height, so a chamber two tiles across runs two tiles down: `"c": { "structure": "deck_plating", "furniture": "stasis_chamber", "turned": true }`. |
 | `legend[].contents` | Optional, with `furniture` that holds things (`holds_ml`): items inside it, written like `items`: `"G": { "structure": "deck_plating", "furniture": "locker", "contents": [ { "item": "hand_lamp" } ] }`. Every piece drawn with that character gets its own. They must fit: `legend entry 'G': its contents take 900 ml, but a crate holds 0 ml`. |
 | `player_wears` | Optional. What the player starts out wearing, as a list of items like `[ { "item": "jumpsuit" }, { "item": "deck_shoes" } ]`. Everything in it must be wearable, and no two in the same slot. |
+| `intro` | Optional. The lines the log opens with when a new game starts on this map, like `[ "Emergency power offline. Generator access passage losing pressure." ]`. Each should fit the 78-column log. |
 | `decks` | Listed bottom to top: the first is deck 0. All decks must be the same size. |
 | `decks[].name` | Optional. Shown as the map panel's title on that deck. Without it the deck is "Deck 0", "Deck 1" and so on. |
 | `decks[].pressure` | Optional. The deck's starting air pressure as a percentage of normal ship air (101.3 kPa: 21% O2, 79% N2, a trace of CO2), from 0 (vacuum) to 200. Default 100. Each second, air evens out across every connected open space (joined by open floor, open doors and ladders), so a deck at 60% next to a full one shares their air as soon as time passes. |
@@ -444,4 +448,4 @@ greyed with "needs WELD 1" until you carry the torch.
 A floor grate is a walkable structure; a weak, leaky panel is a solid one
 with a `leak_cm2`; a ceiling lamp over a walkway is a walkable one with a
 `light`. Properties are all there is to a tile's simulation:
-`walkable`, `leak_cm2`, `climb`, `see_through`, `light` and `interlock_tiles` (see [Structures](#structures-structuresjson)).
+`walkable`, `leak_cm2`, `climb`, `see_through`, `light`, `interlock_tiles`, `supplies` and `circuit` (see [Structures](#structures-structuresjson)).

@@ -562,11 +562,11 @@ impl App {
 
     fn start_new_game(&mut self, seed: u64) {
         let world = World::new(self.start_map.clone(), seed);
-        self.log = vec![
-            format!("Seed {seed}. Run with --seed {seed} to replay this ship."),
-            "You wake in the stasis bay. The air is thin and cold.".into(),
-            "Emergency lighting flickers. Nothing else is moving.".into(),
-        ];
+        // The map's own opening lines (D66) follow the seed.
+        let seed_line = format!("Seed {seed}. Run with --seed {seed} to replay this ship.");
+        self.log = std::iter::once(seed_line)
+            .chain(self.start_map.intro.iter().cloned())
+            .collect();
         self.warn_if_unsaved();
         self.screen = Screen::Playing(Box::new(world));
     }
@@ -827,6 +827,16 @@ mod tests {
         app.on_title(TitleAction::Choose);
         assert_eq!(world(&app).seconds(), 0);
         assert_eq!(world(&app).seed(), CLOCK_SEED);
+        // The log opens with the seed, then the map's own lines (D66).
+        assert!(app.log[0].starts_with("Seed "));
+        assert_eq!(app.log[1..], app.start_map.intro[..]);
+        assert!(
+            app.log
+                .iter()
+                .any(|line| line.starts_with("Emergency power offline.")),
+            "{:?}",
+            app.log
+        );
     }
 
     #[test]

@@ -489,7 +489,10 @@ fn structure_glyph(world: &World, pos: Pos, tile: Tile) -> (String, Style) {
     let glyph = world.structure_at(pos).map_or('?', |s| s.glyph);
     let own = world.structure_at(pos).and_then(|s| s.colour);
     let plain_solid = !tile.walkable && tile.leak_cm2 == 0;
+    // A lamp on a dead circuit is dark grey (D66).
+    let dark_lamp = tile.light > 0 && world.is_unpowered(pos);
     let style = match (own, world.material_at(pos)) {
+        _ if dark_lamp => Style::new().fg(Color::DarkGray),
         (Some(c), _) => tile_style(tile).fg(colour(c)),
         (None, Some(material)) if plain_solid => Style::new().fg(colour(material.colour)),
         _ => tile_style(tile),
@@ -982,32 +985,38 @@ fn option_list(world: &World, at: Pos) -> Vec<Line<'static>> {
 }
 
 /// One option: "o  Open", or for a recipe that uses items, what it uses
-/// ("r  Repair: 2 scrap"); and if it can't be done, greyed with the reason
-/// on the next line.
+/// ("r  Repair: 2 scrap"); for a recipe, how long it takes on the next
+/// line ("   takes 40 s"); and if it can't be done, greyed, with the
+/// reason on the line after that.
 fn option_lines(world: &World, at: Pos, option: ActionOption) -> Vec<Line<'static>> {
     let action = &world.content().actions()[usize::from(option.action)];
-    let label = format!(
-        "{}  {}{}",
-        action.key,
-        action.name,
-        uses(world, at, &action.id)
-    );
-    match option.blocked {
-        None => vec![Line::styled(label, Style::new().fg(Color::Yellow))],
-        Some(blocked) => {
-            let dim = Style::new().fg(Color::DarkGray);
-            vec![
-                Line::styled(label, dim),
-                Line::styled(
-                    format!(
-                        "   {}",
-                        text::blocked_short(blocked, option.action, Some(world))
-                    ),
-                    dim,
-                ),
-            ]
-        }
-    }
+    let uses = uses(world, at, &action.id);
+    let label = format!("{}  {}{uses}", action.key, action.name);
+    // Too wide for the panel ("r  Repair: 1 hull patch kit"): what it
+    // uses goes on a line of its own.
+    let (label, uses_line) = match uses.strip_prefix(": ") {
+        Some(items) if label.chars().count() > usize::from(SIDEBAR_WIDTH - 2) => (
+            format!("{}  {}:", action.key, action.name),
+            Some(format!("   {items}")),
+        ),
+        _ => (label, None),
+    };
+    let dim = Style::new().fg(Color::DarkGray);
+    let takes = world
+        .recipe_for(&action.id, at)
+        .map(|r| format!("   takes {}", duration(r.seconds)));
+    let (first, rest) = match option.blocked {
+        None => (Style::new().fg(Color::Yellow), Style::new()),
+        Some(_) => (dim, dim),
+    };
+    let reason = option
+        .blocked
+        .map(|b| format!("   {}", text::blocked_short(b, option.action, Some(world))));
+    let mut lines = vec![Line::styled(label, first)];
+    lines.extend(uses_line.map(|items| Line::styled(items, rest)));
+    lines.extend(takes.map(|takes| Line::styled(takes, dim)));
+    lines.extend(reason.map(|reason| Line::styled(reason, dim)));
+    lines
 }
 
 /// What the recipe for the action with id `action` at `at` uses up, like
@@ -1253,7 +1262,8 @@ fn description(world: &World, at: Pos) -> Paragraph<'static> {
 /// there (furniture, or else the structure) and what that's made of.
 fn seen_description(world: &World, at: Pos) -> String {
     let furniture = world.furniture_kind_at(at).map(|k| k.description.as_str());
-    let structure = world.structure_at(at).map(|s| s.description.as_str());
+    // A lamp or readout on a dead circuit says so (D66).
+    let structure = world.structure_description(at);
     let standing = furniture.or(structure).unwrap_or("");
     let material = material_here(world, at)
         .map_or(String::new(), |m| format!("{}: {}", m.name, m.description));
@@ -2493,10 +2503,22 @@ mod tests {
     }
 
     #[test]
+    fn a_lamp_on_a_dead_circuit_is_dark_grey_and_the_readout_shows_the_fault() {
+        let world = real_world();
+        let lamp = Pos::new(33, 10, 0);
+        assert!(world.is_unpowered(lamp));
+        let (glyph, style) = structure_glyph(&world, lamp, world.map().get(lamp).unwrap());
+        assert_eq!((glyph.as_str(), style.fg), ("¤", Some(Color::DarkGray)));
+        let readout = seen_description(&world, Pos::new(15, 5, 0));
+        assert!(readout.contains("MAIN FUSE BLOWN"), "{readout}");
+    }
+
+    #[test]
     fn walls_are_drawn_in_their_materials_colour() {
         let world = real_world();
         let hull = glyph_at(&world, Pos::new(10, 0, 0), None);
-        let pillar = glyph_at(&world, Pos::new(15, 5, 0), None);
+        // The side room's bulkhead, beside its door.
+        let pillar = glyph_at(&world, Pos::new(6, 6, 0), None);
         assert_eq!(hull, ("#".to_string(), Style::new().fg(Color::DarkGray)));
         assert_eq!(pillar, ("#".to_string(), Style::new().fg(Color::Gray)));
     }
@@ -2545,9 +2567,11 @@ mod tests {
         assert_eq!(lines[1], "Door");
         assert_eq!(lines[2], "Aluminium Alloy");
         assert_eq!(lines[4], "o  Open");
-        assert_eq!(lines[5], "   too far: reach 1");
-        assert_eq!(lines[6], "x  Cut");
-        assert_eq!(lines[7], "   too far: reach 2");
+        assert_eq!(lines[5], "   takes 2 s", "how long it takes");
+        assert_eq!(lines[6], "   too far: reach 1");
+        assert_eq!(lines[7], "x  Cut");
+        assert_eq!(lines[8], "   takes 2 min");
+        assert_eq!(lines[9], "   too far: reach 2");
     }
 
     #[test]
@@ -2576,8 +2600,11 @@ mod tests {
         }
         assert_eq!(world.player(), Pos::new(23, 1, 1));
         let lines = interact_texts(&world, Pos::new(23, 0, 1));
-        assert_eq!(lines[4], "r  Repair: 1 metal scrap");
-        assert_eq!(lines[5], "   needs 1 metal scrap");
+        // Too wide for one line, so what it uses gets its own.
+        assert_eq!(lines[4], "r  Repair:");
+        assert_eq!(lines[5], "   1 metal scrap");
+        assert_eq!(lines[6], "   takes 1 min");
+        assert_eq!(lines[7], "   needs 1 metal scrap");
     }
 
     #[test]

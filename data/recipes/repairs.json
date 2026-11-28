@@ -32,6 +32,20 @@
       "material": "from_used"
     },
     {
+      "id": "replace_generator_fuse",
+      "action": "repair",
+      "from": "emergency_generator_blown",
+      "to": "emergency_generator",
+      "seconds": 40,
+      "needs": { "SCREW": 1 },
+      "uses": [
+        {
+          "item": "fuse",
+          "count": 1
+        }
+      ]
+    },
+    {
       "id": "repair_damaged_door",
       "action": "repair",
       "from": "damaged_door",

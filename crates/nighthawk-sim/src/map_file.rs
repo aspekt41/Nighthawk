@@ -58,6 +58,8 @@ pub struct LoadedMap {
     pub floor_items: Vec<FloorItem>,
     /// What the player starts out wearing.
     pub worn: Vec<Item>,
+    /// The lines the log opens with in a new game on this map.
+    pub intro: Vec<String>,
     /// Every piece of furniture, in reading order of their top-left tiles.
     pub furniture: Vec<Piece>,
 }
@@ -342,6 +344,10 @@ pub(crate) struct MapFile {
     /// What the player starts out wearing.
     #[serde(default)]
     player_wears: Vec<ItemSpec>,
+    /// Optional: the lines the log opens with when a new game starts on
+    /// this map, like "Emergency power offline." (D66).
+    #[serde(default)]
+    intro: Vec<String>,
 }
 
 /// Some items, in a map: a type, optionally a material other than its own,
@@ -458,6 +464,7 @@ pub fn parse_map(json: &str, content: &Content) -> Result<LoadedMap, MapError> {
             content: content.clone(),
             floor_items,
             worn,
+            intro: file.intro,
             furniture,
         }),
         _ => Err(MapError::PlayerStartCount {
@@ -1373,7 +1380,7 @@ mod material_tests {
             2,
             "the whole list comes along"
         );
-        assert_eq!(loaded.content.structures().len(), 11);
+        assert_eq!(loaded.content.structures().len(), 14);
     }
 
     #[test]

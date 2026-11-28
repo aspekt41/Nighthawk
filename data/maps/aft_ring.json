@@ -26,6 +26,10 @@
            "contents": [ { "item": "basic_laser_cutter", "charge_percent": 50 },
                          { "item": "hand_lamp", "charge_percent": 40 },
                          { "item": "screwdriver" } ] },
+    "S": { "structure": "deck_plating", "furniture": "locker",
+           "contents": [ { "item": "fuse" },
+                         { "item": "hull_patch_kit" },
+                         { "item": "makeshift_hammer" } ] },
     "k": { "structure": "deck_plating", "furniture": "locker",
            "contents": [ { "item": "scrap", "material": "polyester", "count": 3 },
                          { "item": "power_cell", "charge_percent": 60 } ] },
@@ -33,9 +37,17 @@
     "T": { "structure": "deck_plating", "furniture": "mess_table" },
     "h": { "structure": "deck_plating", "furniture": "chair" },
     "b": { "structure": "deck_plating", "items": [ { "item": "scrap", "material": "bone", "count": 2 } ] },
-    "y": { "structure": "deck_plating", "items": [ { "item": "scrap", "material": "polyester", "count": 2 } ] }
+    "y": { "structure": "deck_plating", "items": [ { "item": "scrap", "material": "polyester", "count": 2 } ] },
+    "A": "airlock_door",
+    "Q": "emergency_generator_blown",
+    "l": "circuit_light",
+    "R": "power_readout"
   },
   "player_wears": [ { "item": "jumpsuit" }, { "item": "deck_shoes" } ],
+  "intro": [
+    "You wake beside your stasis chamber. A power readout blinks red nearby.",
+    "Emergency power offline. Generator access passage losing pressure."
+  ],
   "decks": [
     {
       "name": "Stasis bay",
@@ -46,14 +58,14 @@
         "H######.......b...y..............>...H",
         "H######..............................H",
         "H######G.............................H",
-        "H.....#........##....................H",
+        "H.....#........R#....................H",
         "H.....#....PP..E#....................H",
         "H.....+...@................#E........H",
-        "H.....#....................##........H",
-        "H.....#..s...........................H",
-        "H######..............................H",
-        "H######.............c.bc.............H",
-        "H######.............c..c.............H",
+        "H.....#....................##########H",
+        "H.....#..s...................#Q......H",
+        "H######...................#######l##.H",
+        "H######.............c.bc..A..A.E####.H",
+        "H######.............c..c.S###X.......H",
         "HHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHH"
       ]
     },

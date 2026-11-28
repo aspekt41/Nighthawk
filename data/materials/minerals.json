@@ -17,6 +17,23 @@
         }
       },
       "tags": ["glass", "rigid"]
+    },
+    {
+      "id": "ceramic",
+      "name": "Ceramic",
+      "description": "Alumina ceramic: insulators, fuse bodies and heat tiles. Very hard and it shrugs off heat, but it cracks if you drop it.",
+      "colour": "white",
+      "density": 3900,
+      "melting_point": 2072,
+      "specific_heat": 880,
+      "thermal_conductivity": 30000,
+      "hardness": 1500,
+      "worked_by": {
+        "cut": {
+          "LASER": 3
+        }
+      },
+      "tags": ["rigid"]
     }
   ]
 }

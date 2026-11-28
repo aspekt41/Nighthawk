@@ -275,6 +275,12 @@ pub enum Event {
     WokeUp {
         beside: u16,
     },
+    /// Circuit number `circuit` (its place in [`Content::circuits`]) has
+    /// power again, and `lights` lights on it have come on (decision D66).
+    Powered {
+        circuit: u16,
+        lights: u16,
+    },
     /// The player followed a recipe for action number `action` on the tile
     /// at `at`, which was structure number `was` and is now what the
     /// recipe makes (it cut through a door, patched a crack…).
@@ -474,9 +480,15 @@ impl World {
     fn lights(&self) -> Vec<Light> {
         let z = self.player.z;
         let light_of = |item: &Item| power::light_now(item, self.content.item_types());
-        let built = self.map.positions().filter(|p| p.z == z).map(|at| Light {
-            at,
-            reach: self.map.get(at).map_or(0, |tile| tile.light),
+        // A light on a circuit nothing feeds stays dark (D66).
+        let fed = self.fed_circuits();
+        let built = self.map.positions().filter(|p| p.z == z).map(|at| {
+            let reach = self.map.get(at).map_or(0, |tile| tile.light);
+            let dark = reach > 0 && self.is_unpowered_with(at, &fed);
+            Light {
+                at,
+                reach: if dark { 0 } else { reach },
+            }
         });
         let lying = self
             .floor_items
@@ -642,6 +654,50 @@ impl World {
         self.content.structures()
     }
 
+    /// The circuits something on the ship feeds right now, as their places
+    /// in [`Content::circuits`], in order (decision D66): a circuit is fed
+    /// while a structure that supplies it stands anywhere on the ship.
+    pub fn fed_circuits(&self) -> Vec<u16> {
+        let names = self.content.circuits();
+        let mut fed: Vec<u16> = self
+            .map
+            .positions()
+            .filter_map(|p| self.structure_at(p)?.supplies.as_deref())
+            .filter_map(|name| names.iter().position(|c| *c == name))
+            .filter_map(|n| u16::try_from(n).ok())
+            .collect();
+        fed.sort_unstable();
+        fed.dedup();
+        fed
+    }
+
+    /// Whether the structure at `p` is on a circuit that nothing feeds:
+    /// a dark lamp, or a readout showing a fault (D66).
+    pub fn is_unpowered(&self, p: Pos) -> bool {
+        self.is_unpowered_with(p, &self.fed_circuits())
+    }
+
+    /// The same, with the fed circuits already worked out.
+    fn is_unpowered_with(&self, p: Pos, fed: &[u16]) -> bool {
+        let Some(circuit) = self.structure_at(p).and_then(|s| s.circuit.as_deref()) else {
+            return false;
+        };
+        let names = self.content.circuits();
+        let number = names.iter().position(|c| *c == circuit);
+        !number.is_some_and(|n| fed.iter().any(|&f| usize::from(f) == n))
+    }
+
+    /// What look mode says about the structure at `p`: its description,
+    /// or, while it's on a circuit with no power, its unpowered one.
+    pub fn structure_description(&self, p: Pos) -> Option<&str> {
+        let structure = self.structure_at(p)?;
+        let unpowered = structure
+            .unpowered_description
+            .as_deref()
+            .filter(|_| self.is_unpowered(p));
+        Some(unpowered.unwrap_or(&structure.description))
+    }
+
     /// Every material in this game, in the order tiles refer to them.
     pub fn materials(&self) -> &[Material] {
         self.content.materials()
@@ -678,17 +734,42 @@ impl World {
     /// moves forward (decision D7). An action that fails, like bumping a
     /// wall, costs no time.
     pub fn apply(&mut self, command: Command) -> Vec<Event> {
+        let fed_before = self.fed_circuits();
         // A blacked-out player can only wake up.
-        let events = if self.is_conscious() {
+        let mut events = if self.is_conscious() {
             self.act(command)
         } else if command == Command::WakeUp {
             self.wake_up()
         } else {
             return Vec::new();
         };
+        events.extend(self.newly_fed(&fed_before));
         self.remember_carried();
         self.refresh_view();
         events
+    }
+
+    /// A `Powered` event for each circuit fed now that wasn't fed in
+    /// `before` (D66), with how many lights on it come on.
+    fn newly_fed(&self, before: &[u16]) -> Vec<Event> {
+        let names = self.content.circuits();
+        let fed = self
+            .fed_circuits()
+            .into_iter()
+            .filter(|c| !before.contains(c));
+        fed.map(|circuit| {
+            let name = names.get(usize::from(circuit)).copied();
+            let on_it = |p: &Pos| {
+                let s = self.structure_at(*p);
+                s.is_some_and(|s| s.light > 0 && s.circuit.as_deref() == name)
+            };
+            let lights = self.map.positions().filter(on_it).count();
+            Event::Powered {
+                circuit,
+                lights: u16::try_from(lights).unwrap_or(u16::MAX),
+            }
+        })
+        .collect()
     }
 
     /// Does `command` for a player who's awake.
@@ -3620,7 +3701,7 @@ mod tests {
         assert_eq!(world.structure_at(Pos::new(0, 0, 0)).unwrap().id, "wall");
         assert_eq!(world.structure_at(Pos::new(1, 1, 0)).unwrap().id, "floor");
         assert_eq!(world.structure_at(Pos::new(-1, 0, 0)), None);
-        assert_eq!(world.structures().len(), 11);
+        assert_eq!(world.structures().len(), 14);
     }
 
     #[test]
@@ -4017,6 +4098,88 @@ mod tests {
     }
 
     const POD_ROOM: [&str; 4] = ["#*####", "#PP..#", "#..@.#", "######"];
+
+    /// A dark room whose only light is a bulb `o` on the "mains" circuit,
+    /// fed by nothing: its generator `g` beside you is dead. You wear the
+    /// test suit and carry a scrap, which repairs it (D66).
+    ///
+    /// ```text
+    /// #####o##
+    /// #.@g...#
+    /// ########
+    /// ```
+    fn dead_generator_room() -> World {
+        let rows = ["#####o##", "#.@g...#", "########"];
+        let json = format!(
+            r##"{{ "id": "t", "name": "T", "player_wears": [ {{ "item": "suit" }} ],
+                  "legend": {{ "#": "wall", ".": "floor", "o": "bulb", "g": "dead_generator" }},
+                  "decks": [ {{ "rows": {rows:?} }} ] }}"##
+        );
+        let mut world = World::new(parse_map(&json).expect("test map is valid"), TEST_SEED);
+        pocket(&mut world, SCRAP, 0);
+        world
+    }
+
+    const GENERATOR: Pos = Pos::new(3, 1, 0);
+    const BULB: Pos = Pos::new(5, 0, 0);
+
+    #[test]
+    fn a_light_on_a_circuit_nothing_feeds_stays_dark() {
+        let world = dead_generator_room();
+        assert!(world.fed_circuits().is_empty());
+        assert!(world.is_unpowered(BULB));
+        assert!(!world.is_lit(Pos::new(6, 1, 0)), "the far end is dark");
+        assert_eq!(world.structure_description(BULB), Some("A dark bulb."));
+        assert!(!world.is_unpowered(GENERATOR), "it's on no circuit");
+        assert_eq!(world.structure_description(Pos::new(-1, 0, 0)), None);
+    }
+
+    #[test]
+    fn repairing_the_generator_feeds_its_circuit_and_the_light_comes_on_at_once() {
+        let mut world = dead_generator_room();
+        let events = world.apply(Command::Interact {
+            at: GENERATOR,
+            action: REPAIR,
+        });
+        let powered = Event::Powered {
+            circuit: 0,
+            lights: 1,
+        };
+        assert_eq!(events.last(), Some(&powered), "{events:?}");
+        let repaired = events
+            .iter()
+            .position(|e| matches!(e, Event::Transformed { action: REPAIR, .. }));
+        assert!(
+            repaired.is_some_and(|i| i + 1 < events.len()),
+            "the repair is logged first: {events:?}"
+        );
+        assert_eq!(world.fed_circuits(), [0]);
+        assert_eq!(world.content().circuits(), ["mains"]);
+        assert!(world.is_lit(Pos::new(6, 1, 0)), "the bulb lights the room");
+        assert_eq!(world.structure_description(BULB), Some("A test structure."));
+        let later = world.apply(Command::Wait);
+        assert!(!later.contains(&powered), "only when it comes on");
+    }
+
+    #[test]
+    fn without_what_the_repair_uses_the_generator_stays_dead() {
+        let mut world = dead_generator_room();
+        world.worn[0].pockets[0].clear();
+        let before = world.seconds();
+        let events = world.apply(Command::Interact {
+            at: GENERATOR,
+            action: REPAIR,
+        });
+        assert!(matches!(
+            events[..],
+            [Event::Unable {
+                blocked: Blocked::Missing { .. },
+                ..
+            }]
+        ));
+        assert_eq!(world.seconds(), before, "no time passes");
+        assert!(world.fed_circuits().is_empty());
+    }
 
     #[test]
     fn blacked_out_you_come_to_beside_the_pod_with_everything_you_had() {

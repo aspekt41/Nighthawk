@@ -12,6 +12,15 @@
       "cell": {
         "capacity_kj": 300
       }
+    },
+    {
+      "id": "fuse",
+      "name": "fuse",
+      "description": "A spare main fuse for the emergency generator: a heavy ceramic cartridge with brass end caps, still sealed in its wrapper.",
+      "glyph": "!",
+      "material": "ceramic",
+      "volume_ml": 50,
+      "solid_percent": 60
     }
   ]
 }

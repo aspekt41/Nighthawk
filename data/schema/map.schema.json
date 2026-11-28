@@ -21,6 +21,14 @@
     "id": {
       "type": "string"
     },
+    "intro": {
+      "description": "Optional: the lines the log opens with when a new game starts on\nthis map, like \"Emergency power offline.\" (D66).",
+      "type": "array",
+      "default": [],
+      "items": {
+        "type": "string"
+      }
+    },
     "legend": {
       "type": "object",
       "additionalProperties": {

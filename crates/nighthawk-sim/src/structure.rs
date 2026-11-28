@@ -72,6 +72,22 @@ pub struct Structure {
     /// Optional: no interlock.
     #[serde(default)]
     pub interlock_tiles: Option<u32>,
+    /// The circuit it feeds while it stands, like `"emergency"`: it's a
+    /// running power source, such as a working generator (decision D66).
+    /// Until the power network (M3), a circuit is only a name. Optional:
+    /// it feeds nothing.
+    #[serde(default)]
+    pub supplies: Option<String>,
+    /// The circuit it's on: its light shines only while something on the
+    /// ship feeds that circuit (D66). Some structure must supply it.
+    /// Optional: it needs no power.
+    #[serde(default)]
+    pub circuit: Option<String>,
+    /// What look mode says about it while its `circuit` has no power, in
+    /// place of `description` (a dark lamp, a readout showing a fault).
+    /// Only with `circuit`. Optional: the description always.
+    #[serde(default)]
+    pub unpowered_description: Option<String>,
 }
 
 impl Structure {
@@ -98,6 +114,10 @@ impl Structure {
             .u8(u8::from(self.see_through))
             .u8(self.light)
             .u64(self.interlock_tiles.map_or(u64::MAX, u64::from));
+        // An empty string stands for "none": no real name is empty.
+        h.str(self.supplies.as_deref().unwrap_or(""))
+            .str(self.circuit.as_deref().unwrap_or(""))
+            .str(self.unpowered_description.as_deref().unwrap_or(""));
     }
 }
 
@@ -127,6 +147,34 @@ impl Structures {
     pub(crate) fn list_mut(&mut self) -> &mut Vec<Structure> {
         &mut self.list
     }
+
+    /// Every circuit some structure feeds, each once, in the order they
+    /// first appear (D66). Events name a circuit by its place here.
+    pub fn circuits(&self) -> Vec<&str> {
+        let mut names: Vec<&str> = Vec::new();
+        for name in self.list.iter().filter_map(|s| s.supplies.as_deref()) {
+            if !names.contains(&name) {
+                names.push(name);
+            }
+        }
+        names
+    }
+
+    /// A structure on a circuit that nothing could ever feed is a typo.
+    fn check_circuits(&self) -> Result<(), StructureError> {
+        let fed = self.circuits();
+        let unfed = self
+            .list
+            .iter()
+            .find(|s| s.circuit.as_deref().is_some_and(|c| !fed.contains(&c)));
+        match unfed {
+            Some(s) => Err(StructureError::UnfedCircuit {
+                structure: s.id.clone(),
+                circuit: s.circuit.clone().unwrap_or_default(),
+            }),
+            None => Ok(()),
+        }
+    }
 }
 
 /// Everything that can be wrong with the structures files.
@@ -154,6 +202,11 @@ pub enum StructureError {
         structure: String,
         problem: &'static str,
     },
+    /// A structure on a circuit that no structure supplies.
+    UnfedCircuit {
+        structure: String,
+        circuit: String,
+    },
 }
 
 impl fmt::Display for StructureError {
@@ -179,6 +232,10 @@ impl fmt::Display for StructureError {
             StructureError::Mismatch { structure, problem } => {
                 write!(f, "structure {structure:?}: {problem}")
             }
+            StructureError::UnfedCircuit { structure, circuit } => write!(
+                f,
+                "structure {structure:?} is on circuit {circuit:?}, which no structure supplies"
+            ),
         }
     }
 }
@@ -205,7 +262,9 @@ pub(crate) fn parse_structures(
     let list = read_all(files, |f: StructuresFile| f.structures).map_err(StructureError::File)?;
     check_list(&list)?;
     list.iter().try_for_each(|s| check_one(s, materials))?;
-    Ok(Structures { list })
+    let structures = Structures { list };
+    structures.check_circuits()?;
+    Ok(structures)
 }
 
 fn check_list(list: &[Structure]) -> Result<(), StructureError> {
@@ -254,6 +313,14 @@ fn check_one(structure: &Structure, materials: &Materials) -> Result<(), Structu
             structure.walkable && structure.interlock_tiles.is_some(),
             "only solid structures (shut doors) can have a breach interlock (interlock_tiles)",
         ),
+        (
+            structure.supplies.is_some() && structure.circuit.is_some(),
+            "a structure can feed a circuit (supplies) or be on one (circuit), not both",
+        ),
+        (
+            structure.unpowered_description.is_some() && structure.circuit.is_none(),
+            "only a structure on a circuit can have an unpowered_description",
+        ),
     ];
     match problems.into_iter().find(|&(wrong, _)| wrong) {
         Some((_, problem)) => Err(StructureError::Mismatch {
@@ -301,6 +368,16 @@ pub(crate) mod tests {
             // A pressure door that may open onto a breach only from a
             // space of 2 tiles or fewer (the test recipes open it).
             structure("airlock", '+', r#", "interlock_tiles": 2"#),
+            // A generator feeding the "mains" circuit, one that's dead (a
+            // test recipe repairs it into the first), and a bulb on the
+            // circuit, bright enough for any test room while it's fed.
+            structure("generator", 'G', r#", "supplies": "mains""#),
+            structure("dead_generator", 'g', ""),
+            structure(
+                "bulb",
+                'o',
+                r#", "light": 20, "circuit": "mains", "unpowered_description": "A dark bulb.""#,
+            ),
         ];
         format!(r#"{{ "structures": [ {} ] }}"#, all.join(", "))
     }
@@ -320,7 +397,7 @@ pub(crate) mod tests {
     #[test]
     fn a_valid_file_loads() {
         let structures = test_structures();
-        assert_eq!(structures.list().len(), 11);
+        assert_eq!(structures.list().len(), 14);
         assert_eq!(structures.index_of("door"), Some(4));
         assert_eq!(structures.index_of("open_door"), Some(8));
         assert_eq!(structures.index_of("cheese"), None);
@@ -384,6 +461,30 @@ pub(crate) mod tests {
             structure("hatch", '.', r#", "walkable": true, "interlock_tiles": 2"#)
         );
         assert!(error_of(&interlocked_floor).contains("only solid structures (shut doors)"));
+    }
+
+    #[test]
+    fn circuits_are_named_by_what_feeds_them_and_must_be_fed() {
+        let structures = test_structures();
+        assert_eq!(structures.circuits(), ["mains"]);
+        let both = format!(
+            r#"{{ "structures": [ {} ] }}"#,
+            structure("relay", 'r', r#", "supplies": "a", "circuit": "a""#)
+        );
+        assert!(error_of(&both).contains("not both"));
+        let unpowered_alone = format!(
+            r#"{{ "structures": [ {} ] }}"#,
+            structure("lamp", '*', r#", "unpowered_description": "Dark.""#)
+        );
+        assert!(error_of(&unpowered_alone).contains("only a structure on a circuit"));
+        let unfed = format!(
+            r#"{{ "structures": [ {} ] }}"#,
+            structure("lamp", '*', r#", "circuit": "mians""#)
+        );
+        assert_eq!(
+            error_of(&unfed),
+            r#"structure "lamp" is on circuit "mians", which no structure supplies"#
+        );
     }
 
     #[test]
@@ -486,7 +587,10 @@ pub(crate) mod tests {
             h.finish()
         };
         let base = test_structures().list()[4].clone();
-        let changes: [fn(&mut Structure); 10] = [
+        let changes: [fn(&mut Structure); 13] = [
+            |s| s.supplies = Some("mains".into()),
+            |s| s.circuit = Some("mains".into()),
+            |s| s.unpowered_description = Some("Dark.".into()),
             |s| s.interlock_tiles = Some(0),
             |s| s.light += 1,
             |s| s.see_through = !s.see_through,

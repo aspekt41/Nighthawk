@@ -29,7 +29,7 @@
     {
       "id": "airlock_door",
       "name": "airlock door",
-      "description": "A heavy pressure hatch with a thick viewport and a gauge on each side. Its breach interlock won't open it onto a compartment venting to space unless the other side is a sealed airlock, so a breach can't bleed the ship through it.",
+      "description": "A heavy pressure hatch with a thick viewport and a gauge on each side. Its breach interlock won't open it onto a compartment venting to space unless the other side is a sealed airlock. Once the far side is sealed, open both doors to let air in.",
       "glyph": "+",
       "material": "steel",
       "colour": "magenta",

@@ -226,6 +226,12 @@ impl Content {
         self.structures.list()
     }
 
+    /// Every circuit some structure feeds, each once, in order (D66).
+    /// Events name a circuit by its place in this list.
+    pub fn circuits(&self) -> Vec<&str> {
+        self.structures.circuits()
+    }
+
     /// Every tag any material has, each once, in order; see
     /// `Materials::tags`.
     pub fn material_tags(&self) -> Vec<&str> {

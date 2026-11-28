@@ -52,6 +52,14 @@
       "description": "One kind of structure.",
       "type": "object",
       "properties": {
+        "circuit": {
+          "description": "The circuit it's on: its light shines only while something on the\nship feeds that circuit (D66). Some structure must supply it.\nOptional: it needs no power.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
         "climb": {
           "description": "A ladder, going `\"up\"` or `\"down\"`. Only for walkable structures.\nOptional: not a ladder.",
           "anyOf": [
@@ -127,6 +135,22 @@
           "description": "You can see through it, though it's solid, like a window. Only for\nsolid structures (walkable ones never block sight). Optional: solid\nstructures block sight.",
           "type": "boolean",
           "default": false
+        },
+        "supplies": {
+          "description": "The circuit it feeds while it stands, like `\"emergency\"`: it's a\nrunning power source, such as a working generator (decision D66).\nUntil the power network (M3), a circuit is only a name. Optional:\nit feeds nothing.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "unpowered_description": {
+          "description": "What look mode says about it while its `circuit` has no power, in\nplace of `description` (a dark lamp, a readout showing a fault).\nOnly with `circuit`. Optional: the description always.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
         },
         "walkable": {
           "description": "You can walk on it, and air fills it. Optional: left out, it's\nsolid and airtight, like a wall or a shut door.",

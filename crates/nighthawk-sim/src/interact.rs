@@ -448,6 +448,11 @@ mod tests {
             action: OPEN,
         });
         assert_eq!(blocked(&w, INNER, OPEN), Some(Blocked::Interlocked));
+        // Work that leaves it shut (welding it into a wall) isn't held.
+        assert!(matches!(
+            blocked(&w, INNER, WELD),
+            Some(Blocked::Needs { .. })
+        ));
         // Walking into it says why it won't open, and takes no time.
         let before = w.seconds();
         let events = w.apply(Command::Move(crate::pos::Dir::West));

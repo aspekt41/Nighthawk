@@ -96,9 +96,25 @@ fn power_text(world: Option<&World>, event: Event) -> Option<String> {
             )
         }
         Event::CannotPower(blocked) => cannot_power_text(blocked).into(),
+        Event::Powered { circuit, lights } => powered_text(world, circuit, lights),
         _ => return None,
     };
     Some(line)
+}
+
+/// "Power returns to the emergency circuit: 1 light comes on." (D66)
+fn powered_text(world: Option<&World>, circuit: u16, lights: u16) -> String {
+    let circuits = world.map(|w| w.content().circuits()).unwrap_or_default();
+    let name = circuits
+        .get(usize::from(circuit))
+        .copied()
+        .unwrap_or("ship's");
+    let back = format!("Power returns to the {name} circuit");
+    match lights {
+        0 => format!("{back}."),
+        1 => format!("{back}: 1 light comes on."),
+        n => format!("{back}: {n} lights come on."),
+    }
 }
 
 /// Why you couldn't load, unload or switch something.
@@ -1288,5 +1304,23 @@ mod tests {
         let held = blocked_text(Blocked::Interlocked, 0, None);
         assert!(held.starts_with("Breach interlock"), "{held}");
         assert!(held.chars().count() <= 78, "fits the log: {held}");
+    }
+
+    #[test]
+    fn power_returning_names_the_circuit_and_counts_the_lights() {
+        let world = real_world();
+        let powered = |lights| Event::Powered { circuit: 0, lights };
+        assert_eq!(
+            describe_in(&world, powered(1)).as_deref(),
+            Some("Power returns to the emergency circuit: 1 light comes on.")
+        );
+        assert_eq!(
+            describe(powered(2)).as_deref(),
+            Some("Power returns to the ship's circuit: 2 lights come on.")
+        );
+        assert_eq!(
+            describe(powered(0)).as_deref(),
+            Some("Power returns to the ship's circuit.")
+        );
     }
 }
