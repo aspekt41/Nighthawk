@@ -260,3 +260,22 @@ fn saving_and_loading_mid_run_changes_nothing() {
     assert_eq!(resumed, straight);
     assert_eq!(resumed.suit_o2(), straight.suit_o2());
 }
+
+#[test]
+fn the_same_seed_and_commands_give_the_same_suit_run() {
+    let run = || {
+        let mut world = common::start_world(7);
+        suit_up(&mut world);
+        cycle_out(&mut world);
+        walk_to_the_generator(&mut world);
+        let events = interact(&mut world, GENERATOR, "repair");
+        walk_back_to_the_lock(&mut world);
+        cycle_in(&mut world);
+        (world, events)
+    };
+    let (a, a_events) = run();
+    let (b, b_events) = run();
+    assert_eq!(a_events, b_events);
+    assert_eq!(a, b);
+    assert_eq!(a.state_hash(), b.state_hash());
+}
