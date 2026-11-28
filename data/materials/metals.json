@@ -33,7 +33,7 @@
           "LASER": 1
         }
       },
-      "tags": ["metal", "rigid"]
+      "tags": ["metal", "rigid", "ductile"]
     },
     {
       "id": "nanocarbon_alloy",
@@ -67,7 +67,7 @@
           "LASER": 1
         }
       },
-      "tags": ["metal", "rigid"]
+      "tags": ["metal", "rigid", "ductile"]
     }
   ]
 }

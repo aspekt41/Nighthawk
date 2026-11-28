@@ -10,6 +10,21 @@
       "id": "CUT",
       "name": "cutting",
       "description": "Cutting with an edge: slicing fabric, cord and anything else soft. Not much use against metal."
+    },
+    {
+      "id": "HAMMER",
+      "name": "hammering",
+      "description": "Striking hard and true: flattening scrap into plate, drawing wire, driving a patch home."
+    },
+    {
+      "id": "PRY",
+      "name": "prying",
+      "description": "Levering things apart: forcing a jammed door, lifting a deck panel."
+    },
+    {
+      "id": "WRENCH",
+      "name": "turning bolts",
+      "description": "Gripping and turning bolts and nuts: what it takes to unbolt anything fixed to the deck."
     }
   ]
 }

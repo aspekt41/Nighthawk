@@ -928,7 +928,8 @@ fn craft_lines(world: &World, number: u16, chosen: bool) -> Vec<Line<'static>> {
     );
     let mut lines = vec![Line::styled(label, style)];
     if let Some(blocked) = blocked {
-        let why = text::blocked_short(blocked, u16::MAX, Some(world));
+        // The whole reason: the crafting screen has room for it.
+        let why = text::blocked_reason(blocked, u16::MAX, Some(world));
         lines.push(Line::styled(format!("    {why}"), dim));
     }
     lines
@@ -1395,21 +1396,30 @@ mod tests {
     }
 
     #[test]
-    fn an_open_door_draws_its_open_glyph() {
+    fn an_open_door_draws_its_open_glyph_and_a_jammed_one_stays_shut() {
         let mut world = real_world();
-        // Up the ladder and along to the cabin door at (5, 4) on deck 1.
+        // Up the ladder and along to the cabin door at (22, 4) on deck 1,
+        // which opens as you walk into it.
         use nighthawk_sim::Command::{Climb, Move};
         let route = std::iter::repeat_n(Move(Dir::North), 5)
             .chain(std::iter::repeat_n(Move(Dir::East), 23))
             .chain([Climb(nighthawk_sim::Vertical::Up)])
             .chain(std::iter::repeat_n(Move(Dir::South), 3))
-            .chain(std::iter::repeat_n(Move(Dir::West), 22))
+            .chain(std::iter::repeat_n(Move(Dir::West), 11))
             .chain([Move(Dir::North)]);
         for command in route {
             world.apply(command);
         }
+        assert_eq!(world.player(), Pos::new(22, 5, 1));
+        assert_eq!(glyph_at(&world, Pos::new(22, 4, 1), None).0, "'");
+        // Along to the jammed one at (11, 4): walking into it does nothing.
+        for command in std::iter::repeat_n(Move(Dir::West), 11).chain([Move(Dir::North)]) {
+            world.apply(command);
+        }
         assert_eq!(world.player(), Pos::new(11, 5, 1));
-        assert_eq!(glyph_at(&world, Pos::new(11, 4, 1), None).0, "'");
+        assert_eq!(glyph_at(&world, Pos::new(11, 4, 1), None).0, "+");
+        let lines = look_texts(&world, Pos::new(11, 4, 1));
+        assert_eq!(lines[2], "Jammed door");
     }
 
     #[test]
@@ -2256,12 +2266,22 @@ mod tests {
         assert_eq!(texts[1], "2 × rag  1 fabric scrap  1 min");
         assert_eq!(lines[1].style.fg, Some(Color::DarkGray));
         assert_eq!(texts[2], "    needs CUT 1", "the reason, under it");
-        assert_eq!(texts[4], "Makes shiv, of the material used.");
-        assert_eq!(texts[5], "It has CUT 1.");
-        assert!(texts[6].starts_with("A shard of scrap"));
+        assert_eq!(texts[3], "2 × wire  1 ductile scrap  5 min");
+        assert_eq!(texts[4], "    needs HAMMER 1");
+        assert_eq!(texts[5], "metal plate  4 metal scrap  15 min");
+    }
+
+    #[test]
+    fn under_the_list_the_crafting_screen_says_what_the_chosen_craft_makes() {
+        let world = with_scrap();
+        let texts = crafting_texts(&world, 0);
+        assert_eq!(texts[7], "", "after the four crafts and their reasons");
+        assert_eq!(texts[8], "Makes shiv, of the material used.");
+        assert_eq!(texts[9], "It has CUT 1.");
+        assert!(texts[10].starts_with("A shard of scrap"));
         let rags = crafting_texts(&world, 1);
-        assert_eq!(rags[4], "Makes 2 × rag, of the material used.");
-        assert_eq!(rags[5], "Needs a tool with CUT 1.");
+        assert_eq!(rags[8], "Makes 2 × rag, of the material used.");
+        assert_eq!(rags[9], "Needs a tool with CUT 1.");
     }
 
     #[test]

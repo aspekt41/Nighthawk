@@ -1,0 +1,47 @@
+{
+  "$schema": "../schema/crafts.schema.json",
+  "crafts": [
+    {
+      "id": "cordage",
+      "makes": "cordage",
+      "material": "from_used",
+      "seconds": 120,
+      "uses": [
+        { "item": "rag", "count": 2 }
+      ]
+    },
+    {
+      "id": "wire",
+      "makes": "wire",
+      "count": 2,
+      "material": "from_used",
+      "seconds": 300,
+      "uses": [
+        { "item": "scrap", "count": 1, "tag": "ductile" }
+      ],
+      "needs": { "HAMMER": 1 }
+    },
+    {
+      "id": "metal_plate",
+      "makes": "metal_plate",
+      "material": "from_used",
+      "seconds": 900,
+      "uses": [
+        { "item": "scrap", "count": 4, "tag": "metal" }
+      ],
+      "needs": { "HAMMER": 1 }
+    },
+    {
+      "id": "hull_patch_kit",
+      "makes": "hull_patch_kit",
+      "material": "from_used",
+      "seconds": 600,
+      "uses": [
+        { "item": "metal_plate", "count": 1 },
+        { "item": "wire", "count": 2 },
+        { "item": "rag", "count": 1 }
+      ],
+      "needs": { "HAMMER": 1 }
+    }
+  ]
+}

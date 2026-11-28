@@ -1451,8 +1451,10 @@ mod tests {
         app.handle_key(key(KeyCode::Enter));
         assert_eq!(last_log(&app), "You make a shiv (Steel).");
         assert_eq!(app.crafting, Some(0), "still open, to make another");
+        // Four crafts known (the shiv, rags, wire and plate): down past the
+        // last stops on it, then up one.
         press_all(&mut app, "jjjjk");
-        assert_eq!(app.crafting, Some(0), "between the first and the last");
+        assert_eq!(app.crafting, Some(2), "between the first and the last");
         app.handle_key(key(KeyCode::Esc));
         assert_eq!(app.crafting, None);
     }

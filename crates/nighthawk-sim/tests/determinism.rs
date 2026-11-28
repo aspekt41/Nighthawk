@@ -22,7 +22,7 @@ const SEED: u64 = 0x4e49_4748_5448_4157; // "NIGHTHAW" in ASCII
 const TURNS: usize = 500;
 
 /// The stored fingerprints. See "If this test fails" above.
-const EXPECTED_STATE_HASH: u64 = 0x107d_9516_1710_659d;
+const EXPECTED_STATE_HASH: u64 = 0xd134_e6fe_2faf_fcbc;
 const EXPECTED_AMBIENT_COUNT: usize = 74;
 
 fn start_world() -> World {

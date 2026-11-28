@@ -64,6 +64,13 @@
       "key": "d",
       "reach": 1,
       "done": "You take the {was} apart."
+    },
+    {
+      "id": "pry",
+      "name": "Pry open",
+      "key": "p",
+      "reach": 1,
+      "done": "You lever the {was} open."
     }
   ]
 }

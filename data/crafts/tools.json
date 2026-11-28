@@ -1,0 +1,36 @@
+{
+  "$schema": "../schema/crafts.schema.json",
+  "crafts": [
+    {
+      "id": "makeshift_hammer",
+      "makes": "makeshift_hammer",
+      "material": "from_used",
+      "seconds": 600,
+      "uses": [
+        { "item": "scrap", "count": 2, "tag": "metal" },
+        { "item": "cordage", "count": 1 }
+      ]
+    },
+    {
+      "id": "pry_bar",
+      "makes": "pry_bar",
+      "material": "from_used",
+      "seconds": 600,
+      "uses": [
+        { "item": "metal_plate", "count": 1 }
+      ],
+      "needs": { "HAMMER": 1 }
+    },
+    {
+      "id": "wrench",
+      "makes": "wrench",
+      "material": "from_used",
+      "seconds": 900,
+      "uses": [
+        { "item": "metal_plate", "count": 1 },
+        { "item": "scrap", "count": 1, "tag": "metal" }
+      ],
+      "needs": { "HAMMER": 1 }
+    }
+  ]
+}

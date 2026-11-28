@@ -1,0 +1,41 @@
+{
+  "$schema": "../schema/items.schema.json",
+  "items": [
+    {
+      "id": "cordage",
+      "name": "cordage",
+      "description": "Strips of rag twisted into a short, strong cord. Good for lashing one thing to another.",
+      "glyph": "-",
+      "material": "polyester",
+      "volume_ml": 60,
+      "solid_percent": 50
+    },
+    {
+      "id": "wire",
+      "name": "wire",
+      "description": "A coil of soft wire, hammered and drawn out of scrap. It ties things down, and one day it will carry current.",
+      "glyph": ",",
+      "material": "copper",
+      "volume_ml": 20,
+      "solid_percent": 40
+    },
+    {
+      "id": "metal_plate",
+      "name": "metal plate",
+      "description": "Scrap hammered flat and folded over on itself into a rough plate. Heavy, and far more use than a handful of scrap.",
+      "glyph": "_",
+      "material": "steel",
+      "volume_ml": 200,
+      "solid_percent": 100
+    },
+    {
+      "id": "hull_patch_kit",
+      "name": "hull patch kit",
+      "description": "A hammered plate with a rag gasket round its edge and wire to lash it in place: enough to stop a hole in the hull you could put your fist through.",
+      "glyph": "%",
+      "material": "steel",
+      "volume_ml": 400,
+      "solid_percent": 50
+    }
+  ]
+}

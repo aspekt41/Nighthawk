@@ -479,7 +479,7 @@ mod tests {
     fn the_shipped_action_keys_are_the_agreed_ones_and_clash_with_nothing() {
         let actions = actions();
         let keys: Vec<char> = actions.iter().map(|a| a.key).collect();
-        assert_eq!(keys, vec!['o', 'c', 'x', 'r', 'g', 't', 's', 'd']);
+        assert_eq!(keys, vec!['o', 'c', 'x', 'r', 'g', 't', 's', 'd', 'p']);
         assert_eq!(check_action_keys(&actions), Ok(()));
     }
 

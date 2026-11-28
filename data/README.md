@@ -51,7 +51,9 @@ What tools can do (decision D9). A tool has a quality at a level from 1 to
 10 (`LASER 1` is a small laser cutter), and actions ask for a quality at a
 level, never for a particular tool, so there can be many ways to get one.
 Materials and items may only name qualities listed here. There may be none
-at all.
+at all. Shipped: `LASER` (the laser cutter), `SCREW` (the screwdriver),
+`CUT` (the shiv), `HAMMER` (a makeshift hammer), `PRY` (a pry bar) and
+`WRENCH` (a wrench); the last three are made, not found (decision D60).
 
 ```json
 {
@@ -134,7 +136,7 @@ Each material has real physical properties, in whole numbers:
 | `thermal_conductivity` | **mW**/(m·K), thousandths of a W/(m·K), so insulators like cotton (40) aren't rounded to zero. Steel is 45000. |
 | `hardness` | Vickers hardness (HV); 0 for soft things like fabric. |
 | `worked_by` | Optional. For each action with `tool_from_material`, the tool qualities that can do it to this material and the level each needs (1 to 10); any one is enough. `{ "cut": { "LASER": 2 } }`: cutting it needs `LASER 2`. Leave an action out and nothing can do it to this material. Actions must be from `actions/`, qualities from `qualities/`. |
-| `tags` | Optional. What kind of stuff it is, like `["metal"]`. A recipe can ask for items of a material with a tag (`"tag"` in `uses`): hull patches take metal scrap, so Scrap (Bone) won't do. Shipped tags: `metal` (steel, aluminium, nanocarbon, copper), `rigid` (the metals, glass and bone: anything that holds an edge), `fabric` (cotton, polyester), `plastic` (polyester), `organic` (bone), `glass`. |
+| `tags` | Optional. What kind of stuff it is, like `["metal"]`. A recipe can ask for items of a material with a tag (`"tag"` in `uses`): hull patches take metal scrap, so Scrap (Bone) won't do. Shipped tags: `metal` (steel, aluminium, nanocarbon, copper), `rigid` (the metals, glass and bone: anything that holds an edge), `ductile` (copper and aluminium, soft enough to draw into wire), `fabric` (cotton, polyester), `plastic` (polyester), `organic` (bone), `glass`. |
 
 Mistakes are reported precisely: a duplicate id, or a level out of range.
 

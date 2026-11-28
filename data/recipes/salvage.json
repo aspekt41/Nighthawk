@@ -132,7 +132,7 @@
       "action": "dismantle",
       "furniture": "bunk",
       "seconds": 120,
-      "needs": { "SCREW": 1 },
+      "needs": { "WRENCH": 1 },
       "gives": [
         {
           "item": "scrap",
@@ -218,7 +218,7 @@
       "action": "dismantle",
       "furniture": "locker",
       "seconds": 120,
-      "needs": { "SCREW": 1 },
+      "needs": { "WRENCH": 1 },
       "gives": [
         {
           "item": "scrap",

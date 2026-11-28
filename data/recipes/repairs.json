@@ -22,11 +22,11 @@
       "from": "hull_breach",
       "to": "hull_plating",
       "seconds": 300,
+      "needs": { "HAMMER": 1 },
       "uses": [
         {
-          "item": "scrap",
-          "count": 3,
-          "tag": "metal"
+          "item": "hull_patch_kit",
+          "count": 1
         }
       ],
       "material": "from_used"

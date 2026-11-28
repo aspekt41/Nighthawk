@@ -87,9 +87,9 @@ fn the_starting_map_has_no_way_off_its_edges() {
 }
 
 /// Whether the player can get through the tile at `p`: no furniture is in
-/// the way, and it's walkable, or walking into it does something that
-/// makes it walkable (a shut door has an `on_bump` action, open, whose
-/// recipe makes an open door).
+/// the way, and it's walkable, or some recipe makes it walkable. A shut
+/// door opens when you walk into it (its `on_bump` action, open, makes an
+/// open door); a jammed door takes a pry bar you can make, or a cut.
 fn passable(loaded: &LoadedMap, p: Pos) -> bool {
     let (map, content) = (&loaded.map, &loaded.content);
     if furniture_in_the_way(loaded, p) {
@@ -108,11 +108,10 @@ fn passable(loaded: &LoadedMap, p: Pos) -> bool {
             .expect("recipes name real structures");
         content.structures()[usize::from(to)].walkable
     };
-    content.recipes().iter().any(|r| {
-        r.from.as_ref() == Some(id)
-            && content.action(&r.action).is_some_and(|a| a.on_bump)
-            && r.to.as_deref().is_some_and(walkable)
-    })
+    content
+        .recipes()
+        .iter()
+        .any(|r| r.from.as_ref() == Some(id) && r.to.as_deref().is_some_and(walkable))
 }
 
 /// Whether a piece of furniture you can't walk through covers `p`.
@@ -515,7 +514,7 @@ fn beside_the_gear_locker_its_tools_are_at_hand_and_things_can_go_back_in() {
 }
 
 #[test]
-fn every_kind_of_furniture_can_be_smashed_or_dismantled_with_a_screwdriver() {
+fn every_kind_of_furniture_can_be_smashed_or_dismantled_with_a_tool() {
     let world = common::start_world(1);
     let recipes = world.content().recipes();
     for furniture in world.content().furniture() {
@@ -527,7 +526,16 @@ fn every_kind_of_furniture_can_be_smashed_or_dismantled_with_a_screwdriver() {
                 .unwrap_or_else(|| panic!("no {action} recipe for {}", furniture.id))
         };
         assert!(recipe("smash").needs.is_empty(), "smashing needs no tool");
-        assert_eq!(recipe("dismantle").needs.get("SCREW"), Some(&1));
+        // Bunks and lockers are bolted to the deck; the rest are screwed
+        // together.
+        let bolted = ["bunk", "locker"].contains(&furniture.id.as_str());
+        let tool = if bolted { "WRENCH" } else { "SCREW" };
+        let needs: Vec<(&str, u8)> = recipe("dismantle")
+            .needs
+            .iter()
+            .map(|(q, &level)| (q.as_str(), level))
+            .collect();
+        assert_eq!(needs, [(tool, 1)], "{}", furniture.id);
         let most = |action| {
             recipe(action)
                 .gives
@@ -540,17 +548,32 @@ fn every_kind_of_furniture_can_be_smashed_or_dismantled_with_a_screwdriver() {
 }
 
 #[test]
-fn only_metal_scrap_patches_the_hull_or_mends_a_door() {
+fn only_metal_patches_the_hull_or_mends_a_door() {
+    // Metal scrap, or a hull patch kit, whose plate is hammered out of
+    // metal scrap.
     let world = common::start_world(1);
+    let made_from = |item: &str| -> Vec<(String, Option<String>)> {
+        let craft = world.content().crafts().iter().find(|c| c.makes == item);
+        let uses = craft
+            .unwrap_or_else(|| panic!("nothing makes {item}"))
+            .uses
+            .iter();
+        uses.map(|u| (u.item.clone(), u.tag.clone())).collect()
+    };
+    let metal = Some("metal".to_string());
     for recipe in world
         .content()
         .recipes()
         .iter()
         .filter(|r| r.action == "repair")
     {
-        let tags: Vec<_> = recipe.uses.iter().map(|u| u.tag.as_deref()).collect();
-        assert!(tags.iter().all(|&t| t == Some("metal")), "{}", recipe.id);
+        for used in &recipe.uses {
+            let kit = used.item == "hull_patch_kit";
+            assert!(kit || used.tag == metal, "{}", recipe.id);
+        }
     }
+    assert!(made_from("hull_patch_kit").contains(&("metal_plate".into(), None)));
+    assert_eq!(made_from("metal_plate"), [("scrap".into(), metal)]);
     let bone = world.content().material_index("bone").unwrap();
     assert!(!world.materials()[usize::from(bone)].has_tag("metal"));
 }
@@ -598,14 +621,19 @@ fn craft_number(world: &World, id: &str) -> u16 {
 fn scrap_gives_you_a_shiv_and_the_shiv_cuts_polyester_into_rags() {
     let mut world = common::start_world(1);
     assert!(world.known_crafts().is_empty(), "you know nothing at first");
-    // Pick up the four steel scraps at (9, 9): both crafts come to mind.
+    // Pick up the four steel scraps at (9, 9): four crafts come to mind,
+    // the shiv and rags, and wire and plate (which need a hammer).
     world.apply(Command::Move(Dir::SouthWest));
     world.apply(Command::Interact {
         at: Pos::new(9, 9, 0),
         action: action(&world, "pick_up"),
     });
     let (shiv, rags) = (craft_number(&world, "shiv"), craft_number(&world, "rags"));
-    assert_eq!(world.known_crafts(), [shiv, rags]);
+    let (wire, plate) = (
+        craft_number(&world, "wire"),
+        craft_number(&world, "metal_plate"),
+    );
+    assert_eq!(world.known_crafts(), [shiv, rags, wire, plate]);
     let before = world.seconds();
     world.apply(Command::Craft(shiv));
     assert_eq!(world.seconds() - before, 300, "five minutes");

@@ -54,6 +54,42 @@
       "qualities": {
         "CUT": 1
       }
+    },
+    {
+      "id": "makeshift_hammer",
+      "name": "makeshift hammer",
+      "description": "A fist of scrap lashed to a scrap handle with cord. It hits things hard, which is all a hammer has to do.",
+      "glyph": ")",
+      "material": "steel",
+      "volume_ml": 250,
+      "solid_percent": 60,
+      "qualities": {
+        "HAMMER": 1
+      }
+    },
+    {
+      "id": "pry_bar",
+      "name": "pry bar",
+      "description": "A bar of plate hammered round and bent to a claw at one end. Long enough to lever a buckled door out of its frame.",
+      "glyph": "\\",
+      "material": "steel",
+      "volume_ml": 250,
+      "solid_percent": 80,
+      "qualities": {
+        "PRY": 1
+      }
+    },
+    {
+      "id": "wrench",
+      "name": "wrench",
+      "description": "A heavy open-ended wrench beaten out of plate. The jaw is rough, but it fits the bolts that hold the bunks and lockers to the deck.",
+      "glyph": "}",
+      "material": "steel",
+      "volume_ml": 150,
+      "solid_percent": 70,
+      "qualities": {
+        "WRENCH": 1
+      }
     }
   ]
 }

@@ -308,7 +308,16 @@ fn quality_id(world: Option<&World>, quality: u16) -> Option<&str> {
 /// the interact menu (at most 19 characters, to fit the panel; longer ones
 /// are cut). `world`, if given, names the action, items and qualities.
 pub fn blocked_short(blocked: Blocked, action: u16, world: Option<&World>) -> String {
-    let short = match blocked {
+    blocked_reason(blocked, action, world)
+        .chars()
+        .take(19)
+        .collect()
+}
+
+/// The same short reason, uncut, for where there's room, like the
+/// crafting screen: "needs 1 ductile scrap".
+pub fn blocked_reason(blocked: Blocked, action: u16, world: Option<&World>) -> String {
+    match blocked {
         Blocked::Missing {
             item, need, tag, ..
         } => {
@@ -324,8 +333,7 @@ pub fn blocked_short(blocked: Blocked, action: u16, world: Option<&World>) -> St
             need_kj, have_kj, ..
         } => format!("cell {have_kj}/{need_kj} kJ"),
         _ => blocked_short_fixed(blocked),
-    };
-    short.chars().take(19).collect()
+    }
 }
 
 /// The short reasons that need no names.
@@ -893,6 +901,30 @@ mod tests {
         assert_eq!(
             describe(Event::CannotPower(Blocked::Flat)).as_deref(),
             Some("Its cell is flat.")
+        );
+    }
+
+    #[test]
+    fn a_long_reason_is_cut_for_the_interact_panel_but_whole_elsewhere() {
+        let world = real_world();
+        let ductile = world
+            .content()
+            .material_tags()
+            .iter()
+            .position(|&t| t == "ductile");
+        let missing = Blocked::Missing {
+            item: world.item_type_index("scrap").unwrap(),
+            need: 1,
+            have: 0,
+            tag: ductile.map(|i| u16::try_from(i).unwrap()),
+        };
+        assert_eq!(
+            blocked_reason(missing, 0, Some(&world)),
+            "needs 1 ductile scrap"
+        );
+        assert_eq!(
+            blocked_short(missing, 0, Some(&world)),
+            "needs 1 ductile scr"
         );
     }
 

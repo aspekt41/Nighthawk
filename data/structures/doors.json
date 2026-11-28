@@ -10,6 +10,14 @@
       "colour": "light_red"
     },
     {
+      "id": "jammed_door",
+      "name": "jammed door",
+      "description": "A sliding pressure door, buckled in its frame. It won't slide open on its own; something would have to lever it.",
+      "glyph": "+",
+      "material": "aluminium_alloy",
+      "colour": "light_red"
+    },
+    {
       "id": "door_open",
       "name": "open door",
       "description": "A sliding pressure door, open. Air passes through it.",

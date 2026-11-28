@@ -14,6 +14,14 @@
       "from": "door_open",
       "to": "door",
       "seconds": 2
+    },
+    {
+      "id": "pry_jammed_door",
+      "action": "pry",
+      "from": "jammed_door",
+      "to": "door_open",
+      "seconds": 30,
+      "needs": { "PRY": 1 }
     }
   ]
 }
