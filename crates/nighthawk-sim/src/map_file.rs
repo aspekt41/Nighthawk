@@ -38,6 +38,7 @@ use crate::heat::{MAX_CELSIUS, MIN_CELSIUS, celsius_to_mk};
 use crate::item::{self, FloorItem, Item, ItemContext, ItemType};
 use crate::map::{Map, StairsError, Tile};
 use crate::pos::Pos;
+use crate::power::CellType;
 
 /// The glyph that marks the player's starting position.
 const PLAYER_START: char = '@';
@@ -677,16 +678,21 @@ fn charge(item: &mut Item, spec: &ItemSpec, content: &Content) -> Result<(), Ite
         let j = u64::from(capacity) * u64::from(percent) / 100;
         u32::try_from(j).unwrap_or(u32::MAX)
     };
-    match (spec.charge_percent, &kind.cell, &kind.power) {
+    if let Some(canister) = &kind.canister {
+        item.o2_ml = share(canister.capacity_ml);
+        return Ok(());
+    }
+    match (spec.charge_percent, &kind.cell, kind.slot_takes()) {
         (_, Some(cell), _) => item.charge_j = share(cell.capacity_j()),
-        (Some(_), None, Some(power)) => {
-            // Content checks guarantee the cell is a real cell type.
-            let cell_kind = content.item_types.index_of(&power.cell).unwrap_or(0);
-            let cell_type = &types[usize::from(cell_kind)];
-            let material = content.materials.index_of(&cell_type.material).unwrap_or(0);
-            let mut cell = Item::new(cell_kind, material, types);
-            cell.charge_j = share(cell_type.cell.as_ref().map_or(0, |c| c.capacity_j()));
-            item.cell = Some(Box::new(cell));
+        (Some(_), None, Some(takes)) => {
+            // Content checks guarantee it's a real cell or canister type.
+            let slot_kind = content.item_types.index_of(takes).unwrap_or(0);
+            let slot_type = &types[usize::from(slot_kind)];
+            let material = content.materials.index_of(&slot_type.material).unwrap_or(0);
+            let mut filled = Item::new(slot_kind, material, types);
+            filled.charge_j = share(slot_type.cell.as_ref().map_or(0, CellType::capacity_j));
+            filled.o2_ml = share(slot_type.canister.as_ref().map_or(0, |c| c.capacity_ml));
+            item.cell = Some(Box::new(filled));
         }
         (Some(_), None, None) => return problem("has a charge_percent, but holds no charge"),
         (None, None, _) => {}
@@ -1469,7 +1475,7 @@ mod item_tests {
         assert!(loaded.floor_items.iter().all(|f| f.at == Pos::new(1, 0, 0)));
         assert_eq!(loaded.floor_items[0].item.kind, 1);
         assert_eq!(loaded.floor_items[3].item.kind, 2);
-        assert_eq!(loaded.content.item_types().len(), 8);
+        assert_eq!(loaded.content.item_types().len(), 10);
         assert!(loaded.worn.is_empty(), "nothing worn unless the map says");
     }
 
@@ -1512,6 +1518,17 @@ mod item_tests {
             error(r#"[ { "item": "scrap", "charge_percent": 50 } ]"#, ""),
             r#"legend entry 's': "scrap" has a charge_percent, but holds no charge"#
         );
+    }
+
+    #[test]
+    fn canisters_come_full_unless_the_map_says() {
+        let loaded = map_with(
+            r#"[ { "item": "canister" }, { "item": "canister", "charge_percent": 40 } ]"#,
+            "",
+        )
+        .unwrap();
+        let o2: Vec<u32> = loaded.floor_items.iter().map(|f| f.item.o2_ml).collect();
+        assert_eq!(o2, [1000, 400]);
     }
 
     #[test]

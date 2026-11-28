@@ -6,7 +6,7 @@
 //! of it can be tested directly.
 
 use nighthawk_sim::{
-    ActionOption, Blocked, Command, Dress, ItemAt, ItemPath, LoadedMap, Place, Pos, World,
+    ActionOption, Blocked, Command, Dress, Gear, ItemAt, ItemPath, LoadedMap, Place, Pos, World,
     options_at,
 };
 use ratatui::crossterm::event::KeyEvent;
@@ -366,12 +366,29 @@ impl App {
             (InvEntry::Worn(i), InventoryAction::Dress) => {
                 self.apply(Command::Dress(Dress::TakeOff(i)));
             }
+            // A canister goes into the sealed suit you're wearing (D67).
+            (InvEntry::Worn(i), InventoryAction::Power(act)) if self.is_worn_suit(i) => {
+                self.apply(Command::Power {
+                    item: Gear::Worn(i),
+                    act,
+                });
+            }
             (InvEntry::Worn(_), _) => {
                 self.push_log("You're wearing that. Take it off first (W).".into());
             }
             (InvEntry::Carried(path), action) => self.act_on_carried(path, action),
         }
         self.keep_highlight_on_list();
+    }
+
+    /// Whether worn item number `i` is a sealed suit, which takes a
+    /// canister while you wear it.
+    fn is_worn_suit(&self, i: usize) -> bool {
+        let Screen::Playing(world) = &self.screen else {
+            return false;
+        };
+        let worn = world.worn().get(i);
+        worn.is_some_and(|w| world.item_types()[usize::from(w.kind)].air().is_some())
     }
 
     /// Does `action` to the carried item at `path`. `on_inventory` handles
@@ -385,7 +402,10 @@ impl App {
                     self.begin_put_away(path, &containers);
                 }
             }
-            InventoryAction::Power(act) => self.apply(Command::Power { item: path, act }),
+            InventoryAction::Power(act) => self.apply(Command::Power {
+                item: Gear::Carried(path),
+                act,
+            }),
             InventoryAction::Dress => {
                 self.apply(Command::Dress(Dress::PutOn(ItemAt::Carried(path))));
             }
@@ -1206,6 +1226,42 @@ mod tests {
         }
         assert!(!world(&app).is_conscious(), "out cold");
         (app, dir)
+    }
+
+    #[test]
+    fn u_and_r_on_the_worn_rescue_suit_take_its_canister_out_and_put_it_back() {
+        let json = r#"{ "id": "t", "name": "T",
+            "player_wears": [ { "item": "jumpsuit" },
+                              { "item": "rescue_suit", "charge_percent": 100 } ],
+            "legend": { "H": "hull_plating", "@": "deck_plating" },
+            "decks": [ { "rows": [ "HHH", "H@H", "HHH" ] } ] }"#;
+        let data = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../data");
+        let content = crate::content::load_content(&data).unwrap();
+        let map = nighthawk_sim::parse_map(json, &content).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = App::new(map, Some(SaveSlot::in_dir(dir.path())), Some(1), fixed_seed);
+        press_all(&mut app, "ij"); // the inventory, on the suit's line
+        press_all(&mut app, "u");
+        assert_eq!(
+            last_said(&app),
+            "You take the canister out of the rescue suit (Polyester)."
+        );
+        assert_eq!(world(&app).suit_o2(), None);
+        let suit_line = ui::inventory_entries(world(&app))
+            .iter()
+            .position(|&e| e == InvEntry::Worn(1))
+            .unwrap();
+        app.inventory = Some(suit_line);
+        press_all(&mut app, "r");
+        assert_eq!(
+            last_said(&app),
+            "You fit an oxygen canister (8.0 L) into the rescue suit (Polyester)."
+        );
+        assert_eq!(
+            world(&app).suit_o2(),
+            Some((8000, 8000)),
+            "in air: none used"
+        );
     }
 
     #[test]

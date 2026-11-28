@@ -23,6 +23,22 @@
     "items"
   ],
   "$defs": {
+    "CanisterType": {
+      "description": "What makes an item type an O₂ canister: how much oxygen it holds when\nfull.",
+      "type": "object",
+      "properties": {
+        "capacity_ml": {
+          "description": "How much oxygen it holds when full, in millilitres at normal\npressure (1 to [`MAX_CANISTER_ML`]).",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "capacity_ml"
+      ]
+    },
     "CellType": {
       "description": "What makes an item type a power cell: how much it holds when full.",
       "type": "object",
@@ -43,6 +59,18 @@
       "description": "A kind of item, from `data/items/`.",
       "type": "object",
       "properties": {
+        "canister": {
+          "description": "If it's an O₂ canister, how much it holds (decision D67).",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CanisterType"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
         "cell": {
           "description": "If it's a power cell, how much it holds (decision D59).",
           "anyOf": [
@@ -192,10 +220,43 @@
         "cell"
       ]
     },
+    "SuitAir": {
+      "description": "What makes something you wear a sealed suit: what it draws from its\ncanister each second you can't breathe the air around you, and which\ncanister it takes.",
+      "type": "object",
+      "properties": {
+        "canister": {
+          "description": "The id of the canister item it takes.",
+          "type": "string"
+        },
+        "ml_per_s": {
+          "description": "Oxygen it uses each second while sealed, in millilitres (at least 1).",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "ml_per_s",
+        "canister"
+      ]
+    },
     "Wear": {
       "description": "What wearing an item gives you, and where it goes.",
       "type": "object",
       "properties": {
+        "air": {
+          "description": "If it's a sealed suit, what it draws from its O₂ canister while you\ncan't breathe the air around you, and which canister it takes\n(decision D67). Optional: it isn't sealed.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SuitAir"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
         "pockets": {
           "type": "array",
           "items": {

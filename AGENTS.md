@@ -207,7 +207,9 @@ precise error and exits with code 1 before entering raw mode.
   `"lamp"` with light 2 and no cell; then `"cell"`, a 10 kJ power cell,
   `"torch"`, a light 3 lamp drawing 10 W, and `"saw"`, LASER 2 drawing
   100 W, both taking the cell; then `"boots"`, worn on the `"feet"`, 1.5 L,
-  with a 100 ml pocket) and
+  with a 100 ml pocket; then `"hood"`, worn on the `"head"`, a sealed suit
+  using 10 ml a second, and `"canister"`, the 1 L oxygen canister it takes)
+  and
   recipes (cutting a `"door"` or a `"wall"` leaves `"floor"`, in 60 s;
   repairing a `"hull_crack"` with 2 metal scrap makes a `"wall"` of the
   scrap's material, in 30 s; smashing a `"crate"` gives 0 to 2 scrap

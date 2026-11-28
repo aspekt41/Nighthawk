@@ -611,7 +611,7 @@ fn sidebar_lines(world: &World) -> Vec<Line<'static>> {
             world.now().time_text()
         )),
         Line::raw(format!("Seed  {}", world.seed())),
-        Line::raw(""),
+        suit_line(world),
         meter_line("Breath", world.breath(), BREATH_FULL),
         meter_line("Warmth", world.warmth(), WARMTH_FULL),
     ];
@@ -643,7 +643,33 @@ fn shortcut_hints(world: &World) -> String {
 /// One of the player's meters (breath, warmth): a percentage and a
 /// five-block gauge, green when it's fine, yellow when it's dropping, red
 /// when it's nearly gone.
+/// The air left in the sealed suit you wear, as a countdown and a gauge
+/// coloured like the meters below it ("Suit 3:42 █████"), or that it has
+/// no canister; blank with no sealed suit on (D67). It fills the
+/// sidebar's spare line, so the panel still fits 80×24.
+fn suit_line(world: &World) -> Line<'static> {
+    if world.worn_suit().is_none() {
+        return Line::raw("");
+    }
+    let (Some((left, full)), Some(seconds)) = (world.suit_o2(), world.suit_seconds_left()) else {
+        return Line::styled("Suit   no canister", Style::new().fg(Color::Red));
+    };
+    let (_, blocks, colour) = gauge(left, full.max(1));
+    let text = format!("Suit  {:>5} {blocks}", text::minutes_seconds(seconds));
+    Line::styled(text, Style::new().fg(colour))
+}
+
 fn meter_line(label: &str, value: u32, full: u32) -> Line<'static> {
+    let (percent, blocks, colour) = gauge(value, full);
+    Line::styled(
+        format!("{label} {percent:>3}% {blocks}"),
+        Style::new().fg(colour),
+    )
+}
+
+/// A meter's percentage, its five-block gauge ("███░░") and its colour:
+/// green from 75%, yellow from 25%, red below.
+fn gauge(value: u32, full: u32) -> (u64, String, Color) {
     // Worked in u64: warmth counts in millionths, and five times a million
     // is fine, but a percentage of it is safer with room to spare.
     let (value, full) = (u64::from(value), u64::from(full));
@@ -655,10 +681,7 @@ fn meter_line(label: &str, value: u32, full: u32) -> Line<'static> {
         25..=74 => Color::Yellow,
         _ => Color::Red,
     };
-    Line::styled(
-        format!("{label} {percent:>3}% {gauge}"),
-        Style::new().fg(colour),
-    )
+    (percent, gauge, colour)
 }
 
 /// The temperature where the player stands, in the colour the heat
@@ -682,7 +705,10 @@ fn celsius(mk: u32) -> String {
 /// The air where the player stands: pressure, then each gas's share.
 /// The shares always add up to exactly 100.0% (see `Mix::per_mille`).
 fn air_lines(mix: Mix) -> [Line<'static>; 3] {
-    let Some([o2, n2, co2]) = mix.per_mille() else {
+    // Under 50 Pa shows as 0.0 kPa: a mix of so little would read oddly
+    // ("N2 100.0%"), so it's vacuum.
+    let shares = mix.per_mille().filter(|_| mix.total() >= 50);
+    let Some([o2, n2, co2]) = shares else {
         return [
             Line::styled("Air   vacuum", Style::new().fg(Color::Red)),
             Line::raw("O2 --    N2 --"),
@@ -1512,8 +1538,42 @@ fn item_facts(world: &World, item: &Item) -> Vec<String> {
             charge.unwrap_or_default()
         ));
     }
+    facts.extend(air_fact(world, item));
+    if let Some(canister) = &kind.canister {
+        facts.push(format!(
+            "An oxygen canister, holding {} of {} L.",
+            litres(u64::from(item.o2_ml)),
+            litres(u64::from(canister.capacity_ml))
+        ));
+    }
     facts.extend(kind.wear.as_ref().map(wear_fact));
     facts
+}
+
+/// What a sealed suit breathes from (D67): "Sealed, it breathes 36 ml of
+/// oxygen a second from its canister: 6.2 of 8.0 L, 2:52 left." `None`
+/// for anything else.
+fn air_fact(world: &World, item: &Item) -> Option<String> {
+    let kind = &world.item_types()[usize::from(item.kind)];
+    let air = kind.air()?;
+    let start = format!(
+        "Sealed, it breathes {} ml of oxygen a second from its canister",
+        air.ml_per_s
+    );
+    let Some(canister) = item.cell.as_deref() else {
+        return Some(format!("{start}, but there's none in it."));
+    };
+    let full = world.item_types()[usize::from(canister.kind)]
+        .canister
+        .as_ref()
+        .map_or(0, |c| c.capacity_ml);
+    let left = canister.o2_ml / air.ml_per_s.max(1);
+    Some(format!(
+        "{start}: {} of {} L, {} left.",
+        litres(u64::from(canister.o2_ml)),
+        litres(u64::from(full)),
+        text::minutes_seconds(left)
+    ))
 }
 
 /// What wearing something gives: "Worn on the feet, with a boot sheath
@@ -1537,7 +1597,12 @@ fn action_keys(world: &World, entry: InvEntry, item: &Item) -> Vec<String> {
     let kind = &world.item_types()[usize::from(item.kind)];
     let mut keys = Vec::new();
     match entry {
-        InvEntry::Worn(_) => keys.push("W take it off".to_string()),
+        InvEntry::Worn(_) => {
+            keys.push("W take it off".to_string());
+            if kind.air().is_some() {
+                keys.push("r load a canister   u take it out".into());
+            }
+        }
         InvEntry::Carried(_) => {
             keys.push("d drop it   p put it in a locker   i move it".into());
             if kind.wear.is_some() {
@@ -1545,6 +1610,9 @@ fn action_keys(world: &World, entry: InvEntry, item: &Item) -> Vec<String> {
             }
             if kind.power.is_some() {
                 keys.push("r load a cell   u take the cell out".into());
+            }
+            if kind.air().is_some() {
+                keys.push("r load a canister   u take it out".into());
             }
             if kind.light > 0 && kind.power.is_some() {
                 keys.push("a switch it on or off".into());
@@ -1669,7 +1737,7 @@ fn log(entries: &[String], lines: u16) -> Paragraph<'static> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nighthawk_sim::{Command, Dir, parse_map};
+    use nighthawk_sim::{Command, Dir, Gear, parse_map};
 
     /// A 7×5 room with the player in the middle, lit by an emergency
     /// light in the top wall.
@@ -2385,7 +2453,7 @@ mod tests {
             .find(|(_, item)| item.kind == lamp)
             .unwrap();
         world.apply(Command::Power {
-            item: path,
+            item: Gear::Carried(path),
             act: nighthawk_sim::PowerAct::Switch,
         });
         world
@@ -2511,6 +2579,56 @@ mod tests {
         assert_eq!((glyph.as_str(), style.fg), ("¤", Some(Color::DarkGray)));
         let readout = seen_description(&world, Pos::new(15, 5, 0));
         assert!(readout.contains("MAIN FUSE BLOWN"), "{readout}");
+    }
+
+    /// You, wearing the jumpsuit and the rescue suit (its canister full),
+    /// in a lit room with no air on the real content (D67).
+    fn suited() -> World {
+        let rows = ["HHHEHHH", "H.....H", "H..@..H", "HHHHHHH"];
+        let json = format!(
+            r##"{{ "id": "t", "name": "T",
+                 "player_wears": [ {{ "item": "jumpsuit" }},
+                                   {{ "item": "rescue_suit", "charge_percent": 100 }} ],
+                 "legend": {{ "H": "hull_plating", ".": "deck_plating", "@": "deck_plating",
+                             "E": "emergency_light" }},
+                 "decks": [ {{ "rows": {rows:?}, "pressure": 0 }} ] }}"##
+        );
+        let data = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../data");
+        let content = crate::content::load_content(&data).unwrap();
+        World::new(parse_map(&json, &content).unwrap(), 1)
+    }
+
+    #[test]
+    fn the_sidebar_counts_down_the_suit_air_and_says_when_there_is_no_canister() {
+        let mut world = suited();
+        let suit_line = |world: &World| sidebar_lines(world)[3].to_string();
+        assert_eq!(suit_line(&world), "Suit   3:42 █████", "8 L at 36 ml/s");
+        world.apply(Command::Wait);
+        assert_eq!(suit_line(&world), "Suit   3:37 █████");
+        assert!(sidebar_lines(&world).len() <= 16, "still fits 80×24");
+        world.apply(Command::Power {
+            item: Gear::Worn(1),
+            act: nighthawk_sim::PowerAct::Unload,
+        });
+        assert_eq!(suit_line(&world), "Suit   no canister");
+        assert_eq!(
+            sidebar_lines(&real_world())[3].to_string(),
+            "",
+            "no suit on"
+        );
+    }
+
+    #[test]
+    fn a_closer_look_at_the_suit_says_what_it_breathes_and_how_long_it_lasts() {
+        let world = suited();
+        let said: Vec<String> = examine_lines(&world, InvEntry::Worn(1))
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+        let air = "Sealed, it breathes 36 ml of oxygen a second from its canister: \
+                   8.0 of 8.0 L, 3:42 left.";
+        assert!(said.contains(&air.to_string()), "{said:?}");
+        assert!(said.contains(&"r load a canister   u take it out".to_string()));
     }
 
     #[test]
@@ -2828,7 +2946,7 @@ mod tests {
             .find(|(_, item)| item.kind == lamp)
             .unwrap();
         world.apply(Command::Power {
-            item: path,
+            item: Gear::Carried(path),
             act: nighthawk_sim::PowerAct::Unload,
         });
         world.apply(Command::Dress(Dress::TakeOff(1)));
@@ -2963,7 +3081,7 @@ mod tests {
             .find(|(_, item)| item.kind == lamp)
             .unwrap();
         world.apply(Command::Power {
-            item: path,
+            item: Gear::Carried(path),
             act: nighthawk_sim::PowerAct::Unload,
         });
         let lines = inventory_texts(&world, 9);

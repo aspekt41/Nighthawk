@@ -43,6 +43,7 @@ mod schema;
 mod sight;
 mod space;
 mod structure;
+mod suit;
 mod world;
 
 pub use action::{Action, ActionError, Effect};
@@ -77,8 +78,9 @@ pub use schema::data_schemas;
 pub use sight::Remembered;
 pub use space::{Space, Survey};
 pub use structure::{Structure, StructureError};
+pub use suit::{CanisterType, MAX_CANISTER_ML, SuitAir, SuitAirLevel};
 pub use world::{
-    CLIMB_SECONDS, Command, DIAGONAL_STEP_SECONDS, DROP_SECONDS, Dress, Event, ItemAt,
+    CLIMB_SECONDS, Command, DIAGONAL_STEP_SECONDS, DROP_SECONDS, Dress, Event, Gear, ItemAt,
     POCKET_SECONDS, PUT_ON_SECONDS, Place, PowerAct, REACH, RELOAD_SECONDS, STEP_SECONDS,
     STORE_SECONDS, SWITCH_SECONDS, Sound, TAKE_OFF_SECONDS, UNLOAD_SECONDS, WAIT_SECONDS,
     WAKE_SECONDS, World,

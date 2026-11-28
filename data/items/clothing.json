@@ -85,6 +85,23 @@
           }
         ]
       }
+    },
+    {
+      "id": "rescue_suit",
+      "name": "rescue suit",
+      "description": "A crumpled orange emergency pressure suit, with a hood and visor, gloves and a zip seal: made to get someone across a depressurised compartment and back. Its open-loop regulator wastes oxygen, so a canister lasts it only minutes, and it does next to nothing against the cold.",
+      "glyph": "[",
+      "material": "polyester",
+      "volume_ml": 4000,
+      "solid_percent": 15,
+      "wear": {
+        "slot": "suit",
+        "pockets": [],
+        "air": {
+          "ml_per_s": 36,
+          "canister": "oxygen_canister"
+        }
+      }
     }
   ]
 }

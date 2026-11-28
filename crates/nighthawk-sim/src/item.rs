@@ -24,6 +24,7 @@ use crate::material::{Material, Materials};
 use crate::pos::Pos;
 use crate::power::{self, CellType, MAX_CELL_KJ, Power};
 use crate::quality::{LevelError, Levels, Qualities, hash_levels};
+use crate::suit::{self, CanisterType, MAX_CANISTER_ML, SuitAir};
 
 /// One pocket of a wearable item, as content: its name and how much it
 /// holds.
@@ -47,6 +48,11 @@ pub struct Wear {
     /// the game only compares them.
     pub slot: String,
     pub pockets: Vec<PocketType>,
+    /// If it's a sealed suit, what it draws from its O₂ canister while you
+    /// can't breathe the air around you, and which canister it takes
+    /// (decision D67). Optional: it isn't sealed.
+    #[serde(default)]
+    pub air: Option<SuitAir>,
 }
 
 /// A kind of item, from `data/items/`.
@@ -84,12 +90,28 @@ pub struct ItemType {
     /// If it runs on a power cell, what it draws and which cell it takes.
     #[serde(default)]
     pub power: Option<Power>,
+    /// If it's an O₂ canister, how much it holds (decision D67).
+    #[serde(default)]
+    pub canister: Option<CanisterType>,
 }
 
 impl ItemType {
     /// The pockets this item has (none unless it's wearable with pockets).
     pub fn pockets(&self) -> &[PocketType] {
         self.wear.as_ref().map_or(&[], |w| w.pockets.as_slice())
+    }
+
+    /// What a sealed suit draws, if this is one (D67).
+    pub fn air(&self) -> Option<&SuitAir> {
+        self.wear.as_ref()?.air.as_ref()
+    }
+
+    /// The id of what its slot takes, if it has one: the cell a powered
+    /// tool runs on (D59), or the canister a sealed suit breathes from
+    /// (D67). Content checks nothing has both.
+    pub fn slot_takes(&self) -> Option<&str> {
+        let cell = self.power.as_ref().map(|p| p.cell.as_str());
+        cell.or(self.air().map(|a| a.canister.as_str()))
     }
 
     fn hash_into(&self, h: &mut Fnv64) {
@@ -101,6 +123,7 @@ impl ItemType {
             .u8(self.light);
         hash_levels(&self.qualities, h);
         power::hash_power(self.cell.as_ref(), self.power.as_ref(), h);
+        suit::hash_air(self.canister.as_ref(), self.air(), h);
         h.str(self.wear.as_ref().map_or("", |w| w.slot.as_str()));
         let pockets = self.wear.as_ref().map(|w| w.pockets.as_slice());
         h.u64(pockets.map_or(u64::MAX, |p| p.len() as u64));
@@ -180,6 +203,10 @@ pub struct Item {
     /// For a light that runs on a cell: whether it's switched on.
     #[serde(default)]
     pub on: bool,
+    /// For an O₂ canister: the oxygen in it, in millilitres at normal
+    /// pressure (decision D67).
+    #[serde(default)]
+    pub o2_ml: u32,
 }
 
 impl Item {
@@ -193,7 +220,17 @@ impl Item {
             charge_j: 0,
             cell: None,
             on: false,
+            o2_ml: 0,
         }
+    }
+
+    /// How full it is, as a cell or canister: a cell's charge in joules,
+    /// a canister's oxygen in millilitres, 0 for anything else.
+    pub fn fill(&self, types: &[ItemType]) -> u32 {
+        let canister = types
+            .get(usize::from(self.kind))
+            .is_some_and(|t| t.canister.is_some());
+        if canister { self.o2_ml } else { self.charge_j }
     }
 
     /// Which item this is, without its contents: what events report.
@@ -214,7 +251,9 @@ impl Item {
                 item.hash_into(h);
             }
         }
-        h.u64(u64::from(self.charge_j)).u8(u8::from(self.on));
+        h.u64(u64::from(self.charge_j))
+            .u8(u8::from(self.on))
+            .u64(u64::from(self.o2_ml));
         match &self.cell {
             Some(cell) => cell.hash_into(h.u8(1)),
             None => {
@@ -420,13 +459,17 @@ fn check_power(item: &Item, kind: &ItemType, ctx: ItemContext) -> Result<(), Str
     if item.charge_j > capacity {
         return Err(format!("a {} holds more charge than it can", kind.id));
     }
+    let holds = kind.canister.as_ref().map_or(0, |c| c.capacity_ml);
+    if item.o2_ml > holds {
+        return Err(format!("a {} holds more oxygen than it can", kind.id));
+    }
     if item.on && !power::is_switchable(item, ctx.types) {
         return Err(format!("a {} is switched on, but can't be", kind.id));
     }
     let Some(cell) = item.cell.as_deref() else {
         return Ok(());
     };
-    let takes = kind.power.as_ref().map(|p| p.cell.as_str());
+    let takes = kind.slot_takes();
     let cell_id = ctx.types.get(usize::from(cell.kind)).map(|t| t.id.as_str());
     if takes.is_none() || takes != cell_id {
         return Err(format!("a {} has a cell it can't take", kind.id));
@@ -526,6 +569,7 @@ pub(crate) fn parse_items(
     check_list(&list)?;
     list.iter().try_for_each(|t| check_one(t, materials))?;
     list.iter().try_for_each(|t| check_power_type(t, &list))?;
+    list.iter().try_for_each(|t| check_air_type(t, &list))?;
     for item in &list {
         qualities
             .check(&item.qualities)
@@ -605,6 +649,41 @@ fn check_power_type(item: &ItemType, list: &[ItemType]) -> Result<(), ItemError>
     Ok(())
 }
 
+/// Checks an item type's `canister` and a suit's `air` (D67): a canister
+/// holds 1 to [`MAX_CANISTER_ML`] ml and is nothing else that holds or
+/// takes energy; a sealed suit draws at least 1 ml a second, takes a
+/// canister that's in `list`, and has no cell too (it has one slot).
+fn check_air_type(item: &ItemType, list: &[ItemType]) -> Result<(), ItemError> {
+    let problem = |problem| {
+        Err(ItemError::Power {
+            item: item.id.clone(),
+            problem,
+        })
+    };
+    if let Some(canister) = &item.canister {
+        if !(1..=MAX_CANISTER_ML).contains(&canister.capacity_ml) {
+            return problem("is a canister that must hold 1 to 100000 ml");
+        }
+        if item.cell.is_some() || item.power.is_some() {
+            return problem("can't be a canister and a cell, or take one");
+        }
+    }
+    let Some(air) = item.air() else {
+        return Ok(());
+    };
+    if item.power.is_some() {
+        return problem("can't take both a cell and a canister: it has one slot");
+    }
+    if air.ml_per_s == 0 {
+        return problem("must draw at least 1 ml of oxygen a second");
+    }
+    let takes = list.iter().find(|t| t.id == air.canister);
+    if !takes.is_some_and(|t| t.canister.is_some()) {
+        return problem("takes a canister that isn't an item with a \"canister\"");
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
@@ -641,7 +720,14 @@ pub(crate) mod tests {
             { "id": "boots", "name": "boots", "description": "Boots.", "glyph": "[",
               "material": "steel", "volume_ml": 1500, "solid_percent": 20,
               "wear": { "slot": "feet", "pockets": [
-                  { "name": "boot pocket", "volume_ml": 100, "max_mass_g": 500 } ] } }
+                  { "name": "boot pocket", "volume_ml": 100, "max_mass_g": 500 } ] } },
+            { "id": "hood", "name": "hood", "description": "A sealed hood.", "glyph": "[",
+              "material": "steel", "volume_ml": 500, "solid_percent": 10,
+              "wear": { "slot": "head", "pockets": [],
+                        "air": { "ml_per_s": 10, "canister": "canister" } } },
+            { "id": "canister", "name": "canister", "description": "A canister.", "glyph": "&",
+              "material": "steel", "volume_ml": 100, "solid_percent": 50,
+              "canister": { "capacity_ml": 1000 } }
         ] }"#
             .to_string()
     }
@@ -668,7 +754,7 @@ pub(crate) mod tests {
     #[test]
     fn a_valid_file_loads() {
         let items = test_items();
-        assert_eq!(items.list().len(), 8);
+        assert_eq!(items.list().len(), 10);
         assert_eq!(items.index_of("cutter"), Some(1));
         assert_eq!(items.index_of("cheese"), None);
         assert_eq!(items.list()[0].pockets().len(), 2);
@@ -811,6 +897,67 @@ pub(crate) mod tests {
         assert_eq!(
             error(cell, &both),
             r#"item "cell" can't both be a cell and take one"#
+        );
+    }
+
+    #[test]
+    fn canisters_and_sealed_suits_must_make_sense() {
+        let json = test_items_json();
+        let error = |from: &str, to: &str| error_of(&json.replace(from, to));
+        let canister = "\"canister\": { \"capacity_ml\": 1000 }";
+        for capacity in ["0", "100001"] {
+            let odd = format!("\"canister\": {{ \"capacity_ml\": {capacity} }}");
+            assert_eq!(
+                error(canister, &odd),
+                r#"item "canister" is a canister that must hold 1 to 100000 ml"#
+            );
+        }
+        assert_eq!(
+            error(
+                canister,
+                &format!("{canister}, \"cell\": {{ \"capacity_kj\": 1 }}")
+            ),
+            r#"item "canister" can't be a canister and a cell, or take one"#
+        );
+        let air = "\"air\": { \"ml_per_s\": 10, \"canister\": \"canister\" }";
+        assert_eq!(
+            error(
+                air,
+                "\"air\": { \"ml_per_s\": 0, \"canister\": \"canister\" }"
+            ),
+            r#"item "hood" must draw at least 1 ml of oxygen a second"#
+        );
+        assert_eq!(
+            error(air, "\"air\": { \"ml_per_s\": 10, \"canister\": \"cell\" }"),
+            r#"item "hood" takes a canister that isn't an item with a "canister""#
+        );
+        let hood = "\"wear\": { \"slot\": \"head\"";
+        let powered =
+            "\"power\": { \"watts\": 1, \"cell\": \"cell\" }, \"wear\": { \"slot\": \"head\"";
+        assert_eq!(
+            error(hood, powered),
+            r#"item "hood" can't take both a cell and a canister: it has one slot"#
+        );
+    }
+
+    #[test]
+    fn a_saved_canister_holds_no_more_than_it_can() {
+        let (items, materials) = (test_items(), test_materials());
+        let ctx = context(&items, &materials);
+        let mut canister = Item::new(9, 0, items.list());
+        canister.o2_ml = 1000;
+        assert_eq!(check_item(&canister, ctx), Ok(()));
+        canister.o2_ml = 1001;
+        assert_eq!(
+            check_item(&canister, ctx),
+            Err("a canister holds more oxygen than it can".to_string())
+        );
+        let mut hood = Item::new(8, 0, items.list());
+        hood.cell = Some(Box::new(Item::new(4, 0, items.list())));
+        assert_eq!(
+            check_item(&hood, ctx),
+            Err("a hood has a cell it can't take".to_string()),
+            "a power cell in a canister's slot"
         );
     }
 
@@ -983,12 +1130,12 @@ pub(crate) mod tests {
         let mut suit = Item::new(0, 0, items.list());
         assert_eq!(check_item(&suit, ctx), Ok(()));
         suit.pockets[0].push(Item {
-            kind: 9,
+            kind: 99,
             ..Item::new(2, 0, items.list())
         });
         assert_eq!(
             check_item(&suit, ctx),
-            Err("an item has type 9, which doesn't exist".to_string())
+            Err("an item has type 99, which doesn't exist".to_string())
         );
         let odd_material = Item {
             material: 9,

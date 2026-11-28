@@ -1,0 +1,17 @@
+{
+  "$schema": "../schema/items.schema.json",
+  "items": [
+    {
+      "id": "oxygen_canister",
+      "name": "oxygen canister",
+      "description": "A squat steel canister of compressed oxygen, 8 L of it when full, with a bayonet valve that fits rescue and EVA suits alike.",
+      "glyph": "&",
+      "material": "steel",
+      "volume_ml": 600,
+      "solid_percent": 40,
+      "canister": {
+        "capacity_ml": 8000
+      }
+    }
+  ]
+}

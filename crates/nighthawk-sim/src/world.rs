@@ -21,6 +21,7 @@ use crate::recipe::{Recipe, RecipeMaterial, Use};
 use crate::rng::{GameRng, Stream};
 use crate::sight::{Remembered, Scene, View};
 use crate::structure::Structure;
+use crate::suit::{self, SuitAirLevel};
 
 /// A test for items of type number `kind` made of a material with the tag
 /// `tag` (any material, without one). It borrows only `materials`, so it
@@ -90,10 +91,10 @@ pub enum Command {
         item: ItemPath,
         into: Place,
     },
-    /// Load, unload or switch the carried item at `item`, which runs on a
-    /// power cell (D59).
+    /// Load, unload or switch `item`, something you carry or wear that
+    /// runs on a power cell (D59) or breathes from an O₂ canister (D67).
     Power {
-        item: ItemPath,
+        item: Gear,
         act: PowerAct,
     },
     /// Put something on, or take something off (D61).
@@ -126,6 +127,14 @@ pub enum ItemAt {
     Inside { piece: usize, index: usize },
 }
 
+/// Something on you: worn item number `.0` (its place in
+/// [`World::worn`]), or an item in a pocket.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Gear {
+    Worn(usize),
+    Carried(ItemPath),
+}
+
 /// Where a carried item can be put.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Place {
@@ -136,13 +145,14 @@ pub enum Place {
     Pocket { worn: usize, pocket: usize },
 }
 
-/// What to do with something that runs on a power cell.
+/// What to do with something that runs on a power cell, or breathes from
+/// an O₂ canister: either goes in the same slot.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PowerAct {
-    /// Load the fullest cell you carry that it takes, swapping out the one
-    /// in it, if any.
+    /// Load the fullest cell (or canister) you carry that it takes,
+    /// swapping out the one in it, if any.
     Reload,
-    /// Take its cell out, into your pockets.
+    /// Take its cell (or canister) out, into your pockets.
     Unload,
     /// Switch it (a light) on or off.
     Switch,
@@ -249,7 +259,9 @@ pub enum Event {
     /// The player loaded a cell holding `charge_kj` kJ into this item.
     Reloaded {
         item: ItemRef,
-        charge_kj: u32,
+        /// How full what was loaded is: kJ for a cell, ml of oxygen for a
+        /// canister.
+        fill: u32,
     },
     /// The player took the cell out of this item.
     Unloaded(ItemRef),
@@ -280,6 +292,17 @@ pub enum Event {
     Powered {
         circuit: u16,
         lights: u16,
+    },
+    /// A sealed suit the player wears has started feeding them from its
+    /// canister: the air around them can't be breathed (D67).
+    SuitSealed,
+    /// It has stopped, because the air around them can be breathed again.
+    SuitOpened,
+    /// The suit's canister has run down past `level`, with `seconds_left`
+    /// of sealed breathing left in it.
+    SuitAir {
+        level: SuitAirLevel,
+        seconds_left: u32,
     },
     /// The player followed a recipe for action number `action` on the tile
     /// at `at`, which was structure number `was` and is now what the
@@ -418,6 +441,9 @@ pub struct World {
     /// each once, in order. A craft is known once everything it uses is
     /// here (D56).
     carried_kinds: Vec<u16>,
+    /// Whether a sealed suit the player wears fed them in the last second
+    /// (D67), so the log can say when it seals and when it opens.
+    suit_sealed: bool,
 }
 
 impl World {
@@ -444,6 +470,7 @@ impl World {
             worn: loaded.worn,
             view,
             carried_kinds: Vec::new(),
+            suit_sealed: false,
         };
         world.remember_carried();
         world.refresh_view();
@@ -1400,13 +1427,13 @@ impl World {
         }
     }
 
-    /// Loads, unloads or switches the carried item at `path` (D59).
-    /// Anything that can't be done costs no time.
-    fn power(&mut self, path: ItemPath, act: PowerAct) -> Vec<Event> {
+    /// Loads, unloads or switches `gear` (D59, D67). Anything that can't
+    /// be done costs no time.
+    fn power(&mut self, gear: Gear, act: PowerAct) -> Vec<Event> {
         let done = match act {
-            PowerAct::Reload => self.reload(path),
-            PowerAct::Unload => self.unload(path),
-            PowerAct::Switch => self.switch(path),
+            PowerAct::Reload => self.reload(gear),
+            PowerAct::Unload => self.unload(gear),
+            PowerAct::Switch => self.switch(gear),
         };
         match done {
             Ok((mut events, seconds)) => {
@@ -1417,24 +1444,38 @@ impl World {
         }
     }
 
-    /// The carried item at `path` and the item type number of the cell it
-    /// takes, if it's there and takes one.
-    fn powered_at(&self, path: ItemPath) -> Result<(&Item, u16), Blocked> {
-        let item = item::get(&self.worn, path).ok_or(Blocked::NotPossible)?;
-        let kind = &self.item_types()[usize::from(item.kind)];
-        let cell = kind
-            .power
-            .as_ref()
-            .and_then(|p| self.item_type_index(&p.cell));
-        cell.map(|cell| (item, cell)).ok_or(Blocked::NotPossible)
+    /// The item `gear` names, if it's there.
+    fn gear(&self, gear: Gear) -> Option<&Item> {
+        match gear {
+            Gear::Worn(i) => self.worn.get(i),
+            Gear::Carried(path) => item::get(&self.worn, path),
+        }
     }
 
-    /// Loads the fullest carried cell that the item at `path` takes into
+    /// The same, to change.
+    fn gear_mut(&mut self, gear: Gear) -> Option<&mut Item> {
+        match gear {
+            Gear::Worn(i) => self.worn.get_mut(i),
+            Gear::Carried(path) => item::get_mut(&mut self.worn, path),
+        }
+    }
+
+    /// The item `gear` names and the item type number of what its slot
+    /// takes (a cell or a canister), if it's there and has a slot.
+    fn powered_at(&self, gear: Gear) -> Result<(&Item, u16), Blocked> {
+        let item = self.gear(gear).ok_or(Blocked::NotPossible)?;
+        let kind = &self.item_types()[usize::from(item.kind)];
+        let takes = kind.slot_takes().and_then(|id| self.item_type_index(id));
+        takes.map(|takes| (item, takes)).ok_or(Blocked::NotPossible)
+    }
+
+    /// Loads the fullest carried cell (or canister) that `gear` takes into
     /// it, if it's fuller than the one there; the old one goes into a
     /// pocket, or falls at your feet. Returns the events and the time.
-    fn reload(&mut self, mut path: ItemPath) -> Result<(Vec<Event>, u64), Blocked> {
-        let (item, takes) = self.powered_at(path)?;
-        let now = item.cell.as_ref().map(|c| c.charge_j);
+    fn reload(&mut self, mut gear: Gear) -> Result<(Vec<Event>, u64), Blocked> {
+        let (item, takes) = self.powered_at(gear)?;
+        let types = self.content.item_types();
+        let now = item.cell.as_ref().map(|c| c.fill(types));
         // `rev` then `max_by_key`: the first of the fullest, since
         // `max_by_key` keeps the last of equals.
         let fullest = self
@@ -1442,34 +1483,41 @@ impl World {
             .into_iter()
             .filter(|(_, c)| c.kind == takes)
             .rev()
-            .max_by_key(|(_, c)| c.charge_j)
-            .filter(|(_, c)| now.is_none_or(|j| c.charge_j > j))
+            .max_by_key(|(_, c)| c.fill(types))
+            .filter(|(_, c)| now.is_none_or(|was| c.fill(types) > was))
             .map(|(cell_path, _)| cell_path);
         let cell_path = fullest.ok_or(Blocked::NoFullerCell)?;
         let cell = item::take(&mut self.worn, cell_path).ok_or(Blocked::NotPossible)?;
         // Taking the cell out of the same pocket, before the item, moves
         // the item up one.
-        if (cell_path.worn, cell_path.pocket) == (path.worn, path.pocket)
+        if let Gear::Carried(path) = &mut gear
+            && (cell_path.worn, cell_path.pocket) == (path.worn, path.pocket)
             && cell_path.index < path.index
         {
             path.index -= 1;
         }
-        let charge_kj = u32::try_from(power::kj(u64::from(cell.charge_j))).unwrap_or(u32::MAX);
-        let item = item::get_mut(&mut self.worn, path).ok_or(Blocked::NotPossible)?;
+        let types = self.content.item_types();
+        let is_canister = types[usize::from(cell.kind)].canister.is_some();
+        let fill = if is_canister {
+            cell.o2_ml
+        } else {
+            u32::try_from(power::kj(u64::from(cell.charge_j))).unwrap_or(u32::MAX)
+        };
+        let item = self.gear_mut(gear).ok_or(Blocked::NotPossible)?;
         let old = item.cell.replace(Box::new(cell));
         let mut events = vec![Event::Reloaded {
             item: item.id(),
-            charge_kj,
+            fill,
         }];
         events.extend(self.pocket_or_drop(old.map(|c| *c)));
         Ok((events, RELOAD_SECONDS))
     }
 
-    /// Takes the cell out of the item at `path` into a pocket, or at your
-    /// feet if there's no room, switching the item off.
-    fn unload(&mut self, path: ItemPath) -> Result<(Vec<Event>, u64), Blocked> {
-        self.powered_at(path)?;
-        let item = item::get_mut(&mut self.worn, path).ok_or(Blocked::NotPossible)?;
+    /// Takes the cell (or canister) out of `gear` into a pocket, or at
+    /// your feet if there's no room, switching it off.
+    fn unload(&mut self, gear: Gear) -> Result<(Vec<Event>, u64), Blocked> {
+        self.powered_at(gear)?;
+        let item = self.gear_mut(gear).ok_or(Blocked::NotPossible)?;
         let cell = item.cell.take().ok_or(Blocked::NoCell)?;
         item.on = false;
         let mut events = vec![Event::Unloaded(item.id())];
@@ -1477,10 +1525,14 @@ impl World {
         Ok((events, UNLOAD_SECONDS))
     }
 
-    /// Switches the light at `path` off, or on if its cell has charge.
-    fn switch(&mut self, path: ItemPath) -> Result<(Vec<Event>, u64), Blocked> {
+    /// Switches the light `gear` off, or on if its cell has charge.
+    fn switch(&mut self, gear: Gear) -> Result<(Vec<Event>, u64), Blocked> {
         let types = self.content.item_types();
-        let item = item::get_mut(&mut self.worn, path).ok_or(Blocked::NotPossible)?;
+        let item = match gear {
+            Gear::Worn(i) => self.worn.get_mut(i),
+            Gear::Carried(path) => item::get_mut(&mut self.worn, path),
+        };
+        let item = item.ok_or(Blocked::NotPossible)?;
         if !power::is_switchable(item, types) {
             return Err(Blocked::NotPossible);
         }
@@ -1778,15 +1830,33 @@ impl World {
         }
     }
 
-    /// One second of breathing the air on the player's tile.
-    fn breathe(&mut self, events: &mut Vec<Event>) {
+    /// The oxygen you breathe this second from the air on your tile:
+    /// topped up beside your stasis chamber by its emergency air line.
+    fn ambient_o2(&self) -> u32 {
         let o2 = self.map.air(self.player).map_or(0, |mix| mix.o2);
-        // Beside your stasis chamber, its emergency air line tops you up.
-        let o2 = if self.beside_lifepod() {
+        if self.beside_lifepod() {
             o2.max(body::SAFE_O2_PA)
         } else {
             o2
-        };
+        }
+    }
+
+    /// One second of breathing the air on the player's tile, or from the
+    /// canister of a sealed suit they wear if that air can't be breathed
+    /// (D67). The log says when the suit seals, and when it opens again
+    /// in air you can breathe (not when its canister runs dry).
+    fn breathe(&mut self, events: &mut Vec<Event>) {
+        let o2 = self.ambient_o2();
+        let fed = o2 < body::SAFE_O2_PA && self.breathe_from_suit(events);
+        if fed != self.suit_sealed && (fed || o2 >= body::SAFE_O2_PA) {
+            events.push(if fed {
+                Event::SuitSealed
+            } else {
+                Event::SuitOpened
+            });
+        }
+        self.suit_sealed = fed;
+        let o2 = if fed { body::SAFE_O2_PA } else { o2 };
         let before = self.breath;
         self.breath = body::breath_after(before, o2);
         let levels = body::breath_levels(before, self.breath);
@@ -1794,6 +1864,32 @@ impl World {
         if before > 0 && self.breath == 0 {
             events.push(Event::BlackedOut(Cause::Air));
         }
+    }
+
+    /// One second sealed in a suit you wear, if it has air left: takes its
+    /// draw from the canister, with a warning as it passes each level.
+    /// Returns whether it fed you.
+    fn breathe_from_suit(&mut self, events: &mut Vec<Event>) -> bool {
+        let types = self.content.item_types();
+        let Some(worn) = self
+            .worn
+            .iter_mut()
+            .find(|w| suit::air_of(w, types).is_some())
+        else {
+            return false;
+        };
+        let capacity = suit::o2(worn, types).map_or(0, |(_, full)| full);
+        let draw = suit::air_of(worn, types).map_or(1, |a| a.ml_per_s.max(1));
+        let Some((before, after)) = suit::breathe_one_second(worn, types) else {
+            return false;
+        };
+        for level in suit::levels_crossed(before, after, capacity) {
+            events.push(Event::SuitAir {
+                level,
+                seconds_left: after / draw,
+            });
+        }
+        true
     }
 
     /// One second of keeping warm (or not) in the air on the player's tile.
@@ -1822,6 +1918,23 @@ impl World {
     /// The player's breath meter, 0 (blacked out) to [`BREATH_FULL`].
     pub fn breath(&self) -> u32 {
         self.breath
+    }
+
+    /// The sealed suit the player wears, if any (D67).
+    pub fn worn_suit(&self) -> Option<&Item> {
+        let types = self.content.item_types();
+        self.worn.iter().find(|w| suit::air_of(w, types).is_some())
+    }
+
+    /// The oxygen in the worn suit's canister and the most it holds, in
+    /// ml: `None` with no sealed suit on, or no canister in it.
+    pub fn suit_o2(&self) -> Option<(u32, u32)> {
+        suit::o2(self.worn_suit()?, self.content.item_types())
+    }
+
+    /// How many seconds of sealed breathing the worn suit has left.
+    pub fn suit_seconds_left(&self) -> Option<u32> {
+        suit::seconds_left(self.worn_suit()?, self.content.item_types())
     }
 
     /// The player's warmth meter, 0 (blacked out) to [`WARMTH_FULL`].
@@ -2023,6 +2136,7 @@ impl World {
         }
         self.furniture.hash_into(&mut h);
         self.view.hash_into(&mut h);
+        h.u8(u8::from(self.suit_sealed));
         h.u64(self.carried_kinds.len() as u64);
         for &kind in &self.carried_kinds {
             h.u64(u64::from(kind));
@@ -3768,7 +3882,7 @@ mod tests {
         assert_eq!(world.items_at(PILE).count(), 4);
         assert_eq!(world.items_at(world.player()).count(), 0);
         assert_eq!(world.floor_items().len(), 4);
-        assert_eq!(world.item_types().len(), 8);
+        assert_eq!(world.item_types().len(), 10);
         assert_eq!(world.worn().len(), 1);
     }
 
@@ -4118,6 +4232,147 @@ mod tests {
         let mut world = World::new(parse_map(&json).expect("test map is valid"), TEST_SEED);
         pocket(&mut world, SCRAP, 0);
         world
+    }
+
+    /// A test room with no air at all, `rows` drawn from `#` walls, `.`
+    /// floor, a lamp `*` and the test `pod` `PP`; you wear the test suit
+    /// and the sealed test hood, its canister `percent` full (D67).
+    fn airless_room(rows: &[&str], percent: Option<u8>) -> World {
+        let hood = match percent {
+            Some(p) => format!(r#"{{ "item": "hood", "charge_percent": {p} }}"#),
+            None => r#"{ "item": "hood" }"#.to_string(),
+        };
+        let json = format!(
+            r##"{{ "id": "t", "name": "T",
+                  "player_wears": [ {{ "item": "suit" }}, {hood} ],
+                  "legend": {{ "#": "wall", ".": "floor", "*": "lamp",
+                     "P": {{ "structure": "floor", "furniture": "pod" }} }},
+                  "decks": [ {{ "rows": {rows:?}, "pressure": 0 }} ] }}"##
+        );
+        World::new(parse_map(&json).expect("test map is valid"), TEST_SEED)
+    }
+
+    /// No air, except what the pod gives you beside it: you start there.
+    const VACUUM_ROOM: [&str; 3] = ["#*#####", "#..@PP#", "#######"];
+
+    #[test]
+    fn in_vacuum_a_sealed_hood_feeds_you_from_its_canister_as_time_passes() {
+        let mut world = airless_room(&VACUUM_ROOM, Some(100));
+        assert_eq!(world.suit_o2(), Some((1000, 1000)));
+        assert_eq!(world.suit_seconds_left(), Some(100), "10 ml a second");
+        world.apply(Command::Wait);
+        assert_eq!(
+            world.suit_o2(),
+            Some((1000, 1000)),
+            "the pod's air is enough"
+        );
+        let away = world.apply(Command::Move(Dir::West));
+        assert!(away.contains(&Event::SuitSealed), "{away:?}");
+        let more = world.apply(Command::Wait);
+        assert!(!more.contains(&Event::SuitSealed), "said once");
+        assert_eq!(world.suit_o2(), Some((920, 1000)), "a step and a wait");
+        assert_eq!(world.breath(), BREATH_FULL, "breathing from the canister");
+    }
+
+    #[test]
+    fn its_air_warns_at_half_a_quarter_and_a_tenth_then_runs_out() {
+        let mut world = airless_room(&VACUUM_ROOM, Some(100));
+        let mut events = world.apply(Command::Move(Dir::West));
+        for _ in 0..21 {
+            events.extend(world.apply(Command::Wait));
+        }
+        let warnings: Vec<Event> = events
+            .into_iter()
+            .filter(|e| matches!(e, Event::SuitAir { .. }))
+            .collect();
+        let at = |level, seconds_left| Event::SuitAir {
+            level,
+            seconds_left,
+        };
+        assert_eq!(
+            warnings,
+            [
+                at(SuitAirLevel::Half, 50),
+                at(SuitAirLevel::Quarter, 25),
+                at(SuitAirLevel::Low, 10),
+                at(SuitAirLevel::Empty, 0)
+            ]
+        );
+        assert!(world.breath() < BREATH_FULL, "then the vacuum takes over");
+        assert!(world.is_conscious(), "with the breath meter still to go");
+    }
+
+    #[test]
+    fn in_air_you_can_breathe_the_hood_takes_nothing() {
+        let mut world = airless_room(&VACUUM_ROOM, Some(100));
+        // Beside the pod, its emergency air line feeds you instead: the
+        // visor opens when you come back to it.
+        world.apply(Command::Move(Dir::West));
+        world.apply(Command::Move(Dir::West));
+        let events = world.apply(Command::Move(Dir::East));
+        assert!(!events.contains(&Event::SuitOpened), "not yet beside it");
+        let events = world.apply(Command::Move(Dir::East));
+        assert!(events.contains(&Event::SuitOpened), "{events:?}");
+        let left = world.suit_o2();
+        world.apply(Command::Wait);
+        assert_eq!(world.suit_o2(), left, "nothing drawn");
+    }
+
+    #[test]
+    fn a_hood_with_no_canister_or_an_empty_one_gives_no_air() {
+        for percent in [None, Some(0)] {
+            let mut world = airless_room(&VACUUM_ROOM, percent);
+            let events = world.apply(Command::Move(Dir::West));
+            assert!(!events.contains(&Event::SuitSealed), "{percent:?}");
+            assert!(world.breath() < BREATH_FULL, "{percent:?}");
+        }
+        let world = airless_room(&VACUUM_ROOM, None);
+        assert_eq!(world.suit_o2(), None);
+        assert_eq!(world.suit_seconds_left(), None);
+        assert!(world.worn_suit().is_some());
+    }
+
+    #[test]
+    fn the_canister_comes_out_of_the_suit_you_wear_and_goes_back_in() {
+        let mut world = airless_room(&VACUUM_ROOM, Some(50));
+        let hood = Gear::Worn(1);
+        let power = |world: &mut World, act| {
+            without_ambient(world.apply(Command::Power { item: hood, act }))
+        };
+        world.apply(Command::Move(Dir::West)); // away from the pod's air
+        let (held, _) = world.suit_o2().unwrap();
+        let events = power(&mut world, PowerAct::Unload);
+        assert!(matches!(events[0], Event::Unloaded(_)), "{events:?}");
+        assert_eq!(world.suit_o2(), None, "it's in a pocket now");
+        let canister = world.item_type_index("canister").unwrap();
+        assert_eq!(world.carried_count(canister), 1);
+        let events = power(&mut world, PowerAct::Reload);
+        assert!(
+            matches!(events[0], Event::Reloaded { fill, .. } if fill == held),
+            "{events:?}"
+        );
+        assert_eq!(
+            world.suit_o2(),
+            Some((held - 100, 1000)),
+            "and it fed you for the 10 s it took to fit"
+        );
+        assert_eq!(
+            power(&mut world, PowerAct::Reload),
+            [Event::CannotPower(Blocked::NoFullerCell)]
+        );
+        assert_eq!(
+            power(&mut world, PowerAct::Switch),
+            [Event::CannotPower(Blocked::NotPossible)],
+            "it's not a light"
+        );
+        let missing = Command::Power {
+            item: Gear::Worn(9),
+            act: PowerAct::Unload,
+        };
+        assert_eq!(
+            world.apply(missing),
+            [Event::CannotPower(Blocked::NotPossible)]
+        );
     }
 
     const GENERATOR: Pos = Pos::new(3, 1, 0);
@@ -4475,7 +4730,10 @@ mod tests {
 
     fn power(world: &mut World, index: usize, act: PowerAct) -> Vec<Event> {
         let item = pocket_path(index);
-        without_ambient(world.apply(Command::Power { item, act }))
+        without_ambient(world.apply(Command::Power {
+            item: Gear::Carried(item),
+            act,
+        }))
     }
 
     #[test]
@@ -4565,7 +4823,7 @@ mod tests {
         };
         let loaded = Event::Reloaded {
             item: torch,
-            charge_kj: 8,
+            fill: 8,
         };
         assert_eq!(power(&mut world, 1, PowerAct::Reload), [loaded]);
         assert_eq!(world.seconds(), RELOAD_SECONDS);
@@ -4580,7 +4838,7 @@ mod tests {
         let fuller = cell(&world, 9000);
         world.worn[0].pockets[0].insert(0, fuller);
         let events = power(&mut world, 2, PowerAct::Reload);
-        assert!(matches!(events[..], [Event::Reloaded { charge_kj: 9, .. }]));
+        assert!(matches!(events[..], [Event::Reloaded { fill: 9, .. }]));
         let charges: Vec<Option<u32>> = (0..3).map(|i| charge_at(&world, i)).collect();
         assert_eq!(charges, [Some(3000), Some(9000), Some(8000)]);
     }

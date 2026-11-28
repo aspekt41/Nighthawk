@@ -33,7 +33,7 @@ pub const SAVE_FORMAT: &str = "nighthawk-save";
 
 /// The save layout this build reads and writes. Bump it when `World` (or
 /// anything inside it) changes shape, and update the save-format test.
-pub const SAVE_VERSION: u32 = 26;
+pub const SAVE_VERSION: u32 = 27;
 
 /// Everything that can be wrong with a save file.
 #[derive(Debug)]
@@ -189,13 +189,13 @@ mod tests {
     fn save_text_is_tagged_and_versioned() {
         let text = save_to_string(&small_world());
         assert!(text.contains(r#""format": "nighthawk-save""#));
-        assert!(text.contains(r#""version": 26"#));
+        assert!(text.contains(r#""version": 27"#));
     }
 
     /// The exact text of the tiny save in `the_save_format_is_stable`.
     const EXPECTED_SAVE: &str = r#"{
   "format": "nighthawk-save",
-  "version": 26,
+  "version": 27,
   "world": {
     "deck_names": [
       "Deck 0"
@@ -328,11 +328,13 @@ mod tests {
           "qualities": {},
           "wear": {
             "slot": "body",
-            "pockets": []
+            "pockets": [],
+            "air": null
           },
           "light": 0,
           "cell": null,
-          "power": null
+          "power": null,
+          "canister": null
         }
       ],
       "recipes": [],
@@ -349,7 +351,8 @@ mod tests {
         "pockets": [],
         "charge_j": 0,
         "cell": null,
-        "on": false
+        "on": false,
+        "o2_ml": 0
       }
     ],
     "view": {
@@ -368,7 +371,8 @@ mod tests {
     },
     "carried_kinds": [
       0
-    ]
+    ],
+    "suit_sealed": false
   }
 }"#;
 
@@ -448,20 +452,20 @@ mod tests {
 
     #[test]
     fn a_save_without_a_version_is_not_a_save() {
-        let text = save_with("\"version\": 26,", "");
+        let text = save_with("\"version\": 27,", "");
         assert!(matches!(load_from_str(&text), Err(SaveError::NotASave)));
     }
 
     #[test]
     fn saves_from_other_versions_are_rejected_clearly() {
-        // A save from before circuits: exactly what an old save
+        // A save from before suits and canisters: exactly what an old save
         // file on disk looks like after this build is installed.
-        let text = save_with(r#""version": 26"#, r#""version": 25"#);
+        let text = save_with(r#""version": 27"#, r#""version": 26"#);
         let err = load_from_str(&text).unwrap_err();
-        assert!(matches!(err, SaveError::UnsupportedVersion { found: 25 }));
+        assert!(matches!(err, SaveError::UnsupportedVersion { found: 26 }));
         assert_eq!(
             err.to_string(),
-            "save file is version 25, but this build only reads version 26"
+            "save file is version 26, but this build only reads version 27"
         );
     }
 

@@ -389,8 +389,9 @@ impl Map {
         let mut venting = Vec::new();
         for space in self.connected_spaces() {
             let hole = self.hole_area_around(&space);
-            self.settle(&space, hole);
-            if hole > 0 {
+            // Only a space that really lost air: one already at vacuum
+            // has nothing left to hiss out.
+            if self.settle(&space, hole) > 0 {
                 venting.extend_from_slice(&space);
             }
         }
@@ -456,8 +457,9 @@ impl Map {
     /// to rounding, tiles differ by at most 1 Pa per gas, and the same
     /// space always splits the same way.
     ///
-    /// Heat moves with the air: see [`heat::carry`].
-    fn settle(&mut self, space: &[usize], hole_cm2: u64) {
+    /// Heat moves with the air: see [`heat::carry`]. Returns how much air
+    /// escaped, in pascal-tiles over all three gases.
+    fn settle(&mut self, space: &[usize], hole_cm2: u64) -> u64 {
         let before: Vec<u64> = space.iter().map(|&i| self.air[i].total()).collect();
         let mut totals = space.iter().fold([0u64; 3], |sum, &i| {
             let amounts = self.air[i].amounts();
@@ -469,10 +471,12 @@ impl Map {
         });
         let count = space.len() as u64;
         let ppm = vent_ppm(hole_cm2, count);
+        let mut escaped = 0;
         for (gas, total) in totals.iter_mut().enumerate() {
             let lost = vented_amount(*total, ppm);
             *total -= lost;
             self.vented[gas] += lost;
+            escaped += lost;
         }
         for (k, &i) in space.iter().enumerate() {
             let share = totals.map(|total| total / count + u64::from((k as u64) < total % count));
@@ -480,6 +484,7 @@ impl Map {
         }
         let after: Vec<u64> = space.iter().map(|&i| self.air[i].total()).collect();
         self.heat_lost += heat::carry(&mut self.heat, space, &before, &after);
+        escaped
     }
 
     /// Every connected open space, as lists of indexes into `air`. Each list
@@ -1124,6 +1129,14 @@ mod tests {
         assert!(
             holed_room(Tile::WALL).spread_air().is_empty(),
             "sealed rooms report nothing"
+        );
+        for _ in 0..30 {
+            breached.spread_air();
+        }
+        assert_eq!(room_pressure(&breached), 0);
+        assert!(
+            breached.spread_air().is_empty(),
+            "nor do breached ones with nothing left to lose"
         );
     }
 

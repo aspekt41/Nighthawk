@@ -1,8 +1,8 @@
 //! The words the game shows the player: log lines for sim events.
 
 use nighthawk_sim::{
-    Action, Blocked, BreathLevel, Cause, DateTime, Event, ItemRef, Pos, Sound, Vertical,
-    WarmthLevel, World,
+    Action, Blocked, BreathLevel, Cause, DateTime, Event, ItemRef, Pos, Sound, SuitAirLevel,
+    Vertical, WarmthLevel, World,
 };
 
 /// What you'd bump into at `at`: the furniture there, or else the
@@ -81,10 +81,16 @@ pub fn cannot_dress_text(world: Option<&World>, blocked: Blocked) -> String {
 fn power_text(world: Option<&World>, event: Event) -> Option<String> {
     let name = |id| world.map_or_else(|| "item".into(), |w| item_name(w, id));
     let line = match event {
-        Event::Reloaded { item, charge_kj } => {
-            format!("You load a cell ({charge_kj} kJ) into the {}.", name(item))
+        Event::Reloaded { item, fill } => reloaded_text(world, item, fill),
+        Event::Unloaded(item) => {
+            let suit = world.and_then(|w| w.item_types().get(usize::from(item.kind)));
+            let what = if suit.is_some_and(|k| k.air().is_some()) {
+                "canister"
+            } else {
+                "cell"
+            };
+            format!("You take the {what} out of the {}.", name(item))
         }
-        Event::Unloaded(item) => format!("You take the cell out of the {}.", name(item)),
         Event::Switched { item, on } => {
             let state = if on { "on" } else { "off" };
             format!("You switch the {} {state}.", name(item))
@@ -97,6 +103,57 @@ fn power_text(world: Option<&World>, event: Event) -> Option<String> {
         }
         Event::CannotPower(blocked) => cannot_power_text(blocked).into(),
         Event::Powered { circuit, lights } => powered_text(world, circuit, lights),
+        _ => return None,
+    };
+    Some(line)
+}
+
+/// "You load a cell (150 kJ) into the hand lamp (Aluminium Alloy).", or
+/// for a sealed suit, "You fit an oxygen canister (8.0 L) into the rescue
+/// suit (Polyester)." (D67). Without the world to say which, "You load it."
+fn reloaded_text(world: Option<&World>, item: ItemRef, fill: u32) -> String {
+    let Some(world) = world else {
+        return "You load it.".into();
+    };
+    let name = item_name(world, item);
+    let kind = world.item_types().get(usize::from(item.kind));
+    if kind.is_some_and(|k| k.air().is_some()) {
+        let litres = (fill + 50) / 100;
+        let (whole, tenth) = (litres / 10, litres % 10);
+        format!("You fit an oxygen canister ({whole}.{tenth} L) into the {name}.")
+    } else {
+        format!("You load a cell ({fill} kJ) into the {name}.")
+    }
+}
+
+/// Seconds as minutes and seconds, like a countdown: 172 → "2:52".
+pub fn minutes_seconds(seconds: u32) -> String {
+    format!("{}:{:02}", seconds / 60, seconds % 60)
+}
+
+/// Log lines for a sealed suit (D67): sealing up, opening again, and its
+/// air running low while there's still time to turn back. `None` for any
+/// other event.
+fn suit_text(event: Event) -> Option<String> {
+    let line = match event {
+        Event::SuitSealed => "Your suit seals: you're breathing from its canister.".into(),
+        Event::SuitOpened => "Your suit's visor opens: the air here is breathable.".into(),
+        Event::SuitAir {
+            level,
+            seconds_left,
+        } => {
+            let left = minutes_seconds(seconds_left);
+            match level {
+                SuitAirLevel::Half => format!("Suit air at half: {left} left. Time to start back."),
+                SuitAirLevel::Quarter => {
+                    format!("Suit air low: {left} left. Get back to breathable air now.")
+                }
+                SuitAirLevel::Low => format!("Suit air almost gone: {left} left!"),
+                SuitAirLevel::Empty => {
+                    "Your suit's canister is empty: you're breathing what's around you.".into()
+                }
+            }
+        }
         _ => return None,
     };
     Some(line)
@@ -274,6 +331,7 @@ fn storing_text(event: Event) -> String {
         Event::CannotStore(blocked) => cannot_store_text(blocked),
         _ => power_text(None, event)
             .or_else(|| dress_text(None, event))
+            .or_else(|| suit_text(event))
             .unwrap_or_else(|| movement_text(event).into()),
     }
 }
@@ -947,7 +1005,7 @@ mod tests {
         let line = |event| describe_in(&world, event).unwrap_or_default();
         let loaded = Event::Reloaded {
             item: lamp,
-            charge_kj: 120,
+            fill: 120,
         };
         assert_eq!(
             line(loaded),
@@ -955,7 +1013,8 @@ mod tests {
         );
         assert_eq!(
             describe(loaded).as_deref(),
-            Some("You load a cell (120 kJ) into the item.")
+            Some("You load it."),
+            "without the world, it can't say whether a cell or a canister"
         );
         assert_eq!(
             line(Event::Unloaded(lamp)),
@@ -1321,6 +1380,70 @@ mod tests {
         assert_eq!(
             describe(powered(0)).as_deref(),
             Some("Power returns to the ship's circuit.")
+        );
+    }
+
+    #[test]
+    fn a_sealed_suit_says_when_it_seals_opens_and_runs_low() {
+        let said = |event| describe(event).unwrap_or_default();
+        assert_eq!(
+            said(Event::SuitSealed),
+            "Your suit seals: you're breathing from its canister."
+        );
+        assert_eq!(
+            said(Event::SuitOpened),
+            "Your suit's visor opens: the air here is breathable."
+        );
+        let air = |level, seconds_left| {
+            said(Event::SuitAir {
+                level,
+                seconds_left,
+            })
+        };
+        assert_eq!(
+            air(SuitAirLevel::Half, 111),
+            "Suit air at half: 1:51 left. Time to start back."
+        );
+        assert_eq!(
+            air(SuitAirLevel::Quarter, 55),
+            "Suit air low: 0:55 left. Get back to breathable air now."
+        );
+        assert_eq!(
+            air(SuitAirLevel::Low, 22),
+            "Suit air almost gone: 0:22 left!"
+        );
+        let empty = air(SuitAirLevel::Empty, 0);
+        assert!(
+            empty.starts_with("Your suit's canister is empty"),
+            "{empty}"
+        );
+        for level in [
+            SuitAirLevel::Half,
+            SuitAirLevel::Quarter,
+            SuitAirLevel::Empty,
+        ] {
+            assert!(air(level, 599).chars().count() <= 78, "fits the log");
+        }
+    }
+
+    #[test]
+    fn fitting_and_taking_out_a_canister_say_so() {
+        let world = real_world();
+        let suit = ItemRef {
+            kind: world.item_type_index("rescue_suit").unwrap(),
+            material: world.content().material_index("polyester").unwrap(),
+        };
+        let line = |event| describe_in(&world, event).unwrap_or_default();
+        assert_eq!(
+            line(Event::Reloaded {
+                item: suit,
+                fill: 8000
+            }),
+            "You fit an oxygen canister (8.0 L) into the rescue suit (Polyester)."
+        );
+        assert_eq!(
+            line(Event::Unloaded(suit)),
+            "You take the canister out of the rescue suit (Polyester)."
         );
     }
 }
