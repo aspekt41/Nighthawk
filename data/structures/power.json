@@ -33,7 +33,7 @@
       "id": "power_readout",
       "name": "power readout",
       "description": "The bay's power readout: EMERGENCY CIRCUIT LIVE. GENERATOR RUNNING.",
-      "unpowered_description": "The bay's power readout, on its backup cell: EMERGENCY CIRCUIT DEAD. GENERATOR TRIPPED: MAIN FUSE BLOWN. Spare fuse in the emergency locker by the airlock.",
+      "unpowered_description": "The bay's power readout, on its backup cell: EMERGENCY CIRCUIT DEAD. GENERATOR TRIPPED: MAIN FUSE BLOWN. Spare fuse in the emergency locker by the airlock. Fitting it takes a screwdriver (gear locker).",
       "glyph": "≡",
       "material": "steel",
       "colour": "cyan",

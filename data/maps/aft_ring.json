@@ -46,7 +46,7 @@
   },
   "player_wears": [ { "item": "jumpsuit" }, { "item": "deck_shoes" } ],
   "intro": [
-    "You wake beside your stasis chamber. A power readout blinks red nearby.",
+    "You wake by your stasis chamber. The power readout (≡) nearby shows a fault.",
     "Emergency power offline. Generator access passage losing pressure."
   ],
   "decks": [

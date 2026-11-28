@@ -80,6 +80,7 @@ fn at_the_start_the_fault_is_readable_and_the_passage_is_venting() {
     let world = common::start_world(1);
     let readout = world.structure_description(READOUT).unwrap();
     assert!(readout.contains("MAIN FUSE BLOWN"), "{readout}");
+    assert!(readout.contains("screwdriver"), "names the tool it takes");
     assert!(world.is_visible(READOUT), "in view of where you wake");
     assert!(world.fed_circuits().is_empty());
     assert!(world.is_unpowered(CIRCUIT_LIGHT));

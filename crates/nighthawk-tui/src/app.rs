@@ -850,6 +850,9 @@ mod tests {
         // The log opens with the seed, then the map's own lines (D66).
         assert!(app.log[0].starts_with("Seed "));
         assert_eq!(app.log[1..], app.start_map.intro[..]);
+        for line in &app.start_map.intro {
+            assert!(line.chars().count() <= 78, "fits the log: {line}");
+        }
         assert!(
             app.log
                 .iter()

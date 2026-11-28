@@ -1324,10 +1324,15 @@ fn remembered_description(world: &World, at: Pos) -> String {
         .furniture
         .and_then(|k| world.content().furniture().get(usize::from(k)))
         .map(|f| f.description.as_str());
-    let structure = world
-        .structures()
-        .get(usize::from(seen.structure))
-        .map(|s| s.description.as_str());
+    let structure = world.structures().get(usize::from(seen.structure));
+    // What a readout or lamp on a circuit says depends on the circuit
+    // now, which you can't see from here (D66).
+    if furniture.is_none()
+        && let Some(s) = structure.filter(|s| s.unpowered_description.is_some())
+    {
+        return format!("The {}. You can't read it from here.", s.name);
+    }
+    let structure = structure.map(|s| s.description.as_str());
     furniture.or(structure).unwrap_or("").to_string()
 }
 
@@ -2629,6 +2634,25 @@ mod tests {
                    8.0 of 8.0 L, 3:42 left.";
         assert!(said.contains(&air.to_string()), "{said:?}");
         assert!(said.contains(&"r load a canister   u take it out".to_string()));
+    }
+
+    #[test]
+    fn a_readout_out_of_sight_cannot_be_read_from_memory() {
+        let mut world = real_world();
+        let readout = Pos::new(15, 5, 0);
+        assert!(seen_description(&world, readout).contains("FUSE BLOWN"));
+        // Up the ladder, out of sight of it.
+        let route = std::iter::repeat_n(Command::Move(Dir::North), 5)
+            .chain(std::iter::repeat_n(Command::Move(Dir::East), 23))
+            .chain([Command::Climb(nighthawk_sim::Vertical::Up)]);
+        for command in route {
+            world.apply(command);
+        }
+        assert!(!world.is_visible(readout) && world.remembered(readout).is_some());
+        assert_eq!(
+            remembered_description(&world, readout),
+            "The power readout. You can't read it from here."
+        );
     }
 
     #[test]
