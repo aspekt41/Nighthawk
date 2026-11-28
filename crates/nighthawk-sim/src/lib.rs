@@ -34,6 +34,7 @@ mod map;
 mod map_file;
 mod material;
 mod pos;
+mod power;
 mod quality;
 mod recipe;
 mod rng;
@@ -66,6 +67,7 @@ pub use map::{Map, StairsError, Tile};
 pub use map_file::{ItemSpecError, LegendError, LoadedMap, MapError, parse_map};
 pub use material::{Colour, Material, MaterialError};
 pub use pos::{Dir, Pos, Vertical};
+pub use power::{CellType, MAX_CELL_KJ, Power};
 pub use quality::{LevelError, Levels, MAX_QUALITY_LEVEL, Quality, QualityError};
 pub use recipe::{Count, Give, Recipe, RecipeError, RecipeMaterial, Use};
 pub use rng::{GameRng, Stream};
@@ -74,6 +76,7 @@ pub use schema::data_schemas;
 pub use sight::Remembered;
 pub use structure::{Structure, StructureError};
 pub use world::{
-    CLIMB_SECONDS, Command, DIAGONAL_STEP_SECONDS, DROP_SECONDS, Event, REACH, STEP_SECONDS,
-    STORE_SECONDS, Sound, WAIT_SECONDS, World,
+    CLIMB_SECONDS, Command, DIAGONAL_STEP_SECONDS, DROP_SECONDS, Event, PowerAct, REACH,
+    RELOAD_SECONDS, STEP_SECONDS, STORE_SECONDS, SWITCH_SECONDS, Sound, UNLOAD_SECONDS,
+    WAIT_SECONDS, World,
 };

@@ -16,6 +16,7 @@
 use crate::action::{Action, Effect};
 use crate::map::Tile;
 use crate::pos::Pos;
+use crate::power;
 use crate::quality::Levels;
 use crate::recipe::Use;
 use crate::world::World;
@@ -57,6 +58,22 @@ pub enum Blocked {
     NotKnown,
     /// For putting something away: there's no room left inside.
     Full,
+    /// Every tool good enough runs on a cell, and none holds enough
+    /// charge for the work: item type number `item` is the best charged,
+    /// which needs `need_kj` kJ (rounded up) and has `have_kj` (rounded
+    /// down) (decision D59).
+    LowCharge {
+        item: u16,
+        need_kj: u32,
+        have_kj: u32,
+    },
+    /// For loading a cell: you carry none it takes that's fuller than the
+    /// one already in it.
+    NoFullerCell,
+    /// For taking a cell out, or switching on: there's no cell in it.
+    NoCell,
+    /// For switching on: its cell is flat.
+    Flat,
 }
 
 /// One line of the interact menu: an action (its number), and why it can't
@@ -181,36 +198,98 @@ fn tool_needed(world: &World, at: Pos, action: &Action) -> Option<Blocked> {
     material_tool(world, at, action).or_else(|| recipe_tools(world, at, action))
 }
 
+/// How long the recipe for `action` at `at` takes, which is how long its
+/// tools must work: 0 if there's no recipe.
+fn work_seconds(world: &World, at: Pos, action: &Action) -> u32 {
+    world.recipe_for(&action.id, at).map_or(0, |r| r.seconds)
+}
+
 /// What the material asks: met if any one of its levels for this action
-/// is; if none is, the first is the one asked for.
+/// is; if none is, why not for the first.
 fn material_tool(world: &World, at: Pos, action: &Action) -> Option<Blocked> {
+    let levels = material_levels(world, at, action)?;
+    let seconds = work_seconds(world, at, action);
+    let mut reasons = levels
+        .iter()
+        .map(|(q, &level)| tool_blocked(world, q, level, seconds));
+    // The first level's reason (`None` if it's met), unless a later level
+    // is met.
+    let first = reasons.next()?;
+    if reasons.any(|reason| reason.is_none()) {
+        return None;
+    }
+    first
+}
+
+/// The tool levels the material at `at` lists for `action` (any one is
+/// enough), if the action asks the material.
+fn material_levels<'a>(world: &'a World, at: Pos, action: &Action) -> Option<&'a Levels> {
     if !action.tool_from_material {
         return None;
     }
-    let levels = world.material_at(at)?.worked_by.get(&action.id)?;
-    if levels
-        .iter()
-        .any(|(q, &level)| world.tool_level(q) >= level)
-    {
-        return None;
-    }
-    let (quality, &level) = levels.iter().next()?;
-    Some(needs(world, quality, level))
+    world.material_at(at)?.worked_by.get(&action.id)
 }
 
 /// What the recipe asks: every level it lists.
 fn recipe_tools(world: &World, at: Pos, action: &Action) -> Option<Blocked> {
     let recipe = world.recipe_for(&action.id, at)?;
-    short_of(world, &recipe.needs)
+    short_of(world, &recipe.needs, recipe.seconds)
 }
 
-/// `Needs` for the first of `levels` (tool levels, all needed) that the
-/// player's best tools fall short of. Recipes and crafts share it.
-pub(crate) fn short_of(world: &World, levels: &Levels) -> Option<Blocked> {
+/// Why the first of `levels` (tool levels, all needed, for work lasting
+/// `seconds`) that the tools at hand fall short of isn't met. Recipes and
+/// crafts share it.
+pub(crate) fn short_of(world: &World, levels: &Levels, seconds: u32) -> Option<Blocked> {
     levels
         .iter()
-        .find(|&(quality, &level)| world.tool_level(quality) < level)
-        .map(|(quality, &level)| needs(world, quality, level))
+        .find_map(|(quality, &level)| tool_blocked(world, quality, level, seconds))
+}
+
+/// Why no tool at hand can do `level` of `quality` for `seconds`, if none
+/// can: `Needs` with nothing that good, or `LowCharge` when everything
+/// that good runs on a cell that can't cover the work (decision D59).
+pub(crate) fn tool_blocked(
+    world: &World,
+    quality: &str,
+    level: u8,
+    seconds: u32,
+) -> Option<Blocked> {
+    let types = world.item_types();
+    let tools = world.tools(quality, level);
+    if tools.iter().any(|(_, t)| power::can_run(t, types, seconds)) {
+        return None;
+    }
+    // The best charged, if anything that good is at hand at all.
+    let Some((_, best)) = tools
+        .iter()
+        .max_by_key(|(_, t)| power::charge(t, types).map_or(0, |(j, _)| j))
+    else {
+        return Some(needs(world, quality, level));
+    };
+    let have = power::charge(best, types).map_or(0, |(j, _)| u64::from(j));
+    let need = power::needed_j(best, types, seconds);
+    Some(Blocked::LowCharge {
+        item: best.kind,
+        need_kj: u32::try_from(need.div_ceil(1000)).unwrap_or(u32::MAX),
+        have_kj: u32::try_from(power::kj(have)).unwrap_or(u32::MAX),
+    })
+}
+
+/// The tool levels following the recipe for `action` at `at` puts to
+/// work, so their cells can pay for it: the first of the material's that
+/// a tool at hand can do, and every one the recipe itself needs.
+pub(crate) fn tools_used(world: &World, at: Pos, action: &Action) -> Vec<(String, u8)> {
+    let seconds = work_seconds(world, at, action);
+    let material = material_levels(world, at, action)
+        .into_iter()
+        .flatten()
+        .find(|&(q, &level)| tool_blocked(world, q, level, seconds).is_none());
+    let recipe = world.recipe_for(&action.id, at).map(|r| &r.needs);
+    material
+        .into_iter()
+        .chain(recipe.into_iter().flatten())
+        .map(|(q, &level)| (q.clone(), level))
+        .collect()
 }
 
 /// `Needs` for `quality` (an id, checked on load) at `level`.

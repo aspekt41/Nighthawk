@@ -22,6 +22,7 @@ use crate::hash::Fnv64;
 use crate::light::MAX_LIGHT;
 use crate::material::{Material, Materials};
 use crate::pos::Pos;
+use crate::power::{self, CellType, MAX_CELL_KJ, Power};
 use crate::quality::{LevelError, Levels, Qualities, hash_levels};
 
 /// One pocket of a wearable item, as content: its name and how much it
@@ -69,9 +70,16 @@ pub struct ItemType {
     pub wear: Option<Wear>,
     /// How many tiles its light reaches, if it gives light (like a hand
     /// lamp), from 1 to 20: around it where it lies, or around you when
-    /// you carry it. Optional: it gives no light.
+    /// you carry it. Optional: it gives no light. With `power`, only while
+    /// it's switched on and its cell isn't flat.
     #[serde(default)]
     pub light: u8,
+    /// If it's a power cell, how much it holds (decision D59).
+    #[serde(default)]
+    pub cell: Option<CellType>,
+    /// If it runs on a power cell, what it draws and which cell it takes.
+    #[serde(default)]
+    pub power: Option<Power>,
 }
 
 impl ItemType {
@@ -88,6 +96,7 @@ impl ItemType {
             .u64(u64::from(self.solid_percent))
             .u8(self.light);
         hash_levels(&self.qualities, h);
+        power::hash_power(self.cell.as_ref(), self.power.as_ref(), h);
         let pockets = self.wear.as_ref().map(|w| w.pockets.as_slice());
         h.u64(pockets.map_or(u64::MAX, |p| p.len() as u64));
         for pocket in pockets.unwrap_or_default() {
@@ -133,7 +142,9 @@ impl ItemTypes {
 }
 
 /// One actual item: its type and material (indexes into the world's
-/// lists), and what's in each of its pockets.
+/// lists), what's in each of its pockets, and, for power cells and the
+/// things that run on them (decision D59), its charge, its cell and
+/// whether it's switched on.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Item {
@@ -141,6 +152,17 @@ pub struct Item {
     pub material: u16,
     /// One list per pocket of its type, in the same order.
     pub pockets: Vec<Vec<Item>>,
+    /// For a power cell: the energy in it, in joules.
+    #[serde(default)]
+    pub charge_j: u32,
+    /// For something that runs on a cell: the cell in its slot, if any.
+    /// `Box` keeps it on the heap, since an item can't hold a whole item
+    /// directly inside itself (it would have no fixed size).
+    #[serde(default)]
+    pub cell: Option<Box<Item>>,
+    /// For a light that runs on a cell: whether it's switched on.
+    #[serde(default)]
+    pub on: bool,
 }
 
 impl Item {
@@ -151,6 +173,9 @@ impl Item {
             kind,
             material,
             pockets: vec![Vec::new(); pockets],
+            charge_j: 0,
+            cell: None,
+            on: false,
         }
     }
 
@@ -170,6 +195,13 @@ impl Item {
             h.u64(pocket.len() as u64);
             for item in pocket {
                 item.hash_into(h);
+            }
+        }
+        h.u64(u64::from(self.charge_j)).u8(u8::from(self.on));
+        match &self.cell {
+            Some(cell) => cell.hash_into(h.u8(1)),
+            None => {
+                h.u8(0);
             }
         }
     }
@@ -213,7 +245,8 @@ impl ItemContext<'_> {
         let density = u64::from(self.materials[usize::from(item.material)].density);
         let own = u64::from(kind.volume_ml) * density * u64::from(kind.solid_percent) / 100 / 1000;
         let contents: u64 = item.pockets.iter().flatten().map(|i| self.mass_g(i)).sum();
-        own + contents
+        let cell = item.cell.as_deref().map_or(0, |c| self.mass_g(c));
+        own + contents + cell
     }
 
     /// Whether `item` fits in `pocket` alongside what's already in it.
@@ -274,6 +307,12 @@ pub(crate) fn get(worn: &[Item], path: ItemPath) -> Option<&Item> {
         .pockets
         .get(path.pocket)?
         .get(path.index)
+}
+
+/// The item at `path`, if there is one there, to change.
+pub(crate) fn get_mut(worn: &mut [Item], path: ItemPath) -> Option<&mut Item> {
+    let pocket = worn.get_mut(path.worn)?.pockets.get_mut(path.pocket)?;
+    pocket.get_mut(path.index)
 }
 
 /// Takes the item at `path` out of its pocket, if there is one there.
@@ -349,10 +388,33 @@ pub(crate) fn check_item(item: &Item, ctx: ItemContext) -> Result<(), String> {
             kind.pockets().len()
         ));
     }
+    check_power(item, kind, ctx)?;
     item.pockets
         .iter()
         .flatten()
         .try_for_each(|inner| check_item(inner, ctx))
+}
+
+/// Checks a saved item's power makes sense: only a cell holds charge, and
+/// no more than it can; only something that takes a cell has one, of the
+/// kind it takes; and only a light that runs on a cell is switched on.
+fn check_power(item: &Item, kind: &ItemType, ctx: ItemContext) -> Result<(), String> {
+    let capacity = kind.cell.as_ref().map_or(0, CellType::capacity_j);
+    if item.charge_j > capacity {
+        return Err(format!("a {} holds more charge than it can", kind.id));
+    }
+    if item.on && !power::is_switchable(item, ctx.types) {
+        return Err(format!("a {} is switched on, but can't be", kind.id));
+    }
+    let Some(cell) = item.cell.as_deref() else {
+        return Ok(());
+    };
+    let takes = kind.power.as_ref().map(|p| p.cell.as_str());
+    let cell_id = ctx.types.get(usize::from(cell.kind)).map(|t| t.id.as_str());
+    if takes.is_none() || takes != cell_id {
+        return Err(format!("a {} has a cell it can't take", kind.id));
+    }
+    check_item(cell, ctx)
 }
 
 /// Everything that can be wrong with the item files.
@@ -384,6 +446,11 @@ pub enum ItemError {
         item: String,
         light: u8,
     },
+    /// Something wrong with its `cell` or `power`; `problem` says what.
+    Power {
+        item: String,
+        problem: &'static str,
+    },
 }
 
 impl fmt::Display for ItemError {
@@ -414,6 +481,7 @@ impl fmt::Display for ItemError {
                 f,
                 "item {item:?} has a light of {light}, but light can reach at most {MAX_LIGHT} tiles"
             ),
+            ItemError::Power { item, problem } => write!(f, "item {item:?} {problem}"),
         }
     }
 }
@@ -440,6 +508,7 @@ pub(crate) fn parse_items(
     let list = read_all(files, |f: ItemsFile| f.items).map_err(ItemError::File)?;
     check_list(&list)?;
     list.iter().try_for_each(|t| check_one(t, materials))?;
+    list.iter().try_for_each(|t| check_power_type(t, &list))?;
     for item in &list {
         qualities
             .check(&item.qualities)
@@ -486,6 +555,39 @@ fn check_one(item: &ItemType, materials: &Materials) -> Result<(), ItemError> {
     Ok(())
 }
 
+/// Checks an item type's `cell` and `power`: a cell holds 1 to
+/// [`MAX_CELL_KJ`] kJ; a powered item draws at least 1 W and takes a cell
+/// that's in `list`; and nothing is both.
+fn check_power_type(item: &ItemType, list: &[ItemType]) -> Result<(), ItemError> {
+    let problem = |problem| {
+        Err(ItemError::Power {
+            item: item.id.clone(),
+            problem,
+        })
+    };
+    if item
+        .cell
+        .as_ref()
+        .is_some_and(|c| !(1..=MAX_CELL_KJ).contains(&c.capacity_kj))
+    {
+        return problem("is a cell that must hold 1 to 4000 kJ");
+    }
+    let Some(power) = &item.power else {
+        return Ok(());
+    };
+    if item.cell.is_some() {
+        return problem("can't both be a cell and take one");
+    }
+    if power.watts == 0 {
+        return problem("must draw at least 1 watt");
+    }
+    let takes = list.iter().find(|t| t.id == power.cell);
+    if !takes.is_some_and(|t| t.cell.is_some()) {
+        return problem("takes a cell that isn't an item with a \"cell\"");
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
@@ -509,7 +611,16 @@ pub(crate) mod tests {
             { "id": "scrap", "name": "scrap", "description": "Scrap.", "glyph": "*",
               "material": "steel", "volume_ml": 100, "solid_percent": 100 },
             { "id": "lamp", "name": "lamp", "description": "A lamp.", "glyph": "!",
-              "material": "steel", "volume_ml": 100, "solid_percent": 50, "light": 2 }
+              "material": "steel", "volume_ml": 100, "solid_percent": 50, "light": 2 },
+            { "id": "cell", "name": "cell", "description": "A cell.", "glyph": "=",
+              "material": "steel", "volume_ml": 50, "solid_percent": 100,
+              "cell": { "capacity_kj": 10 } },
+            { "id": "torch", "name": "torch", "description": "A torch.", "glyph": "!",
+              "material": "steel", "volume_ml": 100, "solid_percent": 50, "light": 3,
+              "power": { "watts": 10, "cell": "cell" } },
+            { "id": "saw", "name": "saw", "description": "A saw.", "glyph": "(",
+              "material": "steel", "volume_ml": 300, "solid_percent": 50,
+              "qualities": { "LASER": 2 }, "power": { "watts": 100, "cell": "cell" } }
         ] }"#
             .to_string()
     }
@@ -536,7 +647,7 @@ pub(crate) mod tests {
     #[test]
     fn a_valid_file_loads() {
         let items = test_items();
-        assert_eq!(items.list().len(), 4);
+        assert_eq!(items.list().len(), 7);
         assert_eq!(items.index_of("cutter"), Some(1));
         assert_eq!(items.index_of("cheese"), None);
         assert_eq!(items.list()[0].pockets().len(), 2);
@@ -652,6 +763,81 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn cells_and_what_runs_on_them_must_make_sense() {
+        let json = test_items_json();
+        let error = |from: &str, to: &str| error_of(&json.replace(from, to));
+        let cell = "\"cell\": { \"capacity_kj\": 10 }";
+        for capacity in ["0", "4001"] {
+            let odd = format!("\"cell\": {{ \"capacity_kj\": {capacity} }}");
+            assert_eq!(
+                error(cell, &odd),
+                r#"item "cell" is a cell that must hold 1 to 4000 kJ"#
+            );
+        }
+        let torch_power = "\"power\": { \"watts\": 10, \"cell\": \"cell\" }";
+        assert_eq!(
+            error(
+                torch_power,
+                "\"power\": { \"watts\": 0, \"cell\": \"cell\" }"
+            ),
+            r#"item "torch" must draw at least 1 watt"#
+        );
+        let takes = r#"item "torch" takes a cell that isn't an item with a "cell""#;
+        let elsewhere = |cell: &str| torch_power.replace("\"cell\": \"cell\"", cell);
+        assert_eq!(error(torch_power, &elsewhere("\"cell\": \"scrap\"")), takes);
+        assert_eq!(error(torch_power, &elsewhere("\"cell\": \"jam\"")), takes);
+        let both = format!("{cell}, {torch_power}");
+        assert_eq!(
+            error(cell, &both),
+            r#"item "cell" can't both be a cell and take one"#
+        );
+    }
+
+    #[test]
+    fn a_cell_in_its_slot_weighs_with_what_it_is_in() {
+        let (items, materials) = (test_items(), test_materials());
+        let ctx = context(&items, &materials);
+        let mut saw = Item::new(6, 0, items.list());
+        assert_eq!(ctx.mass_g(&saw), 150, "300 ml, half solid, 1 g/ml");
+        saw.cell = Some(Box::new(Item::new(4, 0, items.list())));
+        assert_eq!(ctx.mass_g(&saw), 200, "and a 50 ml solid cell");
+    }
+
+    #[test]
+    fn saved_power_is_checked_too() {
+        let (items, materials) = (test_items(), test_materials());
+        let ctx = context(&items, &materials);
+        let new = |kind| Item::new(kind, 0, items.list());
+        let mut cell = new(4);
+        cell.charge_j = 10_001;
+        assert_eq!(
+            check_item(&cell, ctx),
+            Err("a cell holds more charge than it can".to_string())
+        );
+        let mut saw = new(6);
+        saw.on = true;
+        assert_eq!(
+            check_item(&saw, ctx),
+            Err("a saw is switched on, but can't be".to_string())
+        );
+        let mut scrap = new(2);
+        scrap.cell = Some(Box::new(new(4)));
+        let wrong = Err("a scrap has a cell it can't take".to_string());
+        assert_eq!(check_item(&scrap, ctx), wrong);
+        let mut torch = new(5);
+        torch.cell = Some(Box::new(new(2)));
+        let wrong = Err("a torch has a cell it can't take".to_string());
+        assert_eq!(check_item(&torch, ctx), wrong, "scrap is no cell");
+        let mut overfull = new(4);
+        overfull.charge_j = 20_000;
+        torch.cell = Some(Box::new(overfull));
+        assert!(check_item(&torch, ctx).is_err(), "the cell is checked too");
+        torch.cell = Some(Box::new(new(4)));
+        torch.on = true;
+        assert_eq!(check_item(&torch, ctx), Ok(()));
+    }
+
+    #[test]
     fn too_many_item_types_is_an_error() {
         let one = test_items().list()[0].clone();
         let err = check_list(&vec![one; 70_000]).unwrap_err();
@@ -669,9 +855,12 @@ pub(crate) mod tests {
             h.finish()
         };
         let base = test_items().list().to_vec();
-        // Each change, and which type (0 the suit, 1 the cutter) it's made to.
+        // Each change, and which type (0 the suit, 1 the cutter, 4 the cell,
+        // 5 the torch) it's made to.
         type Change = (usize, fn(&mut ItemType));
-        let changes: [Change; 6] = [
+        let changes: [Change; 8] = [
+            (4, |t| t.cell.as_mut().unwrap().capacity_kj += 1),
+            (5, |t| t.power.as_mut().unwrap().watts += 1),
             (1, |t| t.light += 1),
             (0, |t| t.glyph = '%'),
             (0, |t| t.volume_ml += 1),
@@ -758,8 +947,7 @@ pub(crate) mod tests {
         assert_eq!(check_item(&suit, ctx), Ok(()));
         suit.pockets[0].push(Item {
             kind: 9,
-            material: 0,
-            pockets: vec![],
+            ..Item::new(2, 0, items.list())
         });
         assert_eq!(
             check_item(&suit, ctx),

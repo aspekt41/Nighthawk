@@ -198,6 +198,7 @@ tile, and it's still one thing: a stasis chamber is two tiles long.
 | `walkable` | Optional. You can walk through it, like a chair. Left out, it's in the way: walking into it bumps it. Air always flows past furniture. |
 | `blocks_sight` | Optional. It's tall enough to hide what's behind it (and to cast a shadow), like a locker. Left out, you can see over it. |
 | `holds_ml` | Optional. It's a container holding this many millilitres, like a locker (60000, 60 L). Maps can put items inside it (`contents`, under [Maps](#maps-mapsjson)), look mode lists what's inside, and the `take_out` action (`t` in the interact menu) takes them out into your pockets; `p` on the inventory screen puts things back in while it has room. What's inside one within reach (beside you) counts for recipes and crafts, tools included, as if it were in your pockets. Left out, it holds nothing. |
+| `charges_w` | Optional. It charges power cells put in it at this many watts, like the charging port in your own stasis chamber (100 W): each second, the first cell inside that isn't full, on its own or in something that runs on one, gains that many joules. Needs `holds_ml`. Left out, it charges nothing. |
 
 A game may have no furniture at all; the folder must still exist.
 
@@ -270,7 +271,7 @@ CUT 1", "needs 1 rigid scrap").
 ## Items (`items/*.json`)
 
 Things you can pick up, carry and wear, grouped by kind (`clothing.json`,
-`tools.json`, `salvage.json`). An item is an item type made of a material;
+`tools.json`, `salvage.json`, `power.json`). An item is an item type made of a material;
 its weight is worked out: volume × the material's density × how solid it
 is, plus whatever is in its pockets.
 
@@ -280,7 +281,11 @@ is, plus whatever is in its pockets.
     { "id": "basic_laser_cutter", "name": "basic laser cutter",
       "description": "A handheld fibre-laser cutter, about a kilowatt.",
       "glyph": "(", "material": "aluminium_alloy",
-      "volume_ml": 800, "solid_percent": 50, "qualities": { "LASER": 1 } },
+      "volume_ml": 800, "solid_percent": 50, "qualities": { "LASER": 1 },
+      "power": { "watts": 1000, "cell": "power_cell" } },
+    { "id": "power_cell", "name": "power cell", "description": "A lithium cell.",
+      "glyph": "&", "material": "aluminium_alloy", "volume_ml": 150, "solid_percent": 80,
+      "cell": { "capacity_kj": 300 } },
     { "id": "jumpsuit", "name": "jumpsuit", "description": "A crew jumpsuit.",
       "glyph": "[", "material": "cotton_fabric", "volume_ml": 2000, "solid_percent": 30,
       "wear": { "pockets": [
@@ -299,7 +304,9 @@ is, plus whatever is in its pockets.
 | `solid_percent` | How much of that volume is solid material, 1 to 100: 100 for a lump of scrap, 50 for a tool full of air and wiring. |
 | `qualities` | Optional. Tool qualities it has, levels 1 to 10, like `{ "LASER": 1 }`. Each must be a quality from `qualities/`. |
 | `wear` | Optional. Makes it wearable; `pockets` lists what it gives you to carry things in, each with a `name`, a `volume_ml` and a `max_mass_g`. |
-| `light` | Optional. It gives light, reaching this many tiles (1 to 20): around it where it lies, or around you when you wear or carry it (the brightest thing you have counts). The hand lamp reaches 4. |
+| `light` | Optional. It gives light, reaching this many tiles (1 to 20): around it where it lies, or around you when you wear or carry it (the brightest thing you have counts). The hand lamp reaches 4. With `power`, only while it's switched on (`a` on the inventory screen) and its cell isn't flat. |
+| `cell` | Optional. Makes it a power cell holding `capacity_kj` kilojoules when full (1 to 4000). Each cell keeps its own charge, in joules. |
+| `power` | Optional. It runs on a power cell: `cell` names the cell item it takes, and `watts` (at least 1) is what it draws. A light draws it every second it's on, and goes out, switched off, when its cell runs flat. A tool draws it for every second of work it does: a recipe or craft that needs one of its qualities takes the recipe's `seconds` × `watts` joules from its cell, and the tool only counts if its cell holds that much ("The basic laser cutter's cell is too low for that"). A tool that needs no cell is used first. `r` on the inventory screen loads the fullest cell you carry, `u` takes it out. Not both `cell` and `power`. |
 
 ## Maps (`maps/*.json`)
 
@@ -331,7 +338,7 @@ once, and the legend says what it stands on (something walkable).
 | `id` | Must match the file name (`closet.json` → `"closet"`) |
 | `name` | Shown as the map panel's title |
 | `legend` | One character → a structure's id, made of the structure's own material: `"#": "bulkhead"`. Or an object, to give it another material or lay items on it: `"H": { "structure": "bulkhead", "material": "nanocarbon_alloy" }`. An open door is its own structure: `"'": "door_open"`. Mistakes name the character: an unknown structure or material, or `@` standing on something solid. |
-| `legend[].items` | Optional, in the object form: items lying on that tile, like `"s": { "structure": "deck_plating", "items": [ { "item": "scrap", "count": 4 } ] }`. Each entry is an `item`, optionally a `material` other than its own (`"material": "bone"` makes Scrap (Bone)), and a `count` (default 1). Items need a walkable tile. |
+| `legend[].items` | Optional, in the object form: items lying on that tile, like `"s": { "structure": "deck_plating", "items": [ { "item": "scrap", "count": 4 } ] }`. Each entry is an `item`, optionally a `material` other than its own (`"material": "bone"` makes Scrap (Bone)), a `count` (default 1), and, for power, a `charge_percent` (0 to 100): a cell's charge (full without one), or for something that runs on a cell, a new cell that full in it (with none, it comes without a cell). Items need a walkable tile. |
 | `legend[].furniture` | Optional, in the object form: furniture standing on that tile, like `"C": { "structure": "deck_plating", "furniture": "stasis_chamber" }`. Draw **every tile the furniture covers** with that character: `CC` is one chamber two tiles long, and `CCCC` is two side by side. The loader cuts the drawing into pieces in reading order (the first tile of a piece it meets is its top-left), and a drawing that doesn't fit says where, like `deck 0, row 1, column 22: the stasis_chamber 'C' starting here also needs row 1, column 23 drawn as 'C'`. Furniture needs a walkable structure under it, and `@` can only stand on furniture you can walk through. |
 | `legend[].turned` | Optional, with `furniture`: turns it a quarter, swapping its width and height, so a chamber two tiles across runs two tiles down: `"c": { "structure": "deck_plating", "furniture": "stasis_chamber", "turned": true }`. |
 | `legend[].contents` | Optional, with `furniture` that holds things (`holds_ml`): items inside it, written like `items`: `"G": { "structure": "deck_plating", "furniture": "locker", "contents": [ { "item": "hand_lamp" } ] }`. Every piece drawn with that character gets its own. They must fit: `legend entry 'G': its contents take 900 ml, but a crate holds 0 ml`. |

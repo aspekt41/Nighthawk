@@ -327,11 +327,19 @@ fn you_wake_beside_your_own_empty_stasis_chamber_among_others() {
         .collect();
     assert_eq!(
         chambers.len(),
-        7,
-        "yours, four on the north wall, two on the south"
+        6,
+        "four on the north wall, two on the south"
     );
+    let your_kind = world.content().furniture_index("your_stasis_chamber");
     let yours = world.furniture_at(Pos::new(11, 6, 0)).unwrap();
-    assert_eq!((yours.kind, yours.turned), (chamber, false));
+    assert_eq!((Some(yours.kind), yours.turned), (your_kind, false));
+    assert!(yours.contents.is_empty());
+    let port = &world.content().furniture()[usize::from(yours.kind)];
+    assert_eq!(
+        (port.charges_w, port.holds_ml),
+        (100, 2000),
+        "a charging port"
+    );
     assert_eq!(
         world.player().steps_to(yours.at),
         Some(1),
@@ -436,6 +444,56 @@ fn the_gear_locker_in_view_of_the_start_holds_a_cutter_a_lamp_and_a_screwdriver(
 }
 
 #[test]
+fn the_cutter_runs_on_its_cell_and_your_own_chamber_charges_it() {
+    let mut world = common::start_world(1);
+    fetch_the_gear(&mut world); // to (8, 7), two tiles from a door
+    let cutter_kind = world.item_type_index("basic_laser_cutter").unwrap();
+    let cutter_charge = |world: &World| {
+        let (_, cutter) = world
+            .carried()
+            .into_iter()
+            .find(|(_, item)| item.kind == cutter_kind)
+            .unwrap();
+        world.charge(cutter)
+    };
+    assert_eq!(cutter_charge(&world), Some((150_000, 300_000)), "half full");
+    let door = Pos::new(6, 7, 0);
+    let cut = action(&world, "cut");
+    world.apply(Command::Interact {
+        at: door,
+        action: cut,
+    });
+    assert_eq!(world.structure_at(door).unwrap().id, "damaged_door");
+    assert_eq!(
+        cutter_charge(&world),
+        Some((30_000, 300_000)),
+        "a kilowatt for two minutes"
+    );
+    // Back east, beside your own chamber; leave the cutter in it a minute.
+    world.apply(Command::Move(Dir::East));
+    world.apply(Command::Move(Dir::East));
+    let yours = Pos::new(11, 6, 0);
+    let (path, _) = world
+        .carried()
+        .into_iter()
+        .find(|(_, item)| item.kind == cutter_kind)
+        .unwrap();
+    world.apply(Command::Store {
+        item: path,
+        into: yours,
+    });
+    for _ in 0..12 {
+        world.apply(Command::Wait);
+    }
+    let inside = &world.furniture_at(yours).unwrap().contents[0];
+    assert_eq!(
+        world.charge(inside),
+        Some((36_200, 300_000)),
+        "100 W for 62 s"
+    );
+}
+
+#[test]
 fn beside_the_gear_locker_its_tools_are_at_hand_and_things_can_go_back_in() {
     let mut world = common::start_world(1);
     assert_eq!(world.tool_level("SCREW"), 0, "where you wake");
@@ -498,7 +556,7 @@ fn only_metal_scrap_patches_the_hull_or_mends_a_door() {
 }
 
 #[test]
-fn dismantling_your_own_stasis_chamber_gives_steel_glass_padding_and_copper() {
+fn dismantling_your_own_stasis_chamber_gives_steel_glass_padding_copper_and_its_cell() {
     let mut world = common::start_world(1);
     fetch_the_gear(&mut world); // the screwdriver too
     world.apply(Command::Move(Dir::East));
@@ -520,8 +578,14 @@ fn dismantling_your_own_stasis_chamber_gives_steel_glass_padding_and_copper() {
         .map(|i| world.materials()[usize::from(i.material)].id.as_str())
         .collect();
     made_of.dedup();
-    assert_eq!(made_of, ["steel", "glass", "polyester", "copper"]);
-    assert_eq!(world.items_at(yours).count(), 9);
+    assert_eq!(
+        made_of,
+        ["steel", "glass", "polyester", "copper", "aluminium_alloy"]
+    );
+    assert_eq!(world.items_at(yours).count(), 10);
+    let cell = world.items_at(yours).last().unwrap();
+    assert_eq!(world.item_types()[usize::from(cell.kind)].id, "power_cell");
+    assert_eq!(cell.charge_j, 0, "the emergency cell, drained");
 }
 
 /// The number of the shipped craft with this id.

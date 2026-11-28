@@ -61,6 +61,12 @@ pub struct FurnitureType {
     /// locker. Optional: it holds nothing.
     #[serde(default)]
     pub holds_ml: u32,
+    /// If it charges power cells put in it (like the charging port in your
+    /// stasis chamber), how fast, in watts: it fills the first cell inside
+    /// that isn't full, on its own or in a tool (decision D59). Optional:
+    /// it charges nothing. Only a container can charge.
+    #[serde(default)]
+    pub charges_w: u32,
 }
 
 /// The default size: one tile. Serde's `default = "..."` names a function.
@@ -85,7 +91,8 @@ impl FurnitureType {
             .u8(self.size[1])
             .u8(u8::from(self.walkable))
             .u8(u8::from(self.blocks_sight))
-            .u64(u64::from(self.holds_ml));
+            .u64(u64::from(self.holds_ml))
+            .u64(u64::from(self.charges_w));
     }
 }
 
@@ -138,6 +145,10 @@ pub enum FurnitureError {
     BadSize {
         furniture: String,
     },
+    /// It charges cells but holds nothing to charge.
+    ChargerHoldsNothing {
+        furniture: String,
+    },
 }
 
 impl fmt::Display for FurnitureError {
@@ -160,6 +171,10 @@ impl fmt::Display for FurnitureError {
             FurnitureError::BadSize { furniture } => write!(
                 f,
                 "furniture {furniture:?} needs a size from 1 to {MAX_FURNITURE_SIDE} tiles each way"
+            ),
+            FurnitureError::ChargerHoldsNothing { furniture } => write!(
+                f,
+                "furniture {furniture:?} charges cells, so it needs a holds_ml to put them in"
             ),
         }
     }
@@ -214,6 +229,11 @@ fn check_one(kind: &FurnitureType, materials: &Materials) -> Result<(), Furnitur
         .all(|&side| (1..=MAX_FURNITURE_SIDE).contains(&side))
     {
         return Err(FurnitureError::BadSize {
+            furniture: kind.id.clone(),
+        });
+    }
+    if kind.charges_w > 0 && kind.holds_ml == 0 {
+        return Err(FurnitureError::ChargerHoldsNothing {
             furniture: kind.id.clone(),
         });
     }
@@ -339,6 +359,12 @@ impl Furnishings {
         &self.pieces
     }
 
+    /// Every piece, to change what's inside them. (Moving one would need
+    /// [`Furnishings::rebuild`] after.)
+    pub(crate) fn pieces_mut(&mut self) -> &mut [Piece] {
+        &mut self.pieces
+    }
+
     /// The piece covering the tile at `p`, if any.
     pub(crate) fn at(&self, map: &Map, p: Pos) -> Option<&Piece> {
         self.pieces.get(self.number_at(map, p)?)
@@ -416,8 +442,9 @@ pub(crate) mod tests {
     use crate::material::tests::test_materials;
 
     /// Test furniture, all steel: a one-tile `"crate"` in the way, a
-    /// `"bench"` two tiles across, a `"stool"` you can walk through and a
-    /// `"cabinet"` that hides what's behind it and holds a litre.
+    /// `"bench"` two tiles across, a `"stool"` you can walk through, a
+    /// `"cabinet"` that hides what's behind it and holds a litre, and a
+    /// `"dock"` that holds a litre and charges cells in it at 100 W.
     pub(crate) fn test_furniture_json() -> String {
         r#"{ "furniture": [
             { "id": "crate", "name": "crate", "description": "A crate.",
@@ -428,7 +455,9 @@ pub(crate) mod tests {
               "glyph": "h", "material": "steel", "walkable": true },
             { "id": "cabinet", "name": "cabinet", "description": "A cabinet.",
               "glyph": "{", "material": "steel", "blocks_sight": true, "colour": "red",
-              "holds_ml": 1000 }
+              "holds_ml": 1000 },
+            { "id": "dock", "name": "dock", "description": "A dock.",
+              "glyph": "0", "material": "steel", "holds_ml": 1000, "charges_w": 100 }
         ] }"#
             .into()
     }
@@ -448,7 +477,7 @@ pub(crate) mod tests {
     #[test]
     fn a_valid_file_loads_with_defaults_filled_in() {
         let all = test_furniture();
-        assert_eq!(all.list().len(), 4);
+        assert_eq!(all.list().len(), 5);
         assert_eq!(all.index_of("bench"), Some(1));
         assert_eq!(all.index_of("sofa"), None);
         let crate_ = &all.list()[0];
@@ -515,6 +544,11 @@ pub(crate) mod tests {
             check_list(&vec![one; 70_000]).unwrap_err().to_string(),
             "70000 kinds of furniture is too many; the most is 65535"
         );
+        let charges_nothing = test_furniture_json().replace("\"holds_ml\": 1000, ", "");
+        assert_eq!(
+            error_of(&charges_nothing),
+            "furniture \"dock\" charges cells, so it needs a holds_ml to put them in"
+        );
     }
 
     #[test]
@@ -525,8 +559,9 @@ pub(crate) mod tests {
             h.finish()
         };
         let base = test_furniture();
-        let changes: [fn(&mut FurnitureType); 10] = [
+        let changes: [fn(&mut FurnitureType); 11] = [
             |f| f.holds_ml = 5,
+            |f| f.charges_w = 5,
             |f| f.id.push('!'),
             |f| f.name.push('!'),
             |f| f.description.push('!'),

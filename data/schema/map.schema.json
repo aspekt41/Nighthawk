@@ -89,9 +89,20 @@
       ]
     },
     "ItemSpec": {
-      "description": "Some items, in a map: a type, optionally a material other than its own,\nand how many (1 if left out).",
+      "description": "Some items, in a map: a type, optionally a material other than its own,\nhow many (1 if left out), and for power cells and things that run on\nthem, how charged (decision D59).",
       "type": "object",
       "properties": {
+        "charge_percent": {
+          "description": "For a cell, how full it is, 0 to 100 (full if left out). For\nsomething that takes a cell, it comes with one this full (and with\nnone if left out).",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint8",
+          "default": null,
+          "maximum": 255,
+          "minimum": 0
+        },
         "count": {
           "type": "integer",
           "format": "uint32",

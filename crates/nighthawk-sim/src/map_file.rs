@@ -76,6 +76,11 @@ pub enum ItemSpecError {
     NoneOf {
         item: String,
     },
+    /// A `charge_percent` over 100, or on something that holds no charge.
+    Charge {
+        item: String,
+        problem: &'static str,
+    },
     /// Something in `player_wears` that can't be worn.
     NotWearable {
         item: String,
@@ -91,6 +96,7 @@ impl fmt::Display for ItemSpecError {
                 "{item:?} is made of {material:?}, which isn't a material"
             ),
             ItemSpecError::NoneOf { item } => write!(f, "{item:?} has a count of 0"),
+            ItemSpecError::Charge { item, problem } => write!(f, "{item:?} {problem}"),
             ItemSpecError::NotWearable { item } => write!(f, "{item:?} can't be worn"),
         }
     }
@@ -329,7 +335,8 @@ pub(crate) struct MapFile {
 }
 
 /// Some items, in a map: a type, optionally a material other than its own,
-/// and how many (1 if left out).
+/// how many (1 if left out), and for power cells and things that run on
+/// them, how charged (decision D59).
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct ItemSpec {
@@ -338,6 +345,11 @@ struct ItemSpec {
     material: Option<String>,
     #[serde(default = "one")]
     count: u32,
+    /// For a cell, how full it is, 0 to 100 (full if left out). For
+    /// something that takes a cell, it comes with one this full (and with
+    /// none if left out).
+    #[serde(default)]
+    charge_percent: Option<u8>,
 }
 
 /// The default `count`. Serde's `default = "..."` names a function.
@@ -621,10 +633,48 @@ fn make_items(specs: &[ItemSpec], content: &Content) -> Result<Vec<Item>, ItemSp
                 item: spec.item.clone(),
             });
         }
-        let one = Item::new(kind, material, types);
+        let mut one = Item::new(kind, material, types);
+        charge(&mut one, spec, content)?;
         items.extend(std::iter::repeat_n(one, spec.count as usize));
     }
     Ok(items)
+}
+
+/// Charges a new `item` as `spec` says: a cell to its `charge_percent`
+/// (full without one); something that takes a cell, with a new cell that
+/// full, if there's a `charge_percent`.
+fn charge(item: &mut Item, spec: &ItemSpec, content: &Content) -> Result<(), ItemSpecError> {
+    let problem = |problem| {
+        Err(ItemSpecError::Charge {
+            item: spec.item.clone(),
+            problem,
+        })
+    };
+    let types = content.item_types.list();
+    let kind = &types[usize::from(item.kind)];
+    let percent = spec.charge_percent.unwrap_or(100);
+    if percent > 100 {
+        return problem("has a charge_percent over 100");
+    }
+    let share = |capacity: u32| {
+        let j = u64::from(capacity) * u64::from(percent) / 100;
+        u32::try_from(j).unwrap_or(u32::MAX)
+    };
+    match (spec.charge_percent, &kind.cell, &kind.power) {
+        (_, Some(cell), _) => item.charge_j = share(cell.capacity_j()),
+        (Some(_), None, Some(power)) => {
+            // Content checks guarantee the cell is a real cell type.
+            let cell_kind = content.item_types.index_of(&power.cell).unwrap_or(0);
+            let cell_type = &types[usize::from(cell_kind)];
+            let material = content.materials.index_of(&cell_type.material).unwrap_or(0);
+            let mut cell = Item::new(cell_kind, material, types);
+            cell.charge_j = share(cell_type.cell.as_ref().map_or(0, |c| c.capacity_j()));
+            item.cell = Some(Box::new(cell));
+        }
+        (Some(_), None, None) => return problem("has a charge_percent, but holds no charge"),
+        (None, None, _) => {}
+    }
+    Ok(())
 }
 
 /// The items a legend entry lays on the floor, which needs to be walkable.
@@ -1383,7 +1433,7 @@ mod item_tests {
         assert!(loaded.floor_items.iter().all(|f| f.at == Pos::new(1, 0, 0)));
         assert_eq!(loaded.floor_items[0].item.kind, 1);
         assert_eq!(loaded.floor_items[3].item.kind, 2);
-        assert_eq!(loaded.content.item_types().len(), 4);
+        assert_eq!(loaded.content.item_types().len(), 7);
         assert!(loaded.worn.is_empty(), "nothing worn unless the map says");
     }
 
@@ -1418,6 +1468,29 @@ mod item_tests {
             error(r#"[ { "item": "scrap", "count": 0 } ]"#, ""),
             r#"legend entry 's': "scrap" has a count of 0"#
         );
+        assert_eq!(
+            error(r#"[ { "item": "cell", "charge_percent": 101 } ]"#, ""),
+            r#"legend entry 's': "cell" has a charge_percent over 100"#
+        );
+        assert_eq!(
+            error(r#"[ { "item": "scrap", "charge_percent": 50 } ]"#, ""),
+            r#"legend entry 's': "scrap" has a charge_percent, but holds no charge"#
+        );
+    }
+
+    #[test]
+    fn cells_come_full_unless_the_map_says_and_tools_come_with_one_if_it_does() {
+        let loaded = map_with(
+            r#"[ { "item": "cell" }, { "item": "cell", "charge_percent": 25 },
+                 { "item": "saw" }, { "item": "saw", "charge_percent": 60 } ]"#,
+            "",
+        )
+        .unwrap();
+        let items: Vec<&Item> = loaded.floor_items.iter().map(|f| &f.item).collect();
+        assert_eq!((items[0].charge_j, items[1].charge_j), (10_000, 2500));
+        assert_eq!(items[2].cell, None, "a saw comes empty");
+        let cell = items[3].cell.as_deref().unwrap();
+        assert_eq!((cell.kind, cell.charge_j), (4, 6000), "or with a cell");
     }
 
     #[test]

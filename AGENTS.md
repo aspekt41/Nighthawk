@@ -201,7 +201,9 @@ precise error and exits with code 1 before entering raw mode.
   it: `"wall"`, `"floor"`, `"door"`, `"open_door"`…, plus `"frame"`, a
   floor, and `"lamp"`, a wall with light 20) and items
   (`"suit"` with two 1 L pockets, `"cutter"` with LASER 1, `"scrap"`,
-  `"lamp"` with light 2) and
+  `"lamp"` with light 2 and no cell; then `"cell"`, a 10 kJ power cell,
+  `"torch"`, a light 3 lamp drawing 10 W, and `"saw"`, LASER 2 drawing
+  100 W, both taking the cell) and
   recipes (cutting a `"door"` or a `"wall"` leaves `"floor"`, in 60 s;
   repairing a `"hull_crack"` with 2 metal scrap makes a `"wall"` of the
   scrap's material, in 30 s; smashing a `"crate"` gives 0 to 2 scrap
@@ -213,8 +215,9 @@ precise error and exits with code 1 before entering raw mode.
   material, 60 s; craft 1 makes 2 `"lamp"`s from a scrap and a cutter
   with LASER 1, 30 s), and puts the player on
   `"floor"` if the legend doesn't say what `@` is. Test furniture: a
-  `"crate"` in the way, a `"bench"` two tiles across, a walkable `"stool"`
-  and a `"cabinet"` that blocks sight and holds 1 L. Test rooms are dark
+  `"crate"` in the way, a `"bench"` two tiles across, a walkable `"stool"`,
+  a `"cabinet"` that blocks sight and holds 1 L, and a `"dock"` that holds
+  1 L and charges cells in it at 100 W. Test rooms are dark
   (you see only the tiles beside you) unless their map has a light: put a
   `*` in a wall with `"*": "lamp"` in the legend. Integration tests share
   `crates/nighthawk-sim/tests/common/mod.rs`, which loads the real `data/`;

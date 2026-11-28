@@ -57,6 +57,13 @@
           "type": "boolean",
           "default": false
         },
+        "charges_w": {
+          "description": "If it charges power cells put in it (like the charging port in your\nstasis chamber), how fast, in watts: it fills the first cell inside\nthat isn't full, on its own or in a tool (decision D59). Optional:\nit charges nothing. Only a container can charge.",
+          "type": "integer",
+          "format": "uint32",
+          "default": 0,
+          "minimum": 0
+        },
         "colour": {
           "description": "Optional: the colour to draw it in, instead of its material's.",
           "anyOf": [

@@ -5,7 +5,7 @@
 //! decides what an action does. That keeps this file a simple lookup that is
 //! easy to test and, later, to make remappable.
 
-use nighthawk_sim::{Action, Command, Dir, Vertical};
+use nighthawk_sim::{Action, Command, Dir, PowerAct, Vertical};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
 use crate::title::MenuItem;
@@ -50,11 +50,16 @@ pub enum InventoryAction {
     Drop,
     /// Put the highlighted item into a container within reach.
     PutAway,
+    /// Load a cell into the highlighted item, take its cell out, or
+    /// switch it on or off.
+    Power(PowerAct),
     Close,
 }
 
 /// The action for a key pressed on the inventory screen: up and down
-/// movement keys choose, `d` drops, `p` puts away, Esc, `i` or `q` close.
+/// movement keys choose, `d` drops, `p` puts away, `r` loads a cell, `u`
+/// takes it out, `a` switches on or off, and Esc, `i` or `q` close. The
+/// letter keys come first, so `u` means unload here, not north-east.
 pub fn inventory_action(key: KeyEvent) -> Option<InventoryAction> {
     if !is_press(key) {
         return None;
@@ -63,6 +68,9 @@ pub fn inventory_action(key: KeyEvent) -> Option<InventoryAction> {
         (KeyCode::Esc | KeyCode::Char('i' | 'q'), _) => Some(InventoryAction::Close),
         (KeyCode::Char('d'), _) => Some(InventoryAction::Drop),
         (KeyCode::Char('p'), _) => Some(InventoryAction::PutAway),
+        (KeyCode::Char('r'), _) => Some(InventoryAction::Power(PowerAct::Reload)),
+        (KeyCode::Char('u'), _) => Some(InventoryAction::Power(PowerAct::Unload)),
+        (KeyCode::Char('a'), _) => Some(InventoryAction::Power(PowerAct::Switch)),
         (_, Some(Dir::North)) => Some(InventoryAction::Up),
         (_, Some(Dir::South)) => Some(InventoryAction::Down),
         _ => None,
@@ -583,6 +591,18 @@ mod tests {
             (KeyCode::Down, Some(InventoryAction::Down)),
             (KeyCode::Char('d'), Some(InventoryAction::Drop)),
             (KeyCode::Char('p'), Some(InventoryAction::PutAway)),
+            (
+                KeyCode::Char('r'),
+                Some(InventoryAction::Power(PowerAct::Reload)),
+            ),
+            (
+                KeyCode::Char('u'),
+                Some(InventoryAction::Power(PowerAct::Unload)),
+            ),
+            (
+                KeyCode::Char('a'),
+                Some(InventoryAction::Power(PowerAct::Switch)),
+            ),
             (KeyCode::Esc, Some(InventoryAction::Close)),
             (KeyCode::Char('i'), Some(InventoryAction::Close)),
             (KeyCode::Char('q'), Some(InventoryAction::Close)),

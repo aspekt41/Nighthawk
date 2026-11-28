@@ -23,10 +23,38 @@
     "items"
   ],
   "$defs": {
+    "CellType": {
+      "description": "What makes an item type a power cell: how much it holds when full.",
+      "type": "object",
+      "properties": {
+        "capacity_kj": {
+          "description": "How much energy it holds when full, in kilojoules (1 to\n[`MAX_CELL_KJ`]).",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "capacity_kj"
+      ]
+    },
     "ItemType": {
       "description": "A kind of item, from `data/items/`.",
       "type": "object",
       "properties": {
+        "cell": {
+          "description": "If it's a power cell, how much it holds (decision D59).",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CellType"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
         "description": {
           "type": "string"
         },
@@ -41,7 +69,7 @@
           "type": "string"
         },
         "light": {
-          "description": "How many tiles its light reaches, if it gives light (like a hand\nlamp), from 1 to 20: around it where it lies, or around you when\nyou carry it. Optional: it gives no light.",
+          "description": "How many tiles its light reaches, if it gives light (like a hand\nlamp), from 1 to 20: around it where it lies, or around you when\nyou carry it. Optional: it gives no light. With `power`, only while\nit's switched on and its cell isn't flat.",
           "type": "integer",
           "format": "uint8",
           "default": 0,
@@ -55,6 +83,18 @@
         "name": {
           "description": "How it's shown to the player, like \"basic laser cutter\".",
           "type": "string"
+        },
+        "power": {
+          "description": "If it runs on a power cell, what it draws and which cell it takes.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Power"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         },
         "qualities": {
           "description": "The tool qualities it has, like `{ \"LASER\": 1 }`.",
@@ -129,6 +169,27 @@
         "name",
         "volume_ml",
         "max_mass_g"
+      ]
+    },
+    "Power": {
+      "description": "What makes an item type run on a cell.",
+      "type": "object",
+      "properties": {
+        "cell": {
+          "description": "The id of the cell item it takes.",
+          "type": "string"
+        },
+        "watts": {
+          "description": "What it draws while it works, in watts (joules a second; at least 1).",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "watts",
+        "cell"
       ]
     },
     "Wear": {

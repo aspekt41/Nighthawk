@@ -25,7 +25,45 @@ pub fn describe_in(world: &World, event: Event) -> Option<String> {
         Event::Unable { action, blocked } => Some(blocked_text(blocked, action, Some(world))),
         // Events about items get their own function, so this `match`
         // stays under the complexity limit.
-        _ => item_event_text(world, event).or_else(|| describe(event)),
+        _ => item_event_text(world, event)
+            .or_else(|| power_text(Some(world), event))
+            .or_else(|| describe(event)),
+    }
+}
+
+/// Log lines for loading, unloading and switching things, and for a light
+/// going out (decision D59). `world`, if given, names the item. `None`
+/// for any other event.
+fn power_text(world: Option<&World>, event: Event) -> Option<String> {
+    let name = |id| world.map_or_else(|| "item".into(), |w| item_name(w, id));
+    let line = match event {
+        Event::Reloaded { item, charge_kj } => {
+            format!("You load a cell ({charge_kj} kJ) into the {}.", name(item))
+        }
+        Event::Unloaded(item) => format!("You take the cell out of the {}.", name(item)),
+        Event::Switched { item, on } => {
+            let state = if on { "on" } else { "off" };
+            format!("You switch the {} {state}.", name(item))
+        }
+        Event::WentOut(item) => {
+            format!(
+                "Your {} flickers and goes out: its cell is flat.",
+                name(item)
+            )
+        }
+        Event::CannotPower(blocked) => cannot_power_text(blocked).into(),
+        _ => return None,
+    };
+    Some(line)
+}
+
+/// Why you couldn't load, unload or switch something.
+fn cannot_power_text(blocked: Blocked) -> &'static str {
+    match blocked {
+        Blocked::NoFullerCell => "You carry no fuller cell that fits it.",
+        Blocked::NoCell => "There's no cell in it.",
+        Blocked::Flat => "Its cell is flat.",
+        _ => "You can't do that with it.",
     }
 }
 
@@ -159,7 +197,7 @@ fn storing_text(event: Event) -> String {
     match event {
         Event::Stored { .. } => "You put it away.".into(),
         Event::CannotStore(blocked) => cannot_store_text(blocked),
-        _ => movement_text(event).into(),
+        _ => power_text(None, event).unwrap_or_else(|| movement_text(event).into()),
     }
 }
 
@@ -282,6 +320,9 @@ pub fn blocked_short(blocked: Blocked, action: u16, world: Option<&World>) -> St
         },
         Blocked::Cluttered => "clear it first".into(),
         Blocked::Unworkable => format!("nothing can {} it", verb(world, action)),
+        Blocked::LowCharge {
+            need_kj, have_kj, ..
+        } => format!("cell {have_kj}/{need_kj} kJ"),
         _ => blocked_short_fixed(blocked),
     };
     short.chars().take(19).collect()
@@ -323,6 +364,14 @@ pub fn blocked_text(blocked: Blocked, action: u16, world: Option<&World>) -> Str
             tagged_item_name(world, item, tag)
         ),
         Blocked::Cluttered => "Something is lying on it. Move it out of the way first.".into(),
+        Blocked::LowCharge {
+            item,
+            need_kj,
+            have_kj,
+        } => format!(
+            "The {}'s cell is too low for that: it needs {need_kj} kJ and has {have_kj}.",
+            item_type_name(world, item)
+        ),
         _ => blocked_text_fixed(blocked),
     }
 }
@@ -512,7 +561,7 @@ mod tests {
     }
 
     /// One of each kind of blocked reason.
-    fn every_blocked() -> [Blocked; 12] {
+    fn every_blocked() -> [Blocked; 13] {
         [
             Blocked::CantSee,
             Blocked::NotKnown,
@@ -529,6 +578,11 @@ mod tests {
             },
             Blocked::Unworkable,
             Blocked::NotPossible,
+            Blocked::LowCharge {
+                item: 0,
+                need_kj: 6,
+                have_kj: 1,
+            },
             Blocked::Missing {
                 item: 0,
                 need: 2,
@@ -789,6 +843,73 @@ mod tests {
             Some("You take the basic laser cutter (Aluminium Alloy) out of the container.")
         );
         assert_eq!(describe(took).as_deref(), Some("You take out the item."));
+    }
+
+    #[test]
+    fn loading_unloading_and_switching_say_what_happened_or_why_not() {
+        let world = real_world();
+        let lamp = ItemRef {
+            kind: world.item_type_index("hand_lamp").unwrap(),
+            material: world.content().material_index("aluminium_alloy").unwrap(),
+        };
+        let line = |event| describe_in(&world, event).unwrap_or_default();
+        let loaded = Event::Reloaded {
+            item: lamp,
+            charge_kj: 120,
+        };
+        assert_eq!(
+            line(loaded),
+            "You load a cell (120 kJ) into the hand lamp (Aluminium Alloy)."
+        );
+        assert_eq!(
+            describe(loaded).as_deref(),
+            Some("You load a cell (120 kJ) into the item.")
+        );
+        assert_eq!(
+            line(Event::Unloaded(lamp)),
+            "You take the cell out of the hand lamp (Aluminium Alloy)."
+        );
+        let switched = |on| line(Event::Switched { item: lamp, on });
+        assert_eq!(
+            switched(true),
+            "You switch the hand lamp (Aluminium Alloy) on."
+        );
+        assert_eq!(
+            switched(false),
+            "You switch the hand lamp (Aluminium Alloy) off."
+        );
+        assert_eq!(
+            line(Event::WentOut(lamp)),
+            "Your hand lamp (Aluminium Alloy) flickers and goes out: its cell is flat."
+        );
+        let cannot = |blocked| line(Event::CannotPower(blocked));
+        assert_eq!(
+            cannot(Blocked::NoFullerCell),
+            "You carry no fuller cell that fits it."
+        );
+        assert_eq!(cannot(Blocked::NoCell), "There's no cell in it.");
+        assert_eq!(cannot(Blocked::Flat), "Its cell is flat.");
+        assert_eq!(cannot(Blocked::NotPossible), "You can't do that with it.");
+        assert_eq!(
+            describe(Event::CannotPower(Blocked::Flat)).as_deref(),
+            Some("Its cell is flat.")
+        );
+    }
+
+    #[test]
+    fn a_cell_too_low_for_the_work_says_by_how_much() {
+        let world = real_world();
+        let cutter = world.item_type_index("basic_laser_cutter").unwrap();
+        let low = Blocked::LowCharge {
+            item: cutter,
+            need_kj: 120,
+            have_kj: 30,
+        };
+        assert_eq!(
+            blocked_text(low, 0, Some(&world)),
+            "The basic laser cutter's cell is too low for that: it needs 120 kJ and has 30."
+        );
+        assert_eq!(blocked_short(low, 0, Some(&world)), "cell 30/120 kJ");
     }
 
     #[test]

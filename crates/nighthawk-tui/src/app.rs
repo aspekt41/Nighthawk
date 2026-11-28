@@ -6,7 +6,8 @@
 //! of it can be tested directly.
 
 use nighthawk_sim::{
-    ActionOption, Blocked, Cause, Command, DateTime, ItemPath, LoadedMap, Pos, World, options_at,
+    ActionOption, Blocked, Cause, Command, DateTime, ItemPath, LoadedMap, Pos, PowerAct, World,
+    options_at,
 };
 use ratatui::crossterm::event::KeyEvent;
 
@@ -269,6 +270,27 @@ impl App {
                 }
                 None => self.push_log("You have nothing to put away.".into()),
             },
+            InventoryAction::Power(act) => match carried.get(selected) {
+                Some(&(item, _)) => self.use_power(item, act),
+                None => self.push_log("You have nothing to use.".into()),
+            },
+        }
+    }
+
+    /// Loads, unloads or switches the carried item at `item`, and keeps
+    /// the inventory highlight on the list, which a cell coming or going
+    /// changes.
+    fn use_power(&mut self, item: ItemPath, act: PowerAct) {
+        self.apply(Command::Power { item, act });
+        self.keep_highlight_on_list();
+    }
+
+    /// Moves the inventory highlight up onto the list, if what you carry
+    /// has shrunk under it.
+    fn keep_highlight_on_list(&mut self) {
+        if let (Screen::Playing(world), Some(selected)) = (&self.screen, self.inventory) {
+            let last = world.carried().len().saturating_sub(1);
+            self.inventory = Some(selected.min(last));
         }
     }
 
@@ -291,10 +313,7 @@ impl App {
     /// keeps the inventory highlight on the list as it shrinks.
     fn put_away(&mut self, path: ItemPath, into: Pos) {
         self.apply(Command::Store { item: path, into });
-        if let (Screen::Playing(world), Some(selected)) = (&self.screen, self.inventory) {
-            let last = world.carried().len().saturating_sub(1);
-            self.inventory = Some(selected.min(last));
-        }
+        self.keep_highlight_on_list();
     }
 
     /// Puts the cursor up on the player, for looking or interacting.
@@ -596,6 +615,12 @@ mod tests {
 
     fn last_log(app: &App) -> &str {
         app.log.last().map(String::as_str).unwrap_or("")
+    }
+
+    /// The newest log line that isn't a ship noise: what the player did.
+    fn last_said(app: &App) -> &str {
+        let said = app.log.iter().rev().find(|l| !is_ambient_line(l));
+        said.map_or("", String::as_str)
     }
 
     fn is_ambient_line(line: &str) -> bool {
@@ -1085,9 +1110,10 @@ mod tests {
         let (mut app, dir) = new_app(Some(7));
         // Two steps north-west to (8, 5), beside the gear locker at
         // (7, 4); `e`, the cursor north-west onto it, `t` to take out.
-        // Then drop the cutter, the first thing in the inventory.
+        // Then drop the cutter, the first thing in the inventory, go down
+        // past the screwdriver and switch on the lamp.
         press_all(&mut app, "yyeyt");
-        press_all(&mut app, "id");
+        press_all(&mut app, "idja");
         app.handle_key(key(KeyCode::Esc));
         let route = std::iter::repeat_n('k', 3)
             .chain(std::iter::repeat_n('l', 25))
@@ -1292,6 +1318,46 @@ mod tests {
         assert_eq!(world(&app).seconds(), before + nighthawk_sim::STORE_SECONDS);
         press_all(&mut app, "jjjjp"); // past the end: the last one
         assert_eq!(app.inventory, Some(0), "the highlight stays on the list");
+    }
+
+    #[test]
+    fn a_switches_the_lamp_and_u_and_r_take_its_cell_out_and_put_it_back() {
+        let (mut app, _dir) = new_app(Some(7));
+        // Take out the gear: the cutter and screwdriver in one pocket, the
+        // lamp in the next.
+        press_all(&mut app, "yyeyt");
+        press_all(&mut app, "ijja");
+        assert_eq!(
+            last_said(&app),
+            "You switch the hand lamp (Aluminium Alloy) on."
+        );
+        let before = world(&app).carried().len();
+        press_all(&mut app, "u");
+        assert_eq!(
+            last_said(&app),
+            "You take the cell out of the hand lamp (Aluminium Alloy)."
+        );
+        assert_eq!(world(&app).carried().len(), before + 1, "the cell");
+        press_all(&mut app, "r");
+        assert_eq!(
+            last_said(&app),
+            "You load a cell (119 kJ) into the hand lamp (Aluminium Alloy)."
+        );
+        assert_eq!(world(&app).carried().len(), before);
+        press_all(&mut app, "ka");
+        assert_eq!(
+            last_said(&app),
+            "You can't do that with it.",
+            "a screwdriver"
+        );
+    }
+
+    #[test]
+    fn power_keys_with_nothing_carried_say_so() {
+        let (mut app, _dir) = new_app(Some(7));
+        press_all(&mut app, "ia");
+        assert_eq!(last_log(&app), "You have nothing to use.");
+        assert_eq!(world(&app).seconds(), 0);
     }
 
     #[test]

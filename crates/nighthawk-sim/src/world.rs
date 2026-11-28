@@ -16,6 +16,7 @@ use crate::map::{Map, Tile};
 use crate::map_file::LoadedMap;
 use crate::material::Material;
 use crate::pos::{Dir, Pos, Vertical};
+use crate::power;
 use crate::recipe::{Recipe, RecipeMaterial, Use};
 use crate::rng::{GameRng, Stream};
 use crate::sight::{Remembered, Scene, View};
@@ -88,6 +89,50 @@ pub enum Command {
         item: ItemPath,
         into: Pos,
     },
+    /// Load, unload or switch the carried item at `item`, which runs on a
+    /// power cell (D59).
+    Power {
+        item: ItemPath,
+        act: PowerAct,
+    },
+}
+
+/// What to do with something that runs on a power cell.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PowerAct {
+    /// Load the fullest cell you carry that it takes, swapping out the one
+    /// in it, if any.
+    Reload,
+    /// Take its cell out, into your pockets.
+    Unload,
+    /// Switch it (a light) on or off.
+    Switch,
+}
+
+/// Where an item at hand is, so it can be found again to change it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Spot {
+    /// Worn item number `.0`.
+    Worn(usize),
+    /// In a pocket.
+    Carried(ItemPath),
+    /// Item number `index` inside furniture piece number `piece`.
+    Inside { piece: usize, index: usize },
+}
+
+/// The item at `spot`, to change. A free function over the two fields it
+/// needs, so the rest of the world (like its content) can be read
+/// meanwhile.
+fn item_at_mut<'a>(
+    worn: &'a mut [Item],
+    furniture: &'a mut Furnishings,
+    spot: Spot,
+) -> Option<&'a mut Item> {
+    match spot {
+        Spot::Worn(i) => worn.get_mut(i),
+        Spot::Carried(path) => item::get_mut(worn, path),
+        Spot::Inside { piece, index } => furniture.number_mut(piece)?.contents.get_mut(index),
+    }
 }
 
 /// Something that happened, for the front-end to show or log.
@@ -155,6 +200,23 @@ pub enum Event {
     /// The player couldn't put an item away, and `blocked` says why. No
     /// time passes.
     CannotStore(Blocked),
+    /// The player loaded a cell holding `charge_kj` kJ into this item.
+    Reloaded {
+        item: ItemRef,
+        charge_kj: u32,
+    },
+    /// The player took the cell out of this item.
+    Unloaded(ItemRef),
+    /// The player switched this light on or off.
+    Switched {
+        item: ItemRef,
+        on: bool,
+    },
+    /// A light the player wears or carries went out: its cell ran flat.
+    WentOut(ItemRef),
+    /// The player couldn't load, unload or switch something, and
+    /// `blocked` says why. No time passes.
+    CannotPower(Blocked),
     /// The player followed a recipe for action number `action` on the tile
     /// at `at`, which was structure number `was` and is now what the
     /// recipe makes (it cut through a door, patched a crack…).
@@ -225,6 +287,12 @@ pub const WAIT_SECONDS: u64 = 5;
 pub const DROP_SECONDS: u64 = 1;
 /// Putting an item into a locker or another container.
 pub const STORE_SECONDS: u64 = 2;
+/// Loading a cell into something, swapping out the old one.
+pub const RELOAD_SECONDS: u64 = 10;
+/// Taking a cell out of something.
+pub const UNLOAD_SECONDS: u64 = 5;
+/// Switching a light on or off.
+pub const SWITCH_SECONDS: u64 = 1;
 
 /// How far you can reach into furniture, in steps: the tiles right around
 /// you (and your own). You can put things in furniture that close, and
@@ -338,12 +406,7 @@ impl World {
     /// do, and the brightest thing the player wears or carries.
     fn lights(&self) -> Vec<Light> {
         let z = self.player.z;
-        let light_of = |kind: u16| {
-            self.content
-                .item_types()
-                .get(usize::from(kind))
-                .map_or(0, |t| t.light)
-        };
+        let light_of = |item: &Item| power::light_now(item, self.content.item_types());
         let built = self.map.positions().filter(|p| p.z == z).map(|at| Light {
             at,
             reach: self.map.get(at).map_or(0, |tile| tile.light),
@@ -354,7 +417,7 @@ impl World {
             .filter(|f| f.at.z == z)
             .map(|f| Light {
                 at: f.at,
-                reach: light_of(f.item.kind),
+                reach: light_of(&f.item),
             });
         let held = self
             .worn
@@ -362,7 +425,7 @@ impl World {
             .chain(self.carried().into_iter().map(|(_, item)| item));
         let carried = Light {
             at: self.player,
-            reach: held.map(|item| light_of(item.kind)).max().unwrap_or(0),
+            reach: held.map(light_of).max().unwrap_or(0),
         };
         built
             .chain(lying)
@@ -559,6 +622,7 @@ impl World {
             Command::Drop(path) => self.drop_item(path),
             Command::Craft(craft) => self.craft(craft),
             Command::Store { item, into } => self.store(item, into),
+            Command::Power { item, act } => self.power(item, act),
             Command::Wait => {
                 let mut events = vec![Event::Waited];
                 self.pass_time(WAIT_SECONDS, &mut events);
@@ -621,7 +685,7 @@ impl World {
         if !self.knows(craft) {
             return Some(Blocked::NotKnown);
         }
-        interact::short_of(self, &craft.needs)
+        interact::short_of(self, &craft.needs, craft.seconds)
             .or_else(|| interact::missing_items(self, &craft.uses))
     }
 
@@ -641,6 +705,8 @@ impl World {
         if !self.is_conscious() {
             return events;
         }
+        let tools: Vec<(String, u8)> = craft.needs.clone().into_iter().collect();
+        self.draw_power(&tools, craft.seconds);
         let used = self.use_items(&craft.uses);
         let made = self.make(&craft, &used);
         let ctx = ItemContext {
@@ -744,11 +810,15 @@ impl World {
             .recipe_for(id, at)
             .cloned()
             .expect("interact checked there's a recipe");
+        // Which tools do the work, worked out before it changes anything.
+        let rule = &self.content.actions()[usize::from(action)];
+        let tools = interact::tools_used(self, at, rule);
         let mut events = Vec::new();
         self.pass_time(u64::from(recipe.seconds), &mut events);
         if !self.is_conscious() {
             return events;
         }
+        self.draw_power(&tools, recipe.seconds);
         let used = self.use_items(&recipe.uses);
         // The done line comes after everything heard while working, so
         // it's what the log ends on (then anything that fell).
@@ -980,20 +1050,231 @@ impl World {
         })
     }
 
-    /// The best level of `quality` among everything the player wears or
-    /// carries, or that's in furniture within reach, or 0 with nothing that
-    /// has it. A tool works from any pocket (decision D38), or from a
-    /// locker beside you (D57).
+    /// The best level of `quality` among everything at hand, or 0 with
+    /// nothing that has it, whatever the charge of their cells. A tool
+    /// works from any pocket (decision D38), or from a locker beside you
+    /// (D57).
     pub fn tool_level(&self, quality: &str) -> u8 {
-        let carried = self.carried().into_iter().map(|(_, item)| item);
-        self.worn
-            .iter()
-            .chain(carried)
-            .chain(self.items_in_reach())
-            .filter_map(|item| self.item_types().get(usize::from(item.kind)))
-            .filter_map(|kind| kind.qualities.get(quality).copied())
+        self.at_hand()
+            .into_iter()
+            .map(|(_, item)| self.level_of(item, quality))
             .max()
             .unwrap_or(0)
+    }
+
+    /// The charge `item` can draw on and the most its cell holds, in
+    /// joules: a power cell's own, or that of the cell in something that
+    /// runs on one. `None` for anything else, and for something with no
+    /// cell in it (decision D59).
+    pub fn charge(&self, item: &Item) -> Option<(u32, u32)> {
+        power::charge(item, self.item_types())
+    }
+
+    /// The level of `quality` that `item` has, or 0.
+    fn level_of(&self, item: &Item, quality: &str) -> u8 {
+        let kind = self.item_types().get(usize::from(item.kind));
+        kind.and_then(|k| k.qualities.get(quality).copied())
+            .unwrap_or(0)
+    }
+
+    /// Everything at hand, with where it is: what you wear, what you
+    /// carry, and what's in furniture within reach.
+    pub(crate) fn at_hand(&self) -> Vec<(Spot, &Item)> {
+        let worn = (0..).zip(&self.worn).map(|(i, item)| (Spot::Worn(i), item));
+        let carried = self.carried().into_iter();
+        let carried = carried.map(|(path, item)| (Spot::Carried(path), item));
+        let pieces = self.furniture.pieces();
+        let inside = self.pieces_in_reach().into_iter().flat_map(|(piece, _)| {
+            let contents = (0..).zip(&pieces[piece].contents);
+            contents.map(move |(index, item)| (Spot::Inside { piece, index }, item))
+        });
+        worn.chain(carried).chain(inside).collect()
+    }
+
+    /// The things at hand with at least `level` of `quality`, charged or
+    /// not, with where they are.
+    pub(crate) fn tools(&self, quality: &str, level: u8) -> Vec<(Spot, &Item)> {
+        self.at_hand()
+            .into_iter()
+            .filter(|(_, item)| self.level_of(item, quality) >= level)
+            .collect()
+    }
+
+    /// Takes the energy for `levels` of tool work lasting `seconds` out of
+    /// the cells of the tools that do it (decision D59). For each level, a
+    /// tool that needs no cell does it if there is one; otherwise the
+    /// first whose cell covers the work pays. A tool doing two of them
+    /// pays once.
+    fn draw_power(&mut self, levels: &[(String, u8)], seconds: u32) {
+        let types = self.content.item_types();
+        let mut paying: Vec<Spot> = Vec::new();
+        for (quality, level) in levels {
+            let tools = self.tools(quality, *level);
+            let free = tools
+                .iter()
+                .any(|(_, t)| power::needed_j(t, types, seconds) == 0);
+            let payer = tools
+                .iter()
+                .find(|(_, t)| power::can_run(t, types, seconds));
+            if let Some(&(spot, _)) = payer.filter(|_| !free)
+                && !paying.contains(&spot)
+            {
+                paying.push(spot);
+            }
+        }
+        for spot in paying {
+            let item = item_at_mut(&mut self.worn, &mut self.furniture, spot);
+            if let Some(item) = item {
+                power::draw(item, self.content.item_types(), seconds);
+            }
+        }
+    }
+
+    /// Loads, unloads or switches the carried item at `path` (D59).
+    /// Anything that can't be done costs no time.
+    fn power(&mut self, path: ItemPath, act: PowerAct) -> Vec<Event> {
+        let done = match act {
+            PowerAct::Reload => self.reload(path),
+            PowerAct::Unload => self.unload(path),
+            PowerAct::Switch => self.switch(path),
+        };
+        match done {
+            Ok((mut events, seconds)) => {
+                self.pass_time(seconds, &mut events);
+                events
+            }
+            Err(blocked) => vec![Event::CannotPower(blocked)],
+        }
+    }
+
+    /// The carried item at `path` and the item type number of the cell it
+    /// takes, if it's there and takes one.
+    fn powered_at(&self, path: ItemPath) -> Result<(&Item, u16), Blocked> {
+        let item = item::get(&self.worn, path).ok_or(Blocked::NotPossible)?;
+        let kind = &self.item_types()[usize::from(item.kind)];
+        let cell = kind
+            .power
+            .as_ref()
+            .and_then(|p| self.item_type_index(&p.cell));
+        cell.map(|cell| (item, cell)).ok_or(Blocked::NotPossible)
+    }
+
+    /// Loads the fullest carried cell that the item at `path` takes into
+    /// it, if it's fuller than the one there; the old one goes into a
+    /// pocket, or falls at your feet. Returns the events and the time.
+    fn reload(&mut self, mut path: ItemPath) -> Result<(Vec<Event>, u64), Blocked> {
+        let (item, takes) = self.powered_at(path)?;
+        let now = item.cell.as_ref().map(|c| c.charge_j);
+        // `rev` then `max_by_key`: the first of the fullest, since
+        // `max_by_key` keeps the last of equals.
+        let fullest = self
+            .carried()
+            .into_iter()
+            .filter(|(_, c)| c.kind == takes)
+            .rev()
+            .max_by_key(|(_, c)| c.charge_j)
+            .filter(|(_, c)| now.is_none_or(|j| c.charge_j > j))
+            .map(|(cell_path, _)| cell_path);
+        let cell_path = fullest.ok_or(Blocked::NoFullerCell)?;
+        let cell = item::take(&mut self.worn, cell_path).ok_or(Blocked::NotPossible)?;
+        // Taking the cell out of the same pocket, before the item, moves
+        // the item up one.
+        if (cell_path.worn, cell_path.pocket) == (path.worn, path.pocket)
+            && cell_path.index < path.index
+        {
+            path.index -= 1;
+        }
+        let charge_kj = u32::try_from(power::kj(u64::from(cell.charge_j))).unwrap_or(u32::MAX);
+        let item = item::get_mut(&mut self.worn, path).ok_or(Blocked::NotPossible)?;
+        let old = item.cell.replace(Box::new(cell));
+        let mut events = vec![Event::Reloaded {
+            item: item.id(),
+            charge_kj,
+        }];
+        events.extend(self.pocket_or_drop(old.map(|c| *c)));
+        Ok((events, RELOAD_SECONDS))
+    }
+
+    /// Takes the cell out of the item at `path` into a pocket, or at your
+    /// feet if there's no room, switching the item off.
+    fn unload(&mut self, path: ItemPath) -> Result<(Vec<Event>, u64), Blocked> {
+        self.powered_at(path)?;
+        let item = item::get_mut(&mut self.worn, path).ok_or(Blocked::NotPossible)?;
+        let cell = item.cell.take().ok_or(Blocked::NoCell)?;
+        item.on = false;
+        let mut events = vec![Event::Unloaded(item.id())];
+        events.extend(self.pocket_or_drop(Some(*cell)));
+        Ok((events, UNLOAD_SECONDS))
+    }
+
+    /// Switches the light at `path` off, or on if its cell has charge.
+    fn switch(&mut self, path: ItemPath) -> Result<(Vec<Event>, u64), Blocked> {
+        let types = self.content.item_types();
+        let item = item::get_mut(&mut self.worn, path).ok_or(Blocked::NotPossible)?;
+        if !power::is_switchable(item, types) {
+            return Err(Blocked::NotPossible);
+        }
+        if !item.on {
+            let (charge, _) = power::charge(item, types).ok_or(Blocked::NoCell)?;
+            if charge == 0 {
+                return Err(Blocked::Flat);
+            }
+        }
+        item.on = !item.on;
+        let events = vec![Event::Switched {
+            item: item.id(),
+            on: item.on,
+        }];
+        Ok((events, SWITCH_SECONDS))
+    }
+
+    /// Puts `item`, if there is one, in the first pocket it fits, or at
+    /// your feet if it fits none (with a `Fell` event).
+    fn pocket_or_drop(&mut self, item: Option<Item>) -> Vec<Event> {
+        let ctx = ItemContext {
+            types: self.content.item_types(),
+            materials: self.content.materials(),
+        };
+        let items = item.into_iter().collect();
+        let (left, _) = stow_all(&mut self.worn, items, ctx, Event::PickedUp);
+        self.drop_at(self.player, left)
+    }
+
+    /// One second of power (decision D59): every light that's on uses its
+    /// cell, wherever it is (one you wear or carry that goes out says so),
+    /// and every charger charges a cell inside it.
+    fn run_power(&mut self, events: &mut Vec<Event>) {
+        let types = self.content.item_types();
+        let kinds = self.content.furniture();
+        // Two passes over what you wear: first what's in the pockets, then
+        // the worn things themselves, since Rust won't lend out both at
+        // once to change.
+        let pocketed = self
+            .worn
+            .iter_mut()
+            .flat_map(|w| w.pockets.iter_mut().flatten());
+        for item in pocketed {
+            if power::burn_one_second(item, types) {
+                events.push(Event::WentOut(item.id()));
+            }
+        }
+        for item in &mut self.worn {
+            if power::burn_one_second(item, types) {
+                events.push(Event::WentOut(item.id()));
+            }
+        }
+        for lying in &mut self.floor_items {
+            power::burn_one_second(&mut lying.item, types);
+        }
+        for piece in self.furniture.pieces_mut() {
+            for item in &mut piece.contents {
+                power::burn_one_second(item, types);
+            }
+            let watts = kinds
+                .get(usize::from(piece.kind))
+                .map_or(0, |k| k.charges_w);
+            power::charge_one_second(&mut piece.contents, types, watts);
+        }
     }
 
     /// Picks up everything at `at` that fits in a pocket, one item at a
@@ -1098,6 +1379,7 @@ impl World {
             }
             self.breathe(events);
             self.keep_warm(events);
+            self.run_power(events);
             if !self.is_conscious() {
                 return;
             }
@@ -3075,7 +3357,7 @@ mod tests {
         assert_eq!(world.items_at(PILE).count(), 4);
         assert_eq!(world.items_at(world.player()).count(), 0);
         assert_eq!(world.floor_items().len(), 4);
-        assert_eq!(world.item_types().len(), 4);
+        assert_eq!(world.item_types().len(), 7);
         assert_eq!(world.worn().len(), 1);
     }
 
@@ -3317,6 +3599,325 @@ mod tests {
         cut(&mut world, Pos::new(2, 1, 0));
         world.apply(Command::Wait);
         assert!(world.map().air(beyond).unwrap().total() > 0);
+    }
+
+    // --- Power cells (D59) ------------------------------------------------------
+
+    /// The test cell (10 kJ), torch (light 3, 10 W) and saw (LASER 2,
+    /// 100 W), both taking the cell.
+    const CELL: u16 = 4;
+    const TORCH: u16 = 5;
+    const SAW: u16 = 6;
+
+    /// A new test cell holding `joules`.
+    fn cell(world: &World, joules: u32) -> Item {
+        let mut cell = Item::new(CELL, 0, world.item_types());
+        cell.charge_j = joules;
+        cell
+    }
+
+    /// A new `kind` with a cell holding `joules` in it, or with none.
+    fn powered(world: &World, kind: u16, joules: Option<u32>) -> Item {
+        let mut item = Item::new(kind, 0, world.item_types());
+        item.cell = joules.map(|j| Box::new(cell(world, j)));
+        item
+    }
+
+    /// The dark door room (`#@+.#`, a steel door needing LASER 2 and 60 s
+    /// to cut) with just `items` in the first pocket, made by `make`.
+    fn power_world(make: impl Fn(&World) -> Vec<Item>) -> World {
+        let mut world = cutting_world(1);
+        world.worn[0].pockets[0] = make(&world);
+        world
+    }
+
+    /// The charge of the cell in the first pocket's item number `index`.
+    fn charge_at(world: &World, index: usize) -> Option<u32> {
+        world
+            .charge(&world.worn[0].pockets[0][index])
+            .map(|(j, _)| j)
+    }
+
+    fn pocket_path(index: usize) -> ItemPath {
+        ItemPath {
+            worn: 0,
+            pocket: 0,
+            index,
+        }
+    }
+
+    fn power(world: &mut World, index: usize, act: PowerAct) -> Vec<Event> {
+        let item = pocket_path(index);
+        without_ambient(world.apply(Command::Power { item, act }))
+    }
+
+    #[test]
+    fn a_powered_tool_counts_only_while_its_cell_covers_the_work() {
+        let door = Pos::new(2, 1, 0);
+        let low = |joules| {
+            let world = power_world(|w| vec![powered(w, SAW, joules)]);
+            interact::blocked(&world, door, CUT)
+        };
+        let short = |have_kj| Blocked::LowCharge {
+            item: SAW,
+            need_kj: 6,
+            have_kj,
+        };
+        assert_eq!(low(Some(5999)), Some(short(5)), "100 W for 60 s is 6 kJ");
+        assert_eq!(low(None), Some(short(0)), "no cell at all");
+        assert_eq!(low(Some(6000)), None);
+        let mut world = power_world(|w| vec![powered(w, SAW, Some(7000))]);
+        assert_eq!(world.tool_level("LASER"), 2, "whatever its charge");
+        cut(&mut world, door);
+        assert_eq!(world.map().get(door), Some(Tile::FLOOR));
+        assert_eq!(charge_at(&world, 0), Some(1000), "the cut used 6 kJ");
+    }
+
+    #[test]
+    fn a_tool_that_needs_no_cell_is_used_before_one_that_does() {
+        let mut world = cutting_world(2); // a plain cutter with LASER 2
+        let saw = powered(&world, SAW, Some(7000));
+        world.worn[0].pockets[0].push(saw);
+        cut(&mut world, Pos::new(2, 1, 0));
+        assert_eq!(charge_at(&world, 1), Some(7000), "the saw wasn't used");
+    }
+
+    #[test]
+    fn whichever_tool_does_the_work_pays_worn_carried_or_in_a_cabinet() {
+        let laser = [("LASER".to_string(), 2)];
+        let mut world = cabinet_world("[]");
+        let saw = powered(&world, SAW, Some(7000));
+        world
+            .furniture
+            .at_mut(&world.map, CABINET)
+            .unwrap()
+            .contents
+            .push(saw);
+        world.draw_power(&laser, 10);
+        let inside = &world.furniture_at(CABINET).unwrap().contents[0];
+        assert_eq!(world.charge(inside), Some((6000, 10_000)), "in the cabinet");
+        let worn_saw = powered(&world, SAW, Some(7000));
+        world.worn.insert(0, worn_saw);
+        world.draw_power(&laser, 10);
+        assert_eq!(
+            world.charge(&world.worn[0]),
+            Some((6000, 10_000)),
+            "worn first"
+        );
+    }
+
+    #[test]
+    fn a_worn_light_going_out_says_so_too() {
+        let mut world = power_world(|_| Vec::new());
+        let mut headlamp = powered(&world, TORCH, Some(15));
+        headlamp.on = true;
+        world.worn.push(headlamp);
+        let events = without_ambient(world.apply(Command::Wait));
+        let torch = ItemRef {
+            kind: TORCH,
+            material: 0,
+        };
+        assert!(events.contains(&Event::WentOut(torch)));
+    }
+
+    #[test]
+    fn a_tool_doing_two_jobs_at_once_pays_once() {
+        let mut world = power_world(|w| vec![powered(w, SAW, Some(5000))]);
+        let both = [("LASER".to_string(), 2), ("LASER".to_string(), 1)];
+        world.draw_power(&both, 10);
+        assert_eq!(charge_at(&world, 0), Some(4000), "100 W for 10 s, once");
+    }
+
+    #[test]
+    fn loading_swaps_in_the_fullest_cell_you_carry() {
+        let mut world =
+            power_world(|w| vec![cell(w, 3000), powered(w, TORCH, None), cell(w, 8000)]);
+        let torch = ItemRef {
+            kind: TORCH,
+            material: 0,
+        };
+        let loaded = Event::Reloaded {
+            item: torch,
+            charge_kj: 8,
+        };
+        assert_eq!(power(&mut world, 1, PowerAct::Reload), [loaded]);
+        assert_eq!(world.seconds(), RELOAD_SECONDS);
+        assert_eq!(world.worn[0].pockets[0].len(), 2);
+        assert_eq!(charge_at(&world, 1), Some(8000));
+        let no_fuller = [Event::CannotPower(Blocked::NoFullerCell)];
+        assert_eq!(power(&mut world, 1, PowerAct::Reload), no_fuller);
+        assert_eq!(world.seconds(), RELOAD_SECONDS, "no time passes");
+
+        // A fuller cell ahead of it in the same pocket: the torch moves up
+        // one as it comes out, and the old cell goes back in a pocket.
+        let fuller = cell(&world, 9000);
+        world.worn[0].pockets[0].insert(0, fuller);
+        let events = power(&mut world, 2, PowerAct::Reload);
+        assert!(matches!(events[..], [Event::Reloaded { charge_kj: 9, .. }]));
+        let charges: Vec<Option<u32>> = (0..3).map(|i| charge_at(&world, i)).collect();
+        assert_eq!(charges, [Some(3000), Some(9000), Some(8000)]);
+    }
+
+    #[test]
+    fn only_something_that_takes_a_cell_can_be_loaded() {
+        let mut world = power_world(|w| vec![Item::new(SCRAP, 0, w.item_types())]);
+        let cannot = [Event::CannotPower(Blocked::NotPossible)];
+        assert_eq!(power(&mut world, 0, PowerAct::Reload), cannot);
+        assert_eq!(power(&mut world, 0, PowerAct::Unload), cannot);
+        assert_eq!(power(&mut world, 0, PowerAct::Switch), cannot);
+        assert_eq!(
+            power(&mut world, 5, PowerAct::Reload),
+            cannot,
+            "nothing there"
+        );
+        assert_eq!(power(&mut world, 5, PowerAct::Switch), cannot);
+        assert_eq!(world.seconds(), 0);
+    }
+
+    #[test]
+    fn unloading_takes_the_cell_out_and_switches_it_off() {
+        let mut world = power_world(|w| vec![powered(w, TORCH, Some(5000))]);
+        world.worn[0].pockets[0][0].on = true;
+        let torch = ItemRef {
+            kind: TORCH,
+            material: 0,
+        };
+        assert_eq!(
+            power(&mut world, 0, PowerAct::Unload),
+            [Event::Unloaded(torch)]
+        );
+        assert_eq!(world.seconds(), UNLOAD_SECONDS);
+        assert!(!world.worn[0].pockets[0][0].on);
+        assert_eq!(charge_at(&world, 1), Some(5000), "the cell, pocketed");
+        let none = [Event::CannotPower(Blocked::NoCell)];
+        assert_eq!(power(&mut world, 0, PowerAct::Unload), none);
+    }
+
+    #[test]
+    fn a_cell_with_no_room_in_your_pockets_falls_at_your_feet() {
+        // Both pockets full to the litre: the torch and nine scraps, and
+        // ten scraps.
+        let mut world = power_world(|w| vec![powered(w, TORCH, Some(5000))]);
+        for pocket in 0..2 {
+            let fill = 10 - world.worn[0].pockets[pocket].len();
+            let scraps = vec![Item::new(SCRAP, 0, world.item_types()); fill];
+            world.worn[0].pockets[pocket].extend(scraps);
+        }
+        let events = power(&mut world, 0, PowerAct::Unload);
+        let cell = ItemRef {
+            kind: CELL,
+            material: 0,
+        };
+        assert_eq!(events.last(), Some(&Event::Fell(cell)));
+        assert_eq!(world.items_at(world.player()).count(), 1);
+    }
+
+    #[test]
+    fn a_light_shines_only_when_on_and_goes_out_when_its_cell_runs_flat() {
+        let mut world = power_world(|w| {
+            vec![
+                powered(w, TORCH, None),
+                powered(w, TORCH, Some(0)),
+                powered(w, TORCH, Some(25)),
+            ]
+        });
+        let beside = Pos::new(2, 1, 0);
+        assert!(!world.is_lit(beside), "a dark room");
+        let no_cell = [Event::CannotPower(Blocked::NoCell)];
+        assert_eq!(power(&mut world, 0, PowerAct::Switch), no_cell);
+        let flat = [Event::CannotPower(Blocked::Flat)];
+        assert_eq!(power(&mut world, 1, PowerAct::Switch), flat);
+        let torch = ItemRef {
+            kind: TORCH,
+            material: 0,
+        };
+        let on = Event::Switched {
+            item: torch,
+            on: true,
+        };
+        assert_eq!(power(&mut world, 2, PowerAct::Switch), [on]);
+        assert_eq!(world.seconds(), SWITCH_SECONDS);
+        assert!(world.is_lit(beside));
+        assert_eq!(charge_at(&world, 2), Some(15), "10 W for a second");
+        // Waiting 5 s: flat after 2 more.
+        let events = without_ambient(world.apply(Command::Wait));
+        assert!(events.contains(&Event::WentOut(torch)));
+        assert!(!world.worn[0].pockets[0][2].on);
+        assert!(!world.is_lit(beside));
+    }
+
+    #[test]
+    fn switching_a_light_off_saves_its_cell() {
+        let mut world = power_world(|w| vec![powered(w, TORCH, Some(5000))]);
+        power(&mut world, 0, PowerAct::Switch);
+        let events = power(&mut world, 0, PowerAct::Switch);
+        assert!(matches!(events[..], [Event::Switched { on: false, .. }]));
+        world.apply(Command::Wait);
+        assert_eq!(charge_at(&world, 0), Some(4990), "only the first second");
+    }
+
+    #[test]
+    fn a_light_left_on_lights_where_it_lies_and_still_uses_its_cell() {
+        let mut world = power_world(|w| vec![powered(w, TORCH, Some(5000))]);
+        power(&mut world, 0, PowerAct::Switch);
+        world.apply(Command::Drop(pocket_path(0)));
+        world.apply(Command::Wait);
+        let lying = &world.floor_items()[0].item;
+        assert_eq!(world.charge(lying), Some((4930, 10_000)), "7 s at 10 W");
+        assert!(world.is_lit(Pos::new(2, 1, 0)));
+        // In a cabinet, it shines on nothing, but still burns.
+        let mut world = cabinet_world("[]");
+        let mut torch = powered(&world, TORCH, Some(5000));
+        torch.on = true;
+        world
+            .furniture
+            .at_mut(&world.map, CABINET)
+            .unwrap()
+            .contents
+            .push(torch);
+        world.apply(Command::Wait);
+        let inside = &world.furniture_at(CABINET).unwrap().contents[0];
+        assert_eq!(world.charge(inside), Some((4950, 10_000)));
+    }
+
+    #[test]
+    fn a_charger_fills_the_cells_put_in_it_one_at_a_time() {
+        let rows = ["#####", "#@d.#", "#####"];
+        let json = format!(
+            r##"{{ "id": "t", "name": "T", "player_wears": [ {{ "item": "suit" }} ],
+                  "legend": {{ "#": "wall", ".": "floor",
+                     "d": {{ "structure": "floor", "furniture": "dock",
+                             "contents": [ {{ "item": "cell", "charge_percent": 0 }},
+                                           {{ "item": "torch", "charge_percent": 0 }} ] }} }},
+                  "decks": [ {{ "rows": {rows:?} }} ] }}"##
+        );
+        let mut world = World::new(parse_map(&json).unwrap(), TEST_SEED);
+        world.apply(Command::Wait);
+        let inside = &world.furniture_at(Pos::new(2, 1, 0)).unwrap().contents;
+        let charges: Vec<_> = inside.iter().map(|i| world.charge(i)).collect();
+        assert_eq!(
+            charges,
+            [Some((500, 10_000)), Some((0, 10_000))],
+            "100 W for 5 s"
+        );
+    }
+
+    #[test]
+    fn charge_and_switches_are_part_of_the_state_hash() {
+        let base = power_world(|w| vec![powered(w, TORCH, Some(5000))]);
+        let mut charged = base.clone();
+        charged.worn[0].pockets[0][0]
+            .cell
+            .as_mut()
+            .unwrap()
+            .charge_j += 1;
+        let mut on = base.clone();
+        on.worn[0].pockets[0][0].on = true;
+        let mut empty = base.clone();
+        empty.worn[0].pockets[0][0].cell = None;
+        for other in [charged, on, empty] {
+            assert_ne!(base.state_hash(), other.state_hash());
+        }
     }
 
     #[test]

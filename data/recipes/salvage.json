@@ -54,6 +54,62 @@
       ]
     },
     {
+      "id": "smash_your_stasis_chamber",
+      "action": "smash",
+      "furniture": "your_stasis_chamber",
+      "seconds": 90,
+      "gives": [
+        {
+          "item": "scrap",
+          "material": "steel",
+          "count": [1, 3]
+        },
+        {
+          "item": "scrap",
+          "material": "glass",
+          "count": [0, 2]
+        },
+        {
+          "item": "scrap",
+          "material": "polyester",
+          "count": [0, 1]
+        }
+      ]
+    },
+    {
+      "id": "dismantle_your_stasis_chamber",
+      "action": "dismantle",
+      "furniture": "your_stasis_chamber",
+      "seconds": 240,
+      "needs": { "SCREW": 1 },
+      "gives": [
+        {
+          "item": "scrap",
+          "material": "steel",
+          "count": 4
+        },
+        {
+          "item": "scrap",
+          "material": "glass",
+          "count": 2
+        },
+        {
+          "item": "scrap",
+          "material": "polyester",
+          "count": 2
+        },
+        {
+          "item": "scrap",
+          "material": "copper",
+          "count": 1
+        },
+        {
+          "item": "power_cell",
+          "count": 1
+        }
+      ]
+    },
+    {
       "id": "smash_bunk",
       "action": "smash",
       "furniture": "bunk",

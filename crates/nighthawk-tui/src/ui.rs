@@ -1122,6 +1122,9 @@ fn inventory_lines(world: &World, selected: usize) -> Vec<Line<'static>> {
             lines.push(Line::styled(pocket_line(world, pocket, held), dim));
             for item in held {
                 lines.push(carried_line(world, item, next == selected));
+                // Its charge on a line of its own, so long names still fit.
+                let power = power_text(world, item);
+                lines.extend(power.map(|p| Line::styled(format!("      {p}"), dim)));
                 next += 1;
             }
         }
@@ -1131,6 +1134,7 @@ fn inventory_lines(world: &World, selected: usize) -> Vec<Line<'static>> {
         Line::raw(format!("Carrying {} in all", kilograms(total))),
         Line::raw(""),
         Line::styled("j/k choose   d drop   p put away   Esc close", dim),
+        Line::styled("r load a cell   u take it out   a switch on/off", dim),
     ]);
     lines
 }
@@ -1161,6 +1165,22 @@ fn carried_line(world: &World, item: &Item, chosen: bool) -> Line<'static> {
         Style::new()
     };
     Line::styled(text, style)
+}
+
+/// What the inventory says about an item's power: a cell's charge ("180/300
+/// kJ"); for something that runs on a cell, whether it's on and its cell's
+/// charge ("on, cell 120/300 kJ"), or "no cell"; nothing for anything else.
+fn power_text(world: &World, item: &Item) -> Option<String> {
+    let kind = world.item_types().get(usize::from(item.kind))?;
+    let charge = world
+        .charge(item)
+        .map(|(have, full)| format!("{}/{} kJ", have / 1000, full / 1000));
+    if kind.cell.is_some() {
+        return charge;
+    }
+    kind.power.as_ref()?;
+    let on = if item.on { "on, " } else { "" };
+    Some(charge.map_or_else(|| "no cell".into(), |c| format!("{on}cell {c}")))
 }
 
 /// Grams as kilograms with one decimal place, rounded: 785 → "0.8 kg".
@@ -1442,9 +1462,10 @@ mod tests {
     #[test]
     fn furniture_draws_on_every_tile_it_covers_and_look_mode_names_it() {
         let world = real_world();
+        // Your own chamber: green, for its status light.
         let chamber = Pos::new(11, 6, 0);
-        let cyan = Style::new().fg(Color::Cyan);
-        assert_eq!(glyph_at(&world, chamber, None), ("0".into(), cyan));
+        let green = Style::new().fg(Color::Green);
+        assert_eq!(glyph_at(&world, chamber, None), ("0".into(), green));
         assert_eq!(glyph_at(&world, Pos::new(12, 6, 0), None).0, "0");
         assert_eq!(
             glyph_at(&world, chamber, Some(Overlay::Air)).0,
@@ -1456,7 +1477,7 @@ mod tests {
             (lines[2].as_str(), lines[3].as_str()),
             ("Stasis chamber", "Steel")
         );
-        assert!(seen_description(&world, chamber).starts_with("A coffin-sized pod"));
+        assert!(seen_description(&world, chamber).starts_with("Your own: the pod you woke in"));
         let options = interact_texts(&world, chamber);
         assert_eq!(options[1], "Stasis chamber");
         let locker = Pos::new(7, 4, 0);
@@ -1487,8 +1508,13 @@ mod tests {
         assert!(seen_description(&world, locker).contains("It's empty. "));
         assert_eq!(
             inside_here(&world, Pos::new(11, 6, 0)),
+            "It's empty. ",
+            "your own chamber holds what it charges"
+        );
+        assert_eq!(
+            inside_here(&world, Pos::new(13, 1, 0)),
             "",
-            "a chamber holds nothing"
+            "the others hold nothing"
         );
         let options = interact_texts(&world, Pos::new(12, 6, 0));
         assert_eq!(options[1], "Stasis chamber");
@@ -1500,7 +1526,7 @@ mod tests {
         let chamber = Pos::new(11, 6, 0);
         assert_eq!(glyph_at(&world, chamber, None), ("0".into(), REMEMBERED));
         assert_eq!(look_texts(&world, chamber)[2], "Stasis chamber");
-        assert!(remembered_description(&world, chamber).starts_with("A coffin-sized pod"));
+        assert!(remembered_description(&world, chamber).starts_with("Your own: the pod"));
     }
 
     #[test]
@@ -1818,7 +1844,15 @@ mod tests {
             action: number(&world, "take_out"),
         });
         let lamp = world.item_type_index("hand_lamp").unwrap();
-        assert_eq!(world.carried_count(lamp), 1);
+        let (path, _) = world
+            .carried()
+            .into_iter()
+            .find(|(_, item)| item.kind == lamp)
+            .unwrap();
+        world.apply(Command::Power {
+            item: path,
+            act: nighthawk_sim::PowerAct::Switch,
+        });
         world
     }
 
@@ -2134,7 +2168,7 @@ mod tests {
             lines[1],
             "  Left hip pocket  0.0/1.0 L  0.0/2.5 kg  (empty)"
         );
-        assert_eq!(lines.len(), 8, "four pockets, total, blank, help");
+        assert_eq!(lines.len(), 9, "four pockets, total, blank, two of help");
         assert_eq!(lines[5], "Carrying 0.9 kg in all");
     }
 
@@ -2142,17 +2176,51 @@ mod tests {
     fn carried_items_show_under_their_pocket_with_the_chosen_one_reversed() {
         let world = with_the_gear();
         let lines = inventory_lines(&world, 0);
+        // The cutter weighs 1.1 kg, and its cell 0.3 kg more.
         assert_eq!(
             lines[1].to_string(),
-            "  Left hip pocket  0.9/1.0 L  1.6/2.5 kg"
+            "  Left hip pocket  0.9/1.0 L  1.9/2.5 kg"
         );
         assert_eq!(
             lines[2].to_string(),
-            "    basic laser cutter (Aluminium Alloy)  1.1 kg"
+            "    basic laser cutter (Aluminium Alloy)  1.4 kg"
+        );
+        assert_eq!(lines[3].to_string(), "      cell 150/300 kJ", "under it");
+        assert_eq!(
+            lines[6].to_string(),
+            "    hand lamp (Aluminium Alloy)  0.8 kg"
+        );
+        assert_eq!(
+            lines[7].to_string(),
+            "      on, cell 119/300 kJ",
+            "a second on: 120 kJ less 20 J"
         );
         assert!(lines[2].style.add_modifier.contains(Modifier::REVERSED));
         let unchosen = inventory_lines(&world, 5);
         assert!(!unchosen[2].style.add_modifier.contains(Modifier::REVERSED));
+    }
+
+    #[test]
+    fn a_cell_shows_its_charge_and_an_empty_lamp_says_so() {
+        let mut world = with_the_gear();
+        let lamp = world.item_type_index("hand_lamp").unwrap();
+        let (path, _) = world
+            .carried()
+            .into_iter()
+            .find(|(_, item)| item.kind == lamp)
+            .unwrap();
+        world.apply(Command::Power {
+            item: path,
+            act: nighthawk_sim::PowerAct::Unload,
+        });
+        let lines: Vec<String> = inventory_lines(&world, 9)
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+        assert_eq!(lines[6], "    hand lamp (Aluminium Alloy)  0.4 kg");
+        assert_eq!(lines[7], "      no cell");
+        assert_eq!(lines[8], "    power cell (Aluminium Alloy)  0.3 kg");
+        assert_eq!(lines[9], "      119/300 kJ");
     }
 
     fn crafting_texts(world: &World, selected: usize) -> Vec<String> {

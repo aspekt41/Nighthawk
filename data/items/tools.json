@@ -4,24 +4,32 @@
     {
       "id": "basic_laser_cutter",
       "name": "basic laser cutter",
-      "description": "A handheld fibre-laser cutter, about a kilowatt. Enough to slice through thin aluminium; steel will laugh at it.",
+      "description": "A handheld fibre-laser cutter with a slot for a power cell. It draws about a kilowatt while it cuts: enough to slice through thin aluminium; steel will laugh at it.",
       "glyph": "(",
       "material": "aluminium_alloy",
       "volume_ml": 800,
       "solid_percent": 50,
       "qualities": {
         "LASER": 1
+      },
+      "power": {
+        "watts": 1000,
+        "cell": "power_cell"
       }
     },
     {
       "id": "hand_lamp",
       "name": "hand lamp",
-      "description": "A rubber-cased hand lamp on a wrist loop. Its cell still holds a charge, enough to light a few metres around you.",
+      "description": "A rubber-cased hand lamp on a wrist loop, with a slot for a power cell. Switched on, it lights a few metres around you, drawing 20 watts.",
       "glyph": "!",
       "material": "aluminium_alloy",
       "volume_ml": 400,
       "solid_percent": 40,
-      "light": 4
+      "light": 4,
+      "power": {
+        "watts": 20,
+        "cell": "power_cell"
+      }
     },
     {
       "id": "screwdriver",

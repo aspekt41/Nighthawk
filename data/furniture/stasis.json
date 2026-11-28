@@ -9,6 +9,17 @@
       "material": "steel",
       "colour": "cyan",
       "size": [2, 1]
+    },
+    {
+      "id": "your_stasis_chamber",
+      "name": "stasis chamber",
+      "description": "Your own: the pod you woke in, its lid still hinged open. A green status light blinks on the rim: the lifepod's emergency cell keeps a charging port alive inside. Leave a power cell, or something with one in it, and it slowly fills.",
+      "glyph": "0",
+      "material": "steel",
+      "colour": "green",
+      "size": [2, 1],
+      "holds_ml": 2000,
+      "charges_w": 100
     }
   ]
 }

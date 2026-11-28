@@ -1,0 +1,17 @@
+{
+  "$schema": "../schema/items.schema.json",
+  "items": [
+    {
+      "id": "power_cell",
+      "name": "power cell",
+      "description": "A fist-sized lithium cell in a dented aluminium case, the kind that slots into ship tools. Full, it holds 300 kJ: two minutes of laser cutting, or hours of light.",
+      "glyph": "&",
+      "material": "aluminium_alloy",
+      "volume_ml": 150,
+      "solid_percent": 80,
+      "cell": {
+        "capacity_kj": 300
+      }
+    }
+  ]
+}
