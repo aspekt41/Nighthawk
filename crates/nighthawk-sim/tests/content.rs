@@ -11,7 +11,7 @@ use std::fs;
 use std::path::PathBuf;
 
 use nighthawk_sim::{
-    Command, Dir, Event, LoadedMap, MapError, Piece, Pos, Tile, Vertical, World, parse_map,
+    Command, Dir, Event, LoadedMap, MapError, Piece, Place, Pos, Tile, Vertical, World, parse_map,
 };
 
 /// The number of the shipped action with this id, like `"cut"`.
@@ -482,7 +482,7 @@ fn the_cutter_runs_on_its_cell_and_your_own_chamber_charges_it() {
         .unwrap();
     world.apply(Command::Store {
         item: path,
-        into: yours,
+        into: Place::Furniture(yours),
     });
     for _ in 0..12 {
         world.apply(Command::Wait);
@@ -510,7 +510,7 @@ fn beside_the_gear_locker_its_tools_are_at_hand_and_things_can_go_back_in() {
     let (first, _) = world.carried()[0];
     let events = world.apply(Command::Store {
         item: first,
-        into: GEAR_LOCKER,
+        into: Place::Furniture(GEAR_LOCKER),
     });
     assert!(events.iter().any(|e| matches!(e, Event::Stored { .. })));
     assert_eq!(world.furniture_at(GEAR_LOCKER).unwrap().contents.len(), 1);

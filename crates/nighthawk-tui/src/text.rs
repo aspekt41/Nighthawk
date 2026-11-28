@@ -103,8 +103,22 @@ fn item_event_text(world: &World, event: Event) -> Option<String> {
         Event::Crafted { item, .. } => {
             Some(format!("You make {}.", a_or_an(&item_name(world, item))))
         }
+        Event::Pocketed { item, worn, pocket } => Some(format!(
+            "You put the {} in your {}.",
+            item_name(world, item),
+            pocket_name(world, worn, pocket)
+        )),
         _ => None,
     }
+}
+
+/// The name of pocket number `pocket` of worn item number `worn`, like
+/// "left hip pocket", or just "pocket" if there's no such pocket.
+pub fn pocket_name(world: &World, worn: usize, pocket: usize) -> String {
+    let wearing = world.worn().get(worn);
+    let kind = wearing.and_then(|w| world.item_types().get(usize::from(w.kind)));
+    let found = kind.and_then(|k| k.pockets().get(pocket));
+    found.map_or_else(|| "pocket".into(), |p| p.name.clone())
 }
 
 /// `name` after "a", or "an" if it starts with a vowel: "a shiv (Bone)",
@@ -220,6 +234,7 @@ pub fn describe(event: Event) -> Option<String> {
 fn storing_text(event: Event) -> String {
     match event {
         Event::Stored { .. } => "You put it away.".into(),
+        Event::Pocketed { .. } => "You move it to another pocket.".into(),
         Event::CannotStore(blocked) => cannot_store_text(blocked),
         _ => power_text(None, event)
             .or_else(|| dress_text(None, event))
@@ -951,6 +966,33 @@ mod tests {
         assert_eq!(
             blocked_short(missing, 0, Some(&world)),
             "needs 1 ductile scr"
+        );
+    }
+
+    #[test]
+    fn moving_to_another_pocket_names_the_pocket() {
+        let world = real_world();
+        let shoes = ItemRef {
+            kind: world.item_type_index("deck_shoes").unwrap(),
+            material: world.content().material_index("polyester").unwrap(),
+        };
+        let moved = |worn, pocket| Event::Pocketed {
+            item: shoes,
+            worn,
+            pocket,
+        };
+        assert_eq!(
+            describe_in(&world, moved(0, 2)).as_deref(),
+            Some("You put the deck shoes (Polyester) in your left leg pocket.")
+        );
+        assert_eq!(
+            describe_in(&world, moved(5, 0)).as_deref(),
+            Some("You put the deck shoes (Polyester) in your pocket."),
+            "a pocket that isn't there"
+        );
+        assert_eq!(
+            describe(moved(0, 2)).as_deref(),
+            Some("You move it to another pocket.")
         );
     }
 

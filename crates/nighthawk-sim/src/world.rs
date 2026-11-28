@@ -83,11 +83,12 @@ pub enum Command {
     /// list of crafts), from what's in your pockets or in furniture within
     /// reach (D56, D57).
     Craft(u16),
-    /// Put the carried item at `item` into the furniture (a locker, say)
-    /// covering the tile at `into`, which must be within [`REACH`] (D57).
+    /// Put the carried item at `item` somewhere else: into the furniture
+    /// (a locker, say) covering a tile within [`REACH`] (D57), or into
+    /// another of your pockets (D62).
     Store {
         item: ItemPath,
-        into: Pos,
+        into: Place,
     },
     /// Load, unload or switch the carried item at `item`, which runs on a
     /// power cell (D59).
@@ -118,6 +119,16 @@ pub enum ItemAt {
     Carried(ItemPath),
     Floor(usize),
     Inside { piece: usize, index: usize },
+}
+
+/// Where a carried item can be put.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Place {
+    /// Into the furniture covering the tile at `.0`, like a locker beside
+    /// you.
+    Furniture(Pos),
+    /// Into pocket number `pocket` of worn item number `worn`.
+    Pocket { worn: usize, pocket: usize },
 }
 
 /// What to do with something that runs on a power cell.
@@ -220,8 +231,15 @@ pub enum Event {
         item: ItemRef,
         into: u16,
     },
-    /// The player couldn't put an item away, and `blocked` says why. No
-    /// time passes.
+    /// The player moved this item into pocket number `pocket` of worn item
+    /// number `worn`.
+    Pocketed {
+        item: ItemRef,
+        worn: usize,
+        pocket: usize,
+    },
+    /// The player couldn't put an item away, or move it to another
+    /// pocket, and `blocked` says why. No time passes.
     CannotStore(Blocked),
     /// The player loaded a cell holding `charge_kj` kJ into this item.
     Reloaded {
@@ -317,6 +335,8 @@ pub const WAIT_SECONDS: u64 = 5;
 pub const DROP_SECONDS: u64 = 1;
 /// Putting an item into a locker or another container.
 pub const STORE_SECONDS: u64 = 2;
+/// Moving an item from one of your pockets to another.
+pub const POCKET_SECONDS: u64 = 2;
 /// Loading a cell into something, swapping out the old one.
 pub const RELOAD_SECONDS: u64 = 10;
 /// Taking a cell out of something.
@@ -1039,9 +1059,57 @@ impl World {
         }
     }
 
+    /// Puts the carried item at `path` into furniture or another pocket.
+    fn store(&mut self, path: ItemPath, into: Place) -> Vec<Event> {
+        match into {
+            Place::Furniture(at) => self.store_in_furniture(path, at),
+            Place::Pocket { worn, pocket } => self.move_to_pocket(path, worn, pocket),
+        }
+    }
+
+    /// Why the carried item at `path` can't go into pocket number `pocket`
+    /// of worn item number `worn`, if it can't: there's no such item or
+    /// pocket, or it's already in that pocket (`NotPossible`), or it
+    /// doesn't fit beside what's there (`Full`) (decision D62).
+    pub fn pocket_blocked(&self, path: ItemPath, worn: usize, pocket: usize) -> Option<Blocked> {
+        let ctx = self.item_context();
+        let item = item::get(&self.worn, path);
+        let wearing = self.worn.get(worn);
+        let pocket_type =
+            wearing.and_then(|w| ctx.types[usize::from(w.kind)].pockets().get(pocket));
+        let elsewhere = (path.worn, path.pocket) != (worn, pocket);
+        match (item, wearing, pocket_type) {
+            (Some(item), Some(wearing), Some(pocket_type)) if elsewhere => {
+                let fits = ctx.fits(pocket_type, &wearing.pockets[pocket], item);
+                (!fits).then_some(Blocked::Full)
+            }
+            _ => Some(Blocked::NotPossible),
+        }
+    }
+
+    /// Moves the carried item at `path` into pocket number `pocket` of
+    /// worn item number `worn`, if nothing blocks it.
+    fn move_to_pocket(&mut self, path: ItemPath, worn: usize, pocket: usize) -> Vec<Event> {
+        if let Some(blocked) = self.pocket_blocked(path, worn, pocket) {
+            return vec![Event::CannotStore(blocked)];
+        }
+        // `pocket_blocked` checked the item and the pocket are there, and
+        // they're different pockets, so taking the item out first leaves
+        // the destination where it was.
+        let item = item::take(&mut self.worn, path).expect("checked");
+        let mut events = vec![Event::Pocketed {
+            item: item.id(),
+            worn,
+            pocket,
+        }];
+        self.worn[worn].pockets[pocket].push(item);
+        self.pass_time(POCKET_SECONDS, &mut events);
+        events
+    }
+
     /// Puts the carried item at `path` into the furniture at `into`, if
     /// nothing blocks it.
-    fn store(&mut self, path: ItemPath, into: Pos) -> Vec<Event> {
+    fn store_in_furniture(&mut self, path: ItemPath, into: Pos) -> Vec<Event> {
         if let Some(blocked) = self.store_blocked(path, into) {
             return vec![Event::CannotStore(blocked)];
         }
@@ -2963,6 +3031,7 @@ mod tests {
     /// Puts the first thing in the first pocket into the furniture at
     /// `into`, and returns the events but the ambient sounds.
     fn store(world: &mut World, into: Pos) -> Vec<Event> {
+        let into = Place::Furniture(into);
         without_ambient(world.apply(Command::Store { item: FIRST, into }))
     }
 
@@ -3819,6 +3888,77 @@ mod tests {
         assert_eq!(world.carried().len(), 1);
         let nothing = [Event::CannotDress(Blocked::NotPossible)];
         assert_eq!(dress(&mut world, Dress::TakeOff(5)), nothing);
+    }
+
+    // --- Moving things between pockets (D62) --------------------------------
+
+    fn to_pocket(world: &mut World, item: ItemPath, worn: usize, pocket: usize) -> Vec<Event> {
+        let into = Place::Pocket { worn, pocket };
+        without_ambient(world.apply(Command::Store { item, into }))
+    }
+
+    #[test]
+    fn an_item_moves_to_another_pocket_in_two_seconds() {
+        let mut world = dressing_room(&[]);
+        pocket(&mut world, SCRAP, 1);
+        let events = to_pocket(&mut world, FIRST, 0, 1);
+        let moved = Event::Pocketed {
+            item: ItemRef {
+                kind: SCRAP,
+                material: 1,
+            },
+            worn: 0,
+            pocket: 1,
+        };
+        assert_eq!(events, [moved]);
+        assert_eq!(world.seconds(), POCKET_SECONDS);
+        let in_pockets: Vec<usize> = world.worn[0].pockets.iter().map(Vec::len).collect();
+        assert_eq!(in_pockets, [0, 1]);
+    }
+
+    #[test]
+    fn an_item_moves_only_to_a_real_other_pocket_with_room() {
+        let mut world = dressing_room(&[BOOTS]);
+        dress(&mut world, Dress::PutOn(ItemAt::Floor(0)));
+        pocket(&mut world, CUTTER, 0); // 800 ml; the boot pocket holds 100
+        let blocked = |world: &World, worn, pocket| world.pocket_blocked(FIRST, worn, pocket);
+        assert_eq!(
+            blocked(&world, 1, 0),
+            Some(Blocked::Full),
+            "too big for the boot"
+        );
+        assert_eq!(
+            blocked(&world, 0, 0),
+            Some(Blocked::NotPossible),
+            "where it is"
+        );
+        assert_eq!(
+            blocked(&world, 0, 5),
+            Some(Blocked::NotPossible),
+            "no such pocket"
+        );
+        assert_eq!(
+            blocked(&world, 4, 0),
+            Some(Blocked::NotPossible),
+            "nothing worn there"
+        );
+        let nothing = ItemPath { index: 3, ..FIRST };
+        assert_eq!(
+            world.pocket_blocked(nothing, 0, 1),
+            Some(Blocked::NotPossible)
+        );
+        assert_eq!(blocked(&world, 0, 1), None);
+        let full = [Event::CannotStore(Blocked::Full)];
+        assert_eq!(to_pocket(&mut world, FIRST, 1, 0), full);
+        assert_eq!(world.seconds(), PUT_ON_SECONDS, "no more time passes");
+        // A scrap fits the boot.
+        pocket(&mut world, SCRAP, 0);
+        let scrap = ItemPath { index: 1, ..FIRST };
+        assert!(matches!(
+            to_pocket(&mut world, scrap, 1, 0)[..],
+            [Event::Pocketed { .. }]
+        ));
+        assert_eq!(world.worn[1].pockets[0].len(), 1);
     }
 
     #[test]

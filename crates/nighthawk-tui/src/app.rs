@@ -6,8 +6,8 @@
 //! of it can be tested directly.
 
 use nighthawk_sim::{
-    ActionOption, Blocked, Cause, Command, DateTime, Dress, ItemPath, LoadedMap, Pos, PowerAct,
-    World, options_at,
+    ActionOption, Blocked, Cause, Command, DateTime, Dress, ItemAt, ItemPath, LoadedMap, Place,
+    Pos, World, options_at,
 };
 use ratatui::crossterm::event::KeyEvent;
 
@@ -15,7 +15,7 @@ use crate::keys::{self, CursorAction, GameAction, InventoryAction, ListAction, T
 use crate::saves::SaveSlot;
 use crate::text;
 use crate::title::{MenuItem, TitleMenu};
-use crate::ui::{self, Cursor, CursorMode, Overlay};
+use crate::ui::{self, Cursor, CursorMode, InvEntry, InventoryMode, Overlay};
 
 /// How many log lines to keep. The log panel shows as many as fit.
 pub const LOG_LIMIT: usize = 100;
@@ -67,6 +67,9 @@ pub struct App {
     /// While the inventory screen is open (`i`), which carried item is
     /// highlighted, counting from 0.
     pub inventory: Option<usize>,
+    /// Whether the inventory shows its list, a closer look at the
+    /// highlighted line, or the pocket chooser.
+    pub inventory_mode: InventoryMode,
     /// While the crafting screen is open (`C`), which of the crafts you
     /// know is highlighted.
     pub crafting: Option<usize>,
@@ -95,6 +98,7 @@ impl App {
             overlay: None,
             cursor: None,
             inventory: None,
+            inventory_mode: InventoryMode::List,
             crafting: None,
             wearing: None,
         };
@@ -135,9 +139,7 @@ impl App {
             return true;
         }
         if self.inventory.is_some() {
-            if let Some(action) = keys::inventory_action(key) {
-                self.on_inventory(action);
-            }
+            self.on_inventory_key(key);
             return true;
         }
         if self.crafting.is_some() {
@@ -229,7 +231,12 @@ impl App {
             GameAction::ToggleOverlay(overlay) => self.toggle_overlay(overlay),
             GameAction::Look => self.raise_cursor(CursorMode::Look),
             GameAction::Interact => self.raise_cursor(CursorMode::Interact),
-            GameAction::Inventory => self.inventory = Some(0),
+            GameAction::Inventory => {
+                if let Screen::Playing(world) = &self.screen {
+                    self.inventory = Some(ui::first_carried(world));
+                }
+                self.inventory_mode = InventoryMode::List;
+            }
             GameAction::Crafting => self.crafting = Some(0),
             _ => self.wearing = Some(0),
         }
@@ -285,53 +292,113 @@ impl App {
         }
     }
 
-    /// Moves the inventory highlight, drops the highlighted item, or closes
-    /// the screen. The highlight stays on the list as it shrinks.
+    /// A key on the inventory screen: for the pocket chooser while it's
+    /// up, else for the list or the closer look.
+    fn on_inventory_key(&mut self, key: KeyEvent) {
+        if matches!(self.inventory_mode, InventoryMode::Moving { .. }) {
+            if let Some(action) = keys::pocket_action(key) {
+                self.on_pocket_choice(action);
+            }
+        } else if let Some(action) = keys::inventory_action(key) {
+            self.on_inventory(action);
+        }
+    }
+
+    /// Moves the inventory highlight, opens or closes a closer look, or
+    /// does something to the highlighted line (decision D62).
     fn on_inventory(&mut self, action: InventoryAction) {
         let (Screen::Playing(world), Some(selected)) = (&self.screen, self.inventory) else {
             return;
         };
-        let carried = world.carried();
-        let last = carried.len().saturating_sub(1);
+        let entries = ui::inventory_entries(world);
+        let last = entries.len().saturating_sub(1);
         match action {
+            InventoryAction::Close if self.inventory_mode == InventoryMode::Examine => {
+                self.inventory_mode = InventoryMode::List;
+            }
             InventoryAction::Close => self.inventory = None,
             InventoryAction::Up => self.inventory = Some(selected.saturating_sub(1)),
             InventoryAction::Down => self.inventory = Some((selected + 1).min(last)),
-            InventoryAction::Drop => {
-                let Some(&(path, _)) = carried.get(selected) else {
-                    self.push_log("You have nothing to drop.".into());
-                    return;
-                };
-                self.apply(Command::Drop(path));
-                self.inventory = Some(selected.min(last.saturating_sub(1)));
+            InventoryAction::Examine if !entries.is_empty() => {
+                self.inventory_mode = InventoryMode::Examine;
             }
-            InventoryAction::PutAway => match carried.get(selected) {
-                Some(&(path, _)) => {
-                    let containers = world.containers_in_reach();
-                    self.begin_put_away(path, &containers);
-                }
-                None => self.push_log("You have nothing to put away.".into()),
-            },
-            InventoryAction::Power(act) => match carried.get(selected) {
-                Some(&(item, _)) => self.use_power(item, act),
-                None => self.push_log("You have nothing to use.".into()),
+            _ => match entries.get(selected) {
+                Some(&entry) => self.act_on(entry, action),
+                None => self.push_log("You have nothing on or with you.".into()),
             },
         }
     }
 
-    /// Loads, unloads or switches the carried item at `item`, and keeps
-    /// the inventory highlight on the list, which a cell coming or going
-    /// changes.
-    fn use_power(&mut self, item: ItemPath, act: PowerAct) {
-        self.apply(Command::Power { item, act });
+    /// Does `action` to the inventory line `entry`, then shows the list
+    /// again, keeping the highlight on it as it changes.
+    fn act_on(&mut self, entry: InvEntry, action: InventoryAction) {
+        self.inventory_mode = InventoryMode::List;
+        match (entry, action) {
+            (InvEntry::Worn(i), InventoryAction::Dress) => {
+                self.apply(Command::Dress(Dress::TakeOff(i)));
+            }
+            (InvEntry::Worn(_), _) => {
+                self.push_log("You're wearing that. Take it off first (W).".into());
+            }
+            (InvEntry::Carried(path), action) => self.act_on_carried(path, action),
+        }
         self.keep_highlight_on_list();
     }
 
-    /// Moves the inventory highlight up onto the list, if what you carry
-    /// has shrunk under it.
+    /// Does `action` to the carried item at `path`. `on_inventory` handles
+    /// the rest first, so the last arm is moving it to another pocket.
+    fn act_on_carried(&mut self, path: ItemPath, action: InventoryAction) {
+        match action {
+            InventoryAction::Drop => self.apply(Command::Drop(path)),
+            InventoryAction::PutAway => {
+                if let Screen::Playing(world) = &self.screen {
+                    let containers = world.containers_in_reach();
+                    self.begin_put_away(path, &containers);
+                }
+            }
+            InventoryAction::Power(act) => self.apply(Command::Power { item: path, act }),
+            InventoryAction::Dress => {
+                self.apply(Command::Dress(Dress::PutOn(ItemAt::Carried(path))));
+            }
+            _ => {
+                self.inventory_mode = InventoryMode::Moving {
+                    item: path,
+                    chosen: 0,
+                };
+            }
+        }
+    }
+
+    /// Moves the pocket chooser's highlight, moves the item into the
+    /// highlighted pocket, or goes back to the list.
+    fn on_pocket_choice(&mut self, action: ListAction) {
+        let (Screen::Playing(world), InventoryMode::Moving { item: path, chosen }) =
+            (&self.screen, self.inventory_mode)
+        else {
+            return;
+        };
+        let pockets = ui::pockets_to_move_to(world, path);
+        let last = pockets.len().saturating_sub(1);
+        let moving = |chosen| InventoryMode::Moving { item: path, chosen };
+        match action {
+            ListAction::Close => self.inventory_mode = InventoryMode::List,
+            ListAction::Up => self.inventory_mode = moving(chosen.saturating_sub(1)),
+            ListAction::Down => self.inventory_mode = moving((chosen + 1).min(last)),
+            ListAction::Choose => {
+                self.inventory_mode = InventoryMode::List;
+                if let Some(&(worn, pocket)) = pockets.get(chosen) {
+                    let into = Place::Pocket { worn, pocket };
+                    self.apply(Command::Store { item: path, into });
+                }
+            }
+        }
+    }
+
+    /// Moves the inventory highlight up onto the list, if it has shrunk
+    /// under it.
     fn keep_highlight_on_list(&mut self) {
         if let (Screen::Playing(world), Some(selected)) = (&self.screen, self.inventory) {
-            let last = world.carried().len().saturating_sub(1);
+            let last = ui::inventory_entries(world).len().saturating_sub(1);
             self.inventory = Some(selected.min(last));
         }
     }
@@ -354,6 +421,7 @@ impl App {
     /// Puts the carried item at `path` into the furniture at `into`, and
     /// keeps the inventory highlight on the list as it shrinks.
     fn put_away(&mut self, path: ItemPath, into: Pos) {
+        let into = Place::Furniture(into);
         self.apply(Command::Store { item: path, into });
         self.keep_highlight_on_list();
     }
@@ -500,6 +568,7 @@ impl App {
         self.inventory = None;
         self.crafting = None;
         self.wearing = None;
+        self.inventory_mode = InventoryMode::List;
         let can_continue = self.slot.as_ref().is_some_and(SaveSlot::exists);
         self.screen = Screen::Title(TitleMenu::new(can_continue).with_message(message));
     }
@@ -1318,14 +1387,16 @@ mod tests {
 
     #[test]
     fn i_opens_the_inventory_on_the_first_item_and_takes_no_time() {
+        // The lines: the jumpsuit, the seven things in its pockets, then
+        // the deck shoes.
         let (mut app, _dir) = carrying_everything();
         let before = world(&app).seconds();
         press_all(&mut app, "i");
-        assert_eq!(app.inventory, Some(0));
-        press_all(&mut app, "jjjjjjjj");
-        assert_eq!(app.inventory, Some(6), "stops at the last item");
-        press_all(&mut app, "kkkkkkkk");
-        assert_eq!(app.inventory, Some(0), "and at the first");
+        assert_eq!(app.inventory, Some(1), "on the first thing carried");
+        press_all(&mut app, "jjjjjjjjjj");
+        assert_eq!(app.inventory, Some(8), "stops at the last line, the shoes");
+        press_all(&mut app, "kkkkkkkkkk");
+        assert_eq!(app.inventory, Some(0), "and at the first, the jumpsuit");
         press_all(&mut app, ".l");
         assert_eq!(world(&app).seconds(), before, "other keys do nothing");
         app.handle_key(key(KeyCode::Esc));
@@ -1339,12 +1410,17 @@ mod tests {
         press_all(&mut app, "ijjjjjjd"); // the last scrap
         assert_eq!(world(&app).carried().len(), 6);
         assert_eq!(world(&app).items_at(here).count(), 1);
-        assert_eq!(app.inventory, Some(5), "the highlight stays on the list");
+        assert_eq!(app.inventory, Some(7), "the line below moves up: the shoes");
         assert_eq!(last_log(&app), "You drop the scrap (Steel).");
-        press_all(&mut app, "dddddd");
+        // Up to the first thing carried, and drop the lot from the top.
+        press_all(&mut app, "kkkkkkdddddd");
         assert!(world(&app).carried().is_empty());
         press_all(&mut app, "d");
-        assert_eq!(last_log(&app), "You have nothing to drop.");
+        assert_eq!(
+            last_log(&app),
+            "You're wearing that. Take it off first (W).",
+            "the shoes"
+        );
     }
 
     #[test]
@@ -1359,8 +1435,11 @@ mod tests {
         );
         assert_eq!(world(&app).carried().len(), carried - 1);
         assert_eq!(world(&app).seconds(), before + nighthawk_sim::STORE_SECONDS);
-        press_all(&mut app, "jjjjp"); // past the end: the last one
-        assert_eq!(app.inventory, Some(0), "the highlight stays on the list");
+        // The jumpsuit, the screwdriver, the lamp, the shoes: put the lamp
+        // away too, and the highlight moves onto the shoes below it.
+        press_all(&mut app, "jp");
+        assert_eq!(world(&app).carried().len(), carried - 2);
+        assert_eq!(app.inventory, Some(2), "the highlight stays on the list");
     }
 
     #[test]
@@ -1395,19 +1474,94 @@ mod tests {
         );
     }
 
+    /// A new game with the gear taken out of the locker. The inventory's
+    /// lines: 0 the jumpsuit, 1 the cutter, 2 the screwdriver (both in the
+    /// left hip pocket), 3 the lamp (right hip), 4 the deck shoes.
+    fn with_the_gear() -> (App, tempfile::TempDir) {
+        let (mut app, dir) = new_app(Some(7));
+        press_all(&mut app, "yyeyt");
+        (app, dir)
+    }
+
     #[test]
-    fn power_keys_with_nothing_carried_say_so() {
+    fn e_takes_a_closer_look_where_the_same_keys_act_and_esc_goes_back() {
+        let (mut app, _dir) = with_the_gear();
+        press_all(&mut app, "ie");
+        assert_eq!(app.inventory_mode, InventoryMode::Examine);
+        app.handle_key(key(KeyCode::Esc));
+        assert_eq!(app.inventory_mode, InventoryMode::List, "back to the list");
+        assert_eq!(app.inventory, Some(1), "still open, on the cutter");
+        press_all(&mut app, "jjea"); // the lamp
+        assert_eq!(
+            last_said(&app),
+            "You switch the hand lamp (Aluminium Alloy) on."
+        );
+        assert_eq!(app.inventory_mode, InventoryMode::List, "acting goes back");
+        app.handle_key(key(KeyCode::Esc));
+        assert_eq!(app.inventory, None, "Esc on the list closes it");
+    }
+
+    #[test]
+    fn i_moves_the_highlighted_item_to_the_pocket_you_choose() {
+        let (mut app, _dir) = with_the_gear();
+        press_all(&mut app, "ii"); // the cutter, in the left hip pocket
+        let cutter = world(&app).carried()[0].0;
+        let moving = |chosen| InventoryMode::Moving {
+            item: cutter,
+            chosen,
+        };
+        assert_eq!(app.inventory_mode, moving(0));
+        // The other pockets: right hip, left leg, right leg.
+        press_all(&mut app, "jjjk");
+        assert_eq!(app.inventory_mode, moving(1));
+        let before = world(&app).seconds();
+        app.handle_key(key(KeyCode::Enter));
+        assert_eq!(
+            last_said(&app),
+            "You put the basic laser cutter (Aluminium Alloy) in your left leg pocket."
+        );
+        assert_eq!(app.inventory_mode, InventoryMode::List);
+        let took = world(&app).seconds() - before;
+        assert_eq!(took, nighthawk_sim::POCKET_SECONDS);
+        assert_eq!(world(&app).worn()[0].pockets[2].len(), 1);
+        press_all(&mut app, "i");
+        app.handle_key(key(KeyCode::Esc));
+        assert_eq!(app.inventory_mode, InventoryMode::List, "Esc cancels");
+        app.show_title(None);
+        app.on_pocket_choice(ListAction::Down); // no game: ignored
+        assert_eq!(app.inventory_mode, InventoryMode::List);
+    }
+
+    #[test]
+    fn capital_w_in_the_inventory_takes_off_or_puts_on_the_highlighted_line() {
+        let (mut app, _dir) = with_the_gear();
+        press_all(&mut app, "ijjjW"); // the deck shoes
+        assert_eq!(last_said(&app), "You take off the deck shoes (Polyester).");
+        // They're in a pocket now: the last line, under the lamp.
+        assert_eq!(app.inventory, Some(4));
+        press_all(&mut app, "W");
+        assert_eq!(last_said(&app), "You put on the deck shoes (Polyester).");
+        press_all(&mut app, "kkkkd"); // the jumpsuit
+        assert_eq!(
+            last_said(&app),
+            "You're wearing that. Take it off first (W)."
+        );
+    }
+
+    #[test]
+    fn with_nothing_carried_the_inventory_opens_on_what_you_wear() {
         let (mut app, _dir) = new_app(Some(7));
         press_all(&mut app, "ia");
-        assert_eq!(last_log(&app), "You have nothing to use.");
+        assert_eq!(app.inventory, Some(0), "the jumpsuit");
+        assert_eq!(
+            last_log(&app),
+            "You're wearing that. Take it off first (W)."
+        );
         assert_eq!(world(&app).seconds(), 0);
     }
 
     #[test]
-    fn p_with_nothing_to_put_away_or_nowhere_to_put_it_says_so() {
-        let (mut app, _dir) = new_app(Some(7));
-        press_all(&mut app, "ip");
-        assert_eq!(last_log(&app), "You have nothing to put away.");
+    fn p_with_nowhere_to_put_it_says_so() {
         let (mut app, _dir) = carrying_everything(); // at (8, 8)
         press_all(&mut app, "ip");
         assert_eq!(
@@ -1459,7 +1613,7 @@ mod tests {
         assert_eq!(last_log(&app), "You put the scrap (Steel) in the locker.");
         let west = world(&app).furniture_at(Pos::new(1, 1, 0)).unwrap();
         assert_eq!(west.contents.len(), 1);
-        assert_eq!(app.inventory, Some(0), "the inventory stays open");
+        assert_eq!(app.inventory, Some(1), "the inventory stays open");
         press_all(&mut app, "px");
         assert_eq!(last_log(&app), "Never mind.");
         assert_eq!(world(&app).carried().len(), 1);
@@ -1534,6 +1688,14 @@ mod tests {
         press_all(&mut app, "W");
         app.handle_key(key(KeyCode::Enter));
         assert_eq!(last_log(&app), "You have nothing to put on or take off.");
+        press_all(&mut app, "Wie");
+        assert_eq!(last_log(&app), "You have nothing on or with you.");
+        assert_eq!(
+            app.inventory_mode,
+            InventoryMode::List,
+            "nothing to look at"
+        );
+        app.handle_key(key(KeyCode::Esc));
         app.show_title(None);
         assert_eq!(app.wearing, None, "leaving the game closes it");
         app.on_wear(ListAction::Down); // no game: ignored

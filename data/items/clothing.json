@@ -62,7 +62,7 @@
           {
             "name": "boot sheath",
             "volume_ml": 150,
-            "max_mass_g": 600
+            "max_mass_g": 1000
           }
         ]
       }

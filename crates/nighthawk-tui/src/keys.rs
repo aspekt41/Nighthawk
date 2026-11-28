@@ -55,28 +55,57 @@ pub enum InventoryAction {
     /// Load a cell into the highlighted item, take its cell out, or
     /// switch it on or off.
     Power(PowerAct),
+    /// Look closer at the highlighted item: everything about it, and what
+    /// you can do with it (decision D62).
+    Examine,
+    /// Move the highlighted item to another of your pockets.
+    MovePocket,
+    /// Put the highlighted item on, or take it off if you're wearing it.
+    Dress,
+    /// Close the inventory, or go back from a closer look to the list.
     Close,
 }
 
+/// The inventory's letter keys. A table, not a long `match`, keeps
+/// `inventory_action` simple however many there are.
+const INVENTORY_KEYS: &[(char, InventoryAction)] = &[
+    ('q', InventoryAction::Close),
+    ('d', InventoryAction::Drop),
+    ('p', InventoryAction::PutAway),
+    ('r', InventoryAction::Power(PowerAct::Reload)),
+    ('u', InventoryAction::Power(PowerAct::Unload)),
+    ('a', InventoryAction::Power(PowerAct::Switch)),
+    ('e', InventoryAction::Examine),
+    ('i', InventoryAction::MovePocket),
+    ('W', InventoryAction::Dress),
+];
+
 /// The action for a key pressed on the inventory screen: up and down
-/// movement keys choose, `d` drops, `p` puts away, `r` loads a cell, `u`
-/// takes it out, `a` switches on or off, and Esc, `i` or `q` close. The
-/// letter keys come first, so `u` means unload here, not north-east.
+/// movement keys choose, Esc closes, and the letters in
+/// [`INVENTORY_KEYS`]. The letters come first, so `u` means unload here,
+/// not north-east.
 pub fn inventory_action(key: KeyEvent) -> Option<InventoryAction> {
     if !is_press(key) {
         return None;
     }
-    match (key.code, direction(key)) {
-        (KeyCode::Esc | KeyCode::Char('i' | 'q'), _) => Some(InventoryAction::Close),
-        (KeyCode::Char('d'), _) => Some(InventoryAction::Drop),
-        (KeyCode::Char('p'), _) => Some(InventoryAction::PutAway),
-        (KeyCode::Char('r'), _) => Some(InventoryAction::Power(PowerAct::Reload)),
-        (KeyCode::Char('u'), _) => Some(InventoryAction::Power(PowerAct::Unload)),
-        (KeyCode::Char('a'), _) => Some(InventoryAction::Power(PowerAct::Switch)),
-        (_, Some(Dir::North)) => Some(InventoryAction::Up),
-        (_, Some(Dir::South)) => Some(InventoryAction::Down),
-        _ => None,
+    if key.code == KeyCode::Esc {
+        return Some(InventoryAction::Close);
     }
+    let letter = INVENTORY_KEYS
+        .iter()
+        .find(|&&(c, _)| key.code == KeyCode::Char(c))
+        .map(|&(_, action)| action);
+    letter.or(match direction(key) {
+        Some(Dir::North) => Some(InventoryAction::Up),
+        Some(Dir::South) => Some(InventoryAction::Down),
+        _ => None,
+    })
+}
+
+/// The action for a key pressed while choosing a pocket to move an item
+/// to: up and down choose, Enter moves it, Esc, `i` or `q` cancel.
+pub fn pocket_action(key: KeyEvent) -> Option<ListAction> {
+    list_action(key, 'i')
 }
 
 /// Something the player wants on a screen that's a list to choose from:
@@ -621,7 +650,9 @@ mod tests {
                 Some(InventoryAction::Power(PowerAct::Switch)),
             ),
             (KeyCode::Esc, Some(InventoryAction::Close)),
-            (KeyCode::Char('i'), Some(InventoryAction::Close)),
+            (KeyCode::Char('i'), Some(InventoryAction::MovePocket)),
+            (KeyCode::Char('e'), Some(InventoryAction::Examine)),
+            (KeyCode::Char('W'), Some(InventoryAction::Dress)),
             (KeyCode::Char('q'), Some(InventoryAction::Close)),
             (KeyCode::Char('l'), None),
             (KeyCode::Char('.'), None),

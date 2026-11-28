@@ -14,9 +14,9 @@
 //! ```
 
 use nighthawk_sim::{
-    ActionOption, BREATH_FULL, Colour, CraftMaterial, Dress, Item, ItemAt, ItemRef, Levels,
-    Material, Mix, Piece, PocketType, Pos, Tile, Use, WARMTH_FULL, World, celsius_to_mk,
-    mk_to_tenths_celsius, options_at,
+    ActionOption, BREATH_FULL, Colour, CraftMaterial, Dress, Item, ItemAt, ItemPath, ItemRef,
+    Levels, Material, Mix, Piece, PocketType, Pos, Tile, Use, WARMTH_FULL, Wear, World,
+    celsius_to_mk, mk_to_tenths_celsius, options_at,
 };
 use ratatui::Frame;
 use ratatui::buffer::Buffer;
@@ -79,8 +79,8 @@ pub struct Cursor {
 pub struct View {
     pub overlay: Option<Overlay>,
     pub cursor: Option<Cursor>,
-    /// The highlighted item, while the inventory screen is open.
-    pub inventory: Option<usize>,
+    /// What the inventory screen shows, while it's open.
+    pub inventory: Option<InventoryView>,
     /// The highlighted craft, while the crafting screen is open.
     pub crafting: Option<usize>,
     /// The highlighted line, while the wear screen is open.
@@ -92,7 +92,10 @@ pub fn render(app: &App, frame: &mut Frame) {
     let view = View {
         overlay: app.overlay,
         cursor: app.cursor,
-        inventory: app.inventory,
+        inventory: app.inventory.map(|selected| InventoryView {
+            selected,
+            mode: app.inventory_mode,
+        }),
         crafting: app.crafting,
         wearing: app.wearing,
     };
@@ -201,7 +204,10 @@ fn render_game(world: &World, log_lines: &[String], view: View, frame: &mut Fram
     };
     // The inventory, crafting or wear screen, if open, takes the map's place.
     match (view.inventory, view.crafting, view.wearing) {
-        (Some(selected), _, _) => frame.render_widget(inventory_panel(world, selected), map_area),
+        (Some(inventory), _, _) => {
+            let panel = inventory_panel(world, inventory, map_area.height);
+            frame.render_widget(panel, map_area);
+        }
         (None, Some(selected), _) => frame.render_widget(crafting_panel(world, selected), map_area),
         (None, None, Some(selected)) => frame.render_widget(wear_panel(world, selected), map_area),
         (None, None, None) => frame.render_widget(map_view, map_inner),
@@ -1177,43 +1183,263 @@ fn counted_names<'a>(world: &World, items: impl Iterator<Item = &'a Item>) -> Ve
         .collect()
 }
 
-/// The inventory screen: what you're wearing, each of its pockets with how
-/// full it is, and what's in them, with the highlighted item in reverse.
-fn inventory_panel(world: &World, selected: usize) -> Paragraph<'static> {
-    Paragraph::new(inventory_lines(world, selected)).block(Block::bordered().title(" Inventory "))
+/// One line of the inventory you can highlight: something you wear (by
+/// its place in [`World::worn`]), or something in one of its pockets.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InvEntry {
+    Worn(usize),
+    Carried(ItemPath),
 }
 
-fn inventory_lines(world: &World, selected: usize) -> Vec<Line<'static>> {
+/// Every line of the inventory you can highlight, in screen order: each
+/// thing you wear, then what's in its pockets. The app and the screen
+/// both use it, so they always agree.
+pub fn inventory_entries(world: &World) -> Vec<InvEntry> {
+    let carried = world.carried();
+    let mut entries = Vec::new();
+    for worn in 0..world.worn().len() {
+        entries.push(InvEntry::Worn(worn));
+        let inside = carried.iter().filter(|(path, _)| path.worn == worn);
+        entries.extend(inside.map(|&(path, _)| InvEntry::Carried(path)));
+    }
+    entries
+}
+
+/// Where the inventory opens: on the first thing you carry, since that's
+/// what you usually want, or at the top if you carry nothing.
+pub fn first_carried(world: &World) -> usize {
+    let entries = inventory_entries(world);
+    let first = entries
+        .iter()
+        .position(|e| matches!(e, InvEntry::Carried(_)));
+    first.unwrap_or(0)
+}
+
+/// What the inventory screen shows, and which line is highlighted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InventoryView {
+    pub selected: usize,
+    pub mode: InventoryMode,
+}
+
+/// The inventory's three faces (decision D62): the list, a closer look
+/// at the highlighted thing (`e`), or choosing a pocket to move the
+/// carried `item` to (`i`), with pocket number `chosen` of
+/// [`pockets_to_move_to`] highlighted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InventoryMode {
+    List,
+    Examine,
+    Moving { item: ItemPath, chosen: usize },
+}
+
+/// The inventory screen in the map's place, `height` rows tall: the list,
+/// scrolled to keep the highlight in view, or one of its other faces.
+fn inventory_panel(world: &World, view: InventoryView, height: u16) -> Paragraph<'static> {
+    let block = Block::bordered().title(" Inventory ");
+    let entry = inventory_entries(world).get(view.selected).copied();
+    match (view.mode, entry) {
+        (InventoryMode::Examine, Some(entry)) => Paragraph::new(examine_lines(world, entry))
+            .wrap(Wrap { trim: false })
+            .block(block),
+        (InventoryMode::Moving { item, chosen }, _) => {
+            Paragraph::new(move_lines(world, item, chosen)).block(block)
+        }
+        _ => {
+            let (lines, at) = inventory_lines(world, view.selected);
+            // Scroll so the highlighted line, and a little below it, shows.
+            let rows = usize::from(height.saturating_sub(2));
+            let offset = (at + 3).saturating_sub(rows);
+            let offset = u16::try_from(offset).unwrap_or(u16::MAX);
+            Paragraph::new(lines).scroll((offset, 0)).block(block)
+        }
+    }
+}
+
+/// The inventory list: what you wear, each of its pockets with how full
+/// it is, and what's in them, with the highlighted line in reverse. Also
+/// returns which line that is, to scroll to.
+fn inventory_lines(world: &World, selected: usize) -> (Vec<Line<'static>>, usize) {
     let ctx = world.item_context();
     let dim = Style::new().fg(Color::DarkGray);
+    let reversed = |on: bool| {
+        if on {
+            Style::new().add_modifier(Modifier::REVERSED)
+        } else {
+            Style::new()
+        }
+    };
     let mut lines = Vec::new();
-    // `next` counts carried items in the same order as `World::carried`,
-    // so it matches the highlighted index.
-    let mut next = 0;
+    // Which line each highlightable entry is on, in the same order as
+    // `inventory_entries`, so the highlighted index finds its line.
+    let mut entry_lines: Vec<usize> = Vec::new();
     for wearing in world.worn() {
         let name = text::item_name(world, wearing.id());
-        lines.push(Line::raw(format!(
-            "Wearing {name}  {}",
-            kilograms(ctx.mass_g(wearing))
-        )));
+        let mass = kilograms(ctx.mass_g(wearing));
+        let style = reversed(entry_lines.len() == selected);
+        entry_lines.push(lines.len());
+        lines.push(Line::styled(format!("Wearing {name}  {mass}"), style));
         let pocket_types = world.item_types()[usize::from(wearing.kind)].pockets();
         for (pocket, held) in pocket_types.iter().zip(&wearing.pockets) {
             lines.push(Line::styled(pocket_line(world, pocket, held), dim));
             for item in held {
-                lines.push(carried_line(world, item, next == selected));
+                let chosen = entry_lines.len() == selected;
+                entry_lines.push(lines.len());
+                lines.push(carried_line(world, item, chosen));
                 // Its charge on a line of its own, so long names still fit.
                 let power = power_text(world, item);
                 lines.extend(power.map(|p| Line::styled(format!("      {p}"), dim)));
-                next += 1;
             }
         }
     }
+    let at = entry_lines.get(selected).copied().unwrap_or(0);
     let total: u64 = world.worn().iter().map(|w| ctx.mass_g(w)).sum();
     lines.extend([
         Line::raw(format!("Carrying {} in all", kilograms(total))),
         Line::raw(""),
-        Line::styled("j/k choose   d drop   p put away   Esc close", dim),
-        Line::styled("r load a cell   u take it out   a switch on/off", dim),
+        Line::styled("j/k choose   e examine and use   Esc close", dim),
+        Line::styled("d drop   p put away   i move   W put on/take off", dim),
+    ]);
+    (lines, at)
+}
+
+/// A closer look at the inventory line `entry`: what it is, everything
+/// about it, where it is, and the keys for what you can do with it.
+fn examine_lines(world: &World, entry: InvEntry) -> Vec<Line<'static>> {
+    let dim = Style::new().fg(Color::DarkGray);
+    let (item, place) = match entry {
+        InvEntry::Worn(i) => (&world.worn()[i], "You're wearing it.".to_string()),
+        InvEntry::Carried(path) => {
+            let in_pocket = world.carried().into_iter().find(|&(p, _)| p == path);
+            let item = in_pocket.map_or(&world.worn()[path.worn], |(_, item)| item);
+            let pocket = text::pocket_name(world, path.worn, path.pocket);
+            (item, format!("In your {pocket}."))
+        }
+    };
+    let kind = &world.item_types()[usize::from(item.kind)];
+    let mut lines = vec![
+        Line::raw(capitalised(&text::item_name(world, item.id()))),
+        Line::styled(kind.description.clone(), dim),
+        Line::raw(""),
+    ];
+    lines.extend(item_facts(world, item).into_iter().map(Line::raw));
+    lines.extend([Line::raw(place), Line::raw("")]);
+    let keys = action_keys(world, entry, item);
+    lines.extend(keys.into_iter().map(|k| Line::styled(k, dim)));
+    lines
+}
+
+/// Everything worth knowing about `item`, a sentence each: weight and
+/// size, tool qualities, light, power and what wearing it gives.
+fn item_facts(world: &World, item: &Item) -> Vec<String> {
+    let ctx = world.item_context();
+    let kind = &world.item_types()[usize::from(item.kind)];
+    let (mass, volume) = (kilograms(ctx.mass_g(item)), litres(ctx.volume_ml(item)));
+    let mut facts = vec![format!("It weighs {mass} and takes up {volume} L.")];
+    if !kind.qualities.is_empty() {
+        facts.push(format!("It has {}.", levels_text(&kind.qualities)));
+    }
+    if kind.light > 0 {
+        facts.push(format!("It lights {} tiles around it.", kind.light));
+    }
+    let charge = power_text(world, item);
+    if let Some(power) = &kind.power {
+        let cell = charge.clone().unwrap_or_default();
+        facts.push(format!(
+            "It runs on a power cell, drawing {} W: {cell}.",
+            power.watts
+        ));
+    }
+    if kind.cell.is_some() {
+        facts.push(format!(
+            "A power cell, holding {}.",
+            charge.unwrap_or_default()
+        ));
+    }
+    facts.extend(kind.wear.as_ref().map(wear_fact));
+    facts
+}
+
+/// What wearing something gives: "Worn on the feet, with a boot sheath
+/// of 0.2 L."
+fn wear_fact(wear: &Wear) -> String {
+    match wear.pockets.as_slice() {
+        [] => format!("Worn on the {}.", wear.slot),
+        [one] => format!(
+            "Worn on the {}, with a {} of {} L.",
+            wear.slot,
+            one.name,
+            litres(u64::from(one.volume_ml))
+        ),
+        many => format!("Worn on the {}, with {} pockets.", wear.slot, many.len()),
+    }
+}
+
+/// The keys for what you can do with the inventory line `entry`, showing
+/// only those that apply.
+fn action_keys(world: &World, entry: InvEntry, item: &Item) -> Vec<String> {
+    let kind = &world.item_types()[usize::from(item.kind)];
+    let mut keys = Vec::new();
+    match entry {
+        InvEntry::Worn(_) => keys.push("W take it off".to_string()),
+        InvEntry::Carried(_) => {
+            keys.push("d drop it   p put it in a locker   i move it".into());
+            if kind.wear.is_some() {
+                keys.push("W put it on".into());
+            }
+            if kind.power.is_some() {
+                keys.push("r load a cell   u take the cell out".into());
+            }
+            if kind.light > 0 && kind.power.is_some() {
+                keys.push("a switch it on or off".into());
+            }
+        }
+    }
+    keys.push("Esc back to the list".into());
+    keys
+}
+
+/// Every pocket you could move the item at `from` to: all your pockets but
+/// the one it's in, as (worn item, pocket) numbers.
+pub fn pockets_to_move_to(world: &World, from: ItemPath) -> Vec<(usize, usize)> {
+    let types = world.item_types();
+    let all = world.worn().iter().enumerate().flat_map(|(w, wearing)| {
+        let pockets = types[usize::from(wearing.kind)].pockets().len();
+        (0..pockets).map(move |p| (w, p))
+    });
+    all.filter(|&place| place != (from.worn, from.pocket))
+        .collect()
+}
+
+/// Choosing a pocket to move the item at `path` to, with number `chosen`
+/// of [`pockets_to_move_to`] highlighted.
+fn move_lines(world: &World, path: ItemPath, chosen: usize) -> Vec<Line<'static>> {
+    let dim = Style::new().fg(Color::DarkGray);
+    let in_pocket = world.carried().into_iter().find(|&(p, _)| p == path);
+    let name = in_pocket.map_or_else(String::new, |(_, item)| text::item_name(world, item.id()));
+    let mut lines = vec![Line::raw(format!("Move the {name} to:"))];
+    let pockets = pockets_to_move_to(world, path);
+    if pockets.is_empty() {
+        lines.push(Line::styled("  You have no other pocket.", dim));
+    }
+    for (n, &(worn, pocket)) in pockets.iter().enumerate() {
+        let wearing = &world.worn()[worn];
+        // A heading for what the pockets below belong to, before its first.
+        if n == 0 || pockets[n - 1].0 != worn {
+            lines.push(Line::styled(text::item_name(world, wearing.id()), dim));
+        }
+        let pocket_type = &world.item_types()[usize::from(wearing.kind)].pockets()[pocket];
+        let fill = pocket_line(world, pocket_type, &wearing.pockets[pocket]);
+        let style = if n == chosen {
+            Style::new().add_modifier(Modifier::REVERSED)
+        } else {
+            Style::new()
+        };
+        lines.push(Line::styled(fill, style));
+    }
+    lines.extend([
+        Line::raw(""),
+        Line::styled("j/k choose   Enter move it there   Esc cancel", dim),
     ]);
     lines
 }
@@ -2246,6 +2472,7 @@ mod tests {
 
     fn inventory_texts(world: &World, selected: usize) -> Vec<String> {
         inventory_lines(world, selected)
+            .0
             .iter()
             .map(ToString::to_string)
             .collect()
@@ -2272,7 +2499,9 @@ mod tests {
     #[test]
     fn carried_items_show_under_their_pocket_with_the_chosen_one_reversed() {
         let world = with_the_gear();
-        let lines = inventory_lines(&world, 0);
+        // Line 0 is the jumpsuit you wear; the cutter is the first carried.
+        let (lines, at) = inventory_lines(&world, 1);
+        assert_eq!(at, 2, "the cutter's line");
         // The cutter weighs 1.1 kg, and its cell 0.3 kg more.
         assert_eq!(
             lines[1].to_string(),
@@ -2293,8 +2522,196 @@ mod tests {
             "a second on: 120 kJ less 20 J"
         );
         assert!(lines[2].style.add_modifier.contains(Modifier::REVERSED));
-        let unchosen = inventory_lines(&world, 5);
+        let (unchosen, _) = inventory_lines(&world, 0);
         assert!(!unchosen[2].style.add_modifier.contains(Modifier::REVERSED));
+        assert!(
+            unchosen[0].style.add_modifier.contains(Modifier::REVERSED),
+            "the jumpsuit"
+        );
+    }
+
+    fn examine_texts(world: &World, entry: InvEntry) -> Vec<String> {
+        examine_lines(world, entry)
+            .iter()
+            .map(ToString::to_string)
+            .collect()
+    }
+
+    #[test]
+    fn a_closer_look_at_a_tool_says_all_about_it_and_what_you_can_do() {
+        let world = with_the_gear();
+        let cutter = inventory_entries(&world)[1];
+        let texts = examine_texts(&world, cutter);
+        assert_eq!(texts[0], "Basic laser cutter (Aluminium Alloy)");
+        assert!(texts[1].starts_with("A handheld fibre-laser cutter"));
+        assert_eq!(texts[3], "It weighs 1.4 kg and takes up 0.8 L.");
+        assert_eq!(texts[4], "It has LASER 1.");
+        assert_eq!(
+            texts[5],
+            "It runs on a power cell, drawing 1000 W: cell 150/300 kJ."
+        );
+        assert_eq!(texts[6], "In your left hip pocket.");
+        assert_eq!(texts[8], "d drop it   p put it in a locker   i move it");
+        assert_eq!(texts[9], "r load a cell   u take the cell out");
+        assert_eq!(texts.last().unwrap(), "Esc back to the list");
+        let lamp = inventory_entries(&world)[3];
+        let lamp_texts = examine_texts(&world, lamp);
+        assert!(lamp_texts.contains(&"It lights 4 tiles around it.".to_string()));
+        assert!(lamp_texts.contains(&"a switch it on or off".to_string()));
+    }
+
+    #[test]
+    fn a_closer_look_at_clothes_says_where_they_go_and_to_take_them_off() {
+        let world = boots_at_your_feet();
+        let jumpsuit = examine_texts(&world, InvEntry::Worn(0));
+        assert!(jumpsuit.contains(&"Worn on the body, with 4 pockets.".to_string()));
+        assert!(jumpsuit.contains(&"You're wearing it.".to_string()));
+        assert!(jumpsuit.contains(&"W take it off".to_string()));
+        let shoes = examine_texts(&world, InvEntry::Worn(1));
+        assert!(shoes.contains(&"Worn on the feet.".to_string()));
+        let boots = world
+            .item_types()
+            .iter()
+            .find(|t| t.id == "work_boots")
+            .unwrap();
+        assert_eq!(
+            wear_fact(boots.wear.as_ref().unwrap()),
+            "Worn on the feet, with a boot sheath of 0.2 L."
+        );
+    }
+
+    #[test]
+    fn a_closer_look_at_a_cell_and_a_wearable_you_carry() {
+        let mut world = with_the_gear();
+        let lamp = world.item_type_index("hand_lamp").unwrap();
+        let (path, _) = world
+            .carried()
+            .into_iter()
+            .find(|(_, item)| item.kind == lamp)
+            .unwrap();
+        world.apply(Command::Power {
+            item: path,
+            act: nighthawk_sim::PowerAct::Unload,
+        });
+        world.apply(Command::Dress(Dress::TakeOff(1)));
+        let entries = inventory_entries(&world);
+        let cell = examine_texts(&world, entries[4]);
+        assert!(
+            cell.contains(&"A power cell, holding 119/300 kJ.".to_string()),
+            "{cell:?}"
+        );
+        let shoes = examine_texts(&world, entries[5]);
+        assert!(shoes.contains(&"W put it on".to_string()), "{shoes:?}");
+    }
+
+    #[test]
+    fn choosing_a_pocket_lists_all_the_others_with_the_chosen_one_reversed() {
+        let world = with_the_gear();
+        let cutter = world.carried()[0].0;
+        let pockets = pockets_to_move_to(&world, cutter);
+        assert_eq!(pockets, [(0, 1), (0, 2), (0, 3)], "not the one it's in");
+        let lines = move_lines(&world, cutter, 1);
+        let texts: Vec<String> = lines.iter().map(ToString::to_string).collect();
+        assert_eq!(
+            texts[0],
+            "Move the basic laser cutter (Aluminium Alloy) to:"
+        );
+        assert_eq!(texts[1], "jumpsuit (Cotton Fabric)", "whose pockets");
+        assert_eq!(
+            texts[3],
+            "  Left leg pocket  0.0/1.0 L  0.0/2.5 kg  (empty)"
+        );
+        assert!(lines[3].style.add_modifier.contains(Modifier::REVERSED));
+        assert!(!lines[2].style.add_modifier.contains(Modifier::REVERSED));
+        // With boots on, their sheath comes under a heading of its own.
+        let mut booted = boots_at_your_feet();
+        booted.apply(Command::Dress(Dress::TakeOff(1)));
+        booted.apply(Command::Dress(Dress::PutOn(ItemAt::Floor(0))));
+        let shoes = booted.carried()[0].0;
+        let texts: Vec<String> = move_lines(&booted, shoes, 0)
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+        assert_eq!(texts[5], "work boots (Polyester)");
+        assert!(texts[6].starts_with("  Boot sheath"));
+    }
+
+    #[test]
+    fn with_no_other_pocket_the_chooser_says_so() {
+        // Wearing nothing but the work boots, with a shiv in their sheath:
+        // the only pocket you have.
+        let rows = ["###E###", "#..@..#", "#######"];
+        let json = format!(
+            r##"{{ "id": "t", "name": "T", "player_wears": [ {{ "item": "work_boots" }} ],
+                 "legend": {{ "#": "bulkhead", ".": "deck_plating", "E": "emergency_light",
+                     "@": {{ "structure": "deck_plating", "items": [ {{ "item": "shiv" }} ] }} }},
+                 "decks": [ {{ "rows": {rows:?} }} ] }}"##
+        );
+        let data = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../data");
+        let content = crate::content::load_content(&data).unwrap();
+        let mut world = World::new(parse_map(&json, &content).unwrap(), 1);
+        let here = world.player();
+        world.apply(Command::Interact {
+            at: here,
+            action: number(&world, "pick_up"),
+        });
+        let shiv = world.carried()[0].0;
+        assert_eq!(pockets_to_move_to(&world, shiv), []);
+        let texts: Vec<String> = move_lines(&world, shiv, 0)
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+        assert_eq!(texts[1], "  You have no other pocket.");
+    }
+
+    #[test]
+    fn the_app_draws_its_inventory_in_whichever_face_it_is_in() {
+        use crate::keys::GameAction;
+        let mut app = crate::app::App::new(
+            crate::content::load_start_map().unwrap(),
+            None,
+            Some(7),
+            || 7,
+        );
+        app.on_game(GameAction::Inventory);
+        app.inventory_mode = InventoryMode::Examine;
+        let screen = draw_screen(80, 24, |f| render(&app, f));
+        assert!(screen.contains(" Inventory ") && screen.contains("You're wearing it."));
+    }
+
+    #[test]
+    fn the_inventory_scrolls_to_keep_the_highlight_in_view() {
+        let world = with_the_gear();
+        let view = |selected, mode| View {
+            overlay: None,
+            cursor: None,
+            inventory: Some(InventoryView { selected, mode }),
+            crafting: None,
+            wearing: None,
+        };
+        // Only 12 rows: the shoes, last of 4 lines, sit 14 lines down.
+        let shoes = draw_screen(80, 18, |f| {
+            render_game(&world, &[], view(4, InventoryMode::List), f)
+        });
+        assert!(shoes.contains("Wearing deck shoes"), "{shoes}");
+        let top = draw_screen(80, 18, |f| {
+            render_game(&world, &[], view(0, InventoryMode::List), f)
+        });
+        assert!(top.contains("Wearing jumpsuit"));
+        let examining = draw_screen(80, 24, |f| {
+            render_game(&world, &[], view(1, InventoryMode::Examine), f)
+        });
+        assert!(examining.contains("It runs on a power cell"), "{examining}");
+        let item = world.carried()[0].0; // the cutter
+        let moving = draw_screen(80, 24, |f| {
+            render_game(
+                &world,
+                &[],
+                view(1, InventoryMode::Moving { item, chosen: 0 }),
+                f,
+            )
+        });
+        assert!(moving.contains("Move the basic laser cutter"));
     }
 
     #[test]
@@ -2310,10 +2727,7 @@ mod tests {
             item: path,
             act: nighthawk_sim::PowerAct::Unload,
         });
-        let lines: Vec<String> = inventory_lines(&world, 9)
-            .iter()
-            .map(ToString::to_string)
-            .collect();
+        let lines = inventory_texts(&world, 9);
         assert_eq!(lines[6], "    hand lamp (Aluminium Alloy)  0.4 kg");
         assert_eq!(lines[7], "      no cell");
         assert_eq!(lines[8], "    power cell (Aluminium Alloy)  0.3 kg");
@@ -2467,7 +2881,10 @@ mod tests {
         let view = View {
             overlay: None,
             cursor: None,
-            inventory: Some(0),
+            inventory: Some(InventoryView {
+                selected: 0,
+                mode: InventoryMode::List,
+            }),
             crafting: None,
             wearing: None,
         };
