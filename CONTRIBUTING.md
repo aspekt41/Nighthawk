@@ -12,7 +12,7 @@ graphics. The background is in [`docs/`](docs/):
 
 | Read this | When |
 |---|---|
-| [Decision log](docs/scoping/03-decisions.md) | **Before any design or architecture work.** Every decision so far (D1–D62) with its reasoning. |
+| [Decision log](docs/scoping/03-decisions.md) | **Before any design or architecture work.** Every decision so far (D1–D63) with its reasoning. |
 | [Scope and roadmap](docs/scoping/02-scope-and-roadmap.md) | To find the next step (milestones M0–M6) and what is out of scope |
 | [Tech stack research](docs/research/03-terminal-tech-stack.md) | Before adding a library or touching terminal handling |
 | [Progression loop](docs/research/02-progression-loop-design.md) | Before designing a game system |

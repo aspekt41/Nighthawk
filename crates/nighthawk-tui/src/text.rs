@@ -1,7 +1,8 @@
 //! The words the game shows the player: log lines for sim events.
 
 use nighthawk_sim::{
-    Action, Blocked, BreathLevel, Cause, Event, ItemRef, Pos, Sound, Vertical, WarmthLevel, World,
+    Action, Blocked, BreathLevel, Cause, DateTime, Event, ItemRef, Pos, Sound, Vertical,
+    WarmthLevel, World,
 };
 
 /// What you'd bump into at `at`: the furniture there, or else the
@@ -32,16 +33,35 @@ pub fn describe_in(world: &World, event: Event) -> Option<String> {
     }
 }
 
-/// Log lines for putting things on and taking them off (decision D61).
-/// `world`, if given, names the item. `None` for any other event.
+/// Log lines for putting things on and taking them off (decision D61),
+/// and for coming to after blacking out (D63). `world`, if given, names
+/// the item or the furniture. `None` for any other event.
 fn dress_text(world: Option<&World>, event: Event) -> Option<String> {
     let name = |id| world.map_or_else(|| "item".into(), |w| item_name(w, id));
     match event {
         Event::PutOn(item) => Some(format!("You put on the {}.", name(item))),
         Event::TookOff(item) => Some(format!("You take off the {}.", name(item))),
         Event::CannotDress(blocked) => Some(cannot_dress_text(world, blocked)),
+        Event::WokeUp { beside } => Some(woke_text(world, beside)),
         _ => None,
     }
+}
+
+/// "You come to beside the stasis chamber, with no memory of getting here."
+fn woke_text(world: Option<&World>, beside: u16) -> String {
+    let furniture = world.and_then(|w| w.content().furniture().get(usize::from(beside)));
+    let name = furniture.map_or("pod", |f| f.name.as_str());
+    format!("You come to beside the {name}, with no memory of getting here.")
+}
+
+/// Why and when you blacked out: "You blacked out from lack of air at 25
+/// Nov 2631 09:12:40."
+pub fn blackout_text(cause: Cause, when: DateTime) -> String {
+    let why = match cause {
+        Cause::Air => "from lack of air",
+        Cause::Cold => "from the cold",
+    };
+    format!("You blacked out {why} at {when}.")
 }
 
 /// Why you can't put something on or take it off: "Take off your deck
@@ -966,6 +986,28 @@ mod tests {
         assert_eq!(
             blocked_short(missing, 0, Some(&world)),
             "needs 1 ductile scr"
+        );
+    }
+
+    #[test]
+    fn blacking_out_and_coming_to_say_why_when_and_where() {
+        let when = nighthawk_sim::SHIP_START;
+        assert!(blackout_text(Cause::Air, when).starts_with("You blacked out from lack of air at"));
+        assert!(blackout_text(Cause::Cold, when).starts_with("You blacked out from the cold at"));
+        let world = real_world();
+        let yours = world
+            .content()
+            .furniture_index("your_stasis_chamber")
+            .unwrap();
+        let woke = Event::WokeUp { beside: yours };
+        assert_eq!(
+            describe_in(&world, woke).as_deref(),
+            Some("You come to beside the stasis chamber, with no memory of getting here.")
+        );
+        assert!(
+            describe(woke)
+                .unwrap()
+                .starts_with("You come to beside the pod")
         );
     }
 

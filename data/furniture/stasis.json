@@ -19,7 +19,8 @@
       "colour": "green",
       "size": [2, 1],
       "holds_ml": 2000,
-      "charges_w": 100
+      "charges_w": 100,
+      "revives": true
     }
   ]
 }

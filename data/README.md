@@ -201,6 +201,7 @@ tile, and it's still one thing: a stasis chamber is two tiles long.
 | `blocks_sight` | Optional. It's tall enough to hide what's behind it (and to cast a shadow), like a locker. Left out, you can see over it. |
 | `holds_ml` | Optional. It's a container holding this many millilitres, like a locker (60000, 60 L). Maps can put items inside it (`contents`, under [Maps](#maps-mapsjson)), look mode lists what's inside, and the `take_out` action (`t` in the interact menu) takes them out into your pockets; `p` on the inventory screen puts things back in while it has room. What's inside one within reach (beside you) counts for recipes and crafts, tools included, as if it were in your pockets. Left out, it holds nothing. |
 | `charges_w` | Optional. It charges power cells put in it at this many watts, like the charging port in your own stasis chamber (100 W): each second, the first cell inside that isn't full, on its own or in something that runs on one, gains that many joules. Needs `holds_ml`. Left out, it charges nothing. |
+| `revives` | Optional. It's a lifepod, like your own stasis chamber: after blacking out you come to on the first free tile around the first piece that does, and while you stand beside one its emergency air and heat keep your breath and warmth from falling (decisions D15, D63). Left out, it doesn't. |
 
 A game may have no furniture at all; the folder must still exist.
 

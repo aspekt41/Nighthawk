@@ -23,7 +23,7 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::Line;
-use ratatui::widgets::{Block, Paragraph, Widget, Wrap};
+use ratatui::widgets::{Block, Clear, Paragraph, Widget, Wrap};
 
 use crate::app::{App, Screen};
 use crate::text;
@@ -85,6 +85,8 @@ pub struct View {
     pub crafting: Option<usize>,
     /// The highlighted line, while the wear screen is open.
     pub wearing: Option<usize>,
+    /// The highlighted option of the box shown while blacked out.
+    pub blackout: usize,
 }
 
 /// Draws whichever screen the app is on.
@@ -98,6 +100,7 @@ pub fn render(app: &App, frame: &mut Frame) {
         }),
         crafting: app.crafting,
         wearing: app.wearing,
+        blackout: app.blackout,
     };
     match &app.screen {
         Screen::Title(menu) => render_title(menu, frame),
@@ -234,6 +237,77 @@ fn render_game(world: &World, log_lines: &[String], view: View, frame: &mut Fram
             frame.render_widget(log(log_lines, log_lines_shown), log_area);
         }
     }
+    // Blacked out: a box over everything, to wake up or quit (D63).
+    if !world.is_conscious() {
+        let area = centred(map_area, BLACKOUT_WIDTH, BLACKOUT_HEIGHT);
+        // `Clear` blanks what's under the box first, so the map doesn't
+        // show through its empty cells.
+        frame.render_widget(Clear, area);
+        frame.render_widget(blackout_box(world, view.blackout), area);
+    }
+}
+
+/// The blacked-out box's size: enough for its longest line.
+const BLACKOUT_WIDTH: u16 = 52;
+const BLACKOUT_HEIGHT: u16 = 10;
+
+/// What the blacked-out box offers: waking up beside whatever revives you,
+/// if anything still can, and quitting.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BlackoutOption {
+    WakeUp,
+    Quit,
+}
+
+/// The blacked-out box's options, in order. The app and the box both use
+/// it, so they always agree.
+pub fn blackout_options(world: &World) -> Vec<BlackoutOption> {
+    let wake = world.wake_spot().map(|_| BlackoutOption::WakeUp);
+    wake.into_iter().chain([BlackoutOption::Quit]).collect()
+}
+
+/// The box shown while you're blacked out, with option number `selected`
+/// highlighted.
+fn blackout_box(world: &World, selected: usize) -> Paragraph<'static> {
+    let dim = Style::new().fg(Color::DarkGray);
+    let why = world
+        .blackout_cause()
+        .map_or_else(String::new, |cause| text::blackout_text(cause, world.now()));
+    let mut lines = vec![Line::raw(why), Line::raw("")];
+    let options = blackout_options(world);
+    for (i, &option) in options.iter().enumerate() {
+        let label = match option {
+            BlackoutOption::WakeUp => {
+                let beside = world.wake_spot().map(|(_, kind)| kind);
+                let kind = beside.and_then(|k| world.content().furniture().get(usize::from(k)));
+                format!(
+                    "Wake up beside the {}",
+                    kind.map_or("pod", |k| k.name.as_str())
+                )
+            }
+            BlackoutOption::Quit => "Quit to the title menu (saves the game)".to_string(),
+        };
+        lines.push(if i == selected {
+            let style = Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD);
+            Line::styled(format!("> {label} <"), style)
+        } else {
+            Line::raw(format!("  {label}  "))
+        });
+    }
+    if !options.contains(&BlackoutOption::WakeUp) {
+        lines.push(Line::styled(
+            "Nothing is left that could pull you back.",
+            dim,
+        ));
+    }
+    lines.extend([
+        Line::raw(""),
+        Line::styled("j/k: move   Enter: choose   w/q: pick", dim),
+    ]);
+    Paragraph::new(lines)
+        .centered()
+        .wrap(Wrap { trim: true })
+        .block(Block::bordered().title(" You blacked out "))
 }
 
 /// Draws the map with the player in the middle of the view.
@@ -2059,6 +2133,7 @@ mod tests {
             inventory: None,
             crafting: None,
             wearing: None,
+            blackout: 0,
         };
         let bay = draw_screen(80, 24, |f| render_game(&world, &[], heat, f));
         assert!(bay.contains("[heat overlay]"));
@@ -2102,6 +2177,7 @@ mod tests {
             inventory: None,
             crafting: None,
             wearing: None,
+            blackout: 0,
         }
     }
 
@@ -2252,6 +2328,7 @@ mod tests {
             inventory: None,
             crafting: None,
             wearing: None,
+            blackout: 0,
         };
         let screen = draw_screen(80, 24, |f| render_game(&world, &[], view, f));
         assert!(screen.contains("[looking]"));
@@ -2426,6 +2503,7 @@ mod tests {
             inventory: None,
             crafting: None,
             wearing: None,
+            blackout: 0,
         };
         let log = ["You need a tool with LASER 1 for that.".to_string()];
         let screen = draw_screen(80, 24, |f| render_game(&world, &log, view, f));
@@ -2688,6 +2766,7 @@ mod tests {
             inventory: Some(InventoryView { selected, mode }),
             crafting: None,
             wearing: None,
+            blackout: 0,
         };
         // Only 12 rows: the shoes, last of 4 lines, sit 14 lines down.
         let shoes = draw_screen(80, 18, |f| {
@@ -2838,6 +2917,54 @@ mod tests {
         assert_eq!(place(&world, nowhere), "in the container");
     }
 
+    /// A blacked-out world on a deck with no air, two steps from your
+    /// stasis chamber, or with none (`pod`).
+    fn blacked_out(pod: bool) -> World {
+        let row = if pod { "H@.PPH" } else { "H@...H" };
+        let rows = ["HHHHHH", row, "HHHHHH"];
+        let json = format!(
+            r##"{{ "id": "t", "name": "T",
+                 "legend": {{ "H": "hull_plating", ".": "deck_plating", "@": "deck_plating",
+                     "P": {{ "structure": "deck_plating", "furniture": "your_stasis_chamber" }} }},
+                 "decks": [ {{ "rows": {rows:?}, "pressure": 0 }} ] }}"##
+        );
+        let data = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../data");
+        let content = crate::content::load_content(&data).unwrap();
+        let mut world = World::new(parse_map(&json, &content).unwrap(), 1);
+        for _ in 0..50 {
+            world.apply(Command::Wait);
+        }
+        assert!(!world.is_conscious());
+        world
+    }
+
+    #[test]
+    fn blacked_out_a_box_over_the_game_offers_to_wake_up_or_quit() {
+        let view = |blackout| View {
+            overlay: None,
+            cursor: None,
+            inventory: None,
+            crafting: None,
+            wearing: None,
+            blackout,
+        };
+        let world = blacked_out(true);
+        assert_eq!(
+            blackout_options(&world),
+            [BlackoutOption::WakeUp, BlackoutOption::Quit]
+        );
+        let screen = draw_screen(80, 24, |f| render_game(&world, &[], view(0), f));
+        assert!(screen.contains(" You blacked out "), "{screen}");
+        assert!(screen.contains("You blacked out from lack of air at"));
+        assert!(screen.contains("> Wake up beside the stasis chamber <"));
+        assert!(screen.contains("Quit to the title menu (saves the game)"));
+        let nothing = blacked_out(false);
+        assert_eq!(blackout_options(&nothing), [BlackoutOption::Quit]);
+        let screen = draw_screen(80, 24, |f| render_game(&nothing, &[], view(0), f));
+        assert!(screen.contains("> Quit to the title menu (saves the game) <"));
+        assert!(screen.contains("Nothing is left that could pull you back."));
+    }
+
     #[test]
     fn the_wear_screen_replaces_the_map() {
         let world = real_world();
@@ -2847,6 +2974,7 @@ mod tests {
             inventory: None,
             crafting: None,
             wearing: Some(0),
+            blackout: 0,
         };
         let screen = draw_screen(80, 24, |f| render_game(&world, &[], view, f));
         assert!(screen.contains(" Wear ") && screen.contains("Enter put on or take off"));
@@ -2862,6 +2990,7 @@ mod tests {
             inventory: None,
             crafting: Some(0),
             wearing: None,
+            blackout: 0,
         };
         let screen = draw_screen(80, 24, |f| render_game(&world, &[], view, f));
         assert!(screen.contains(" Crafting ") && screen.contains("Enter make"));
@@ -2887,6 +3016,7 @@ mod tests {
             }),
             crafting: None,
             wearing: None,
+            blackout: 0,
         };
         let screen = draw_screen(80, 24, |f| render_game(&world, &[], view, f));
         assert!(screen.contains(" Inventory "));

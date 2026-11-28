@@ -6,16 +6,18 @@
 //! of it can be tested directly.
 
 use nighthawk_sim::{
-    ActionOption, Blocked, Cause, Command, DateTime, Dress, ItemAt, ItemPath, LoadedMap, Place,
-    Pos, World, options_at,
+    ActionOption, Blocked, Command, Dress, ItemAt, ItemPath, LoadedMap, Place, Pos, World,
+    options_at,
 };
 use ratatui::crossterm::event::KeyEvent;
 
-use crate::keys::{self, CursorAction, GameAction, InventoryAction, ListAction, TitleAction};
+use crate::keys::{
+    self, BlackoutAction, CursorAction, GameAction, InventoryAction, ListAction, TitleAction,
+};
 use crate::saves::SaveSlot;
 use crate::text;
 use crate::title::{MenuItem, TitleMenu};
-use crate::ui::{self, Cursor, CursorMode, InvEntry, InventoryMode, Overlay};
+use crate::ui::{self, BlackoutOption, Cursor, CursorMode, InvEntry, InventoryMode, Overlay};
 
 /// How many log lines to keep. The log panel shows as many as fit.
 pub const LOG_LIMIT: usize = 100;
@@ -76,6 +78,9 @@ pub struct App {
     /// While the wear screen is open (`W`), which line is highlighted
     /// (see [`ui::wear_entries`]).
     pub wearing: Option<usize>,
+    /// While you're blacked out, which option of the box is highlighted
+    /// (see [`ui::blackout_options`]).
+    pub blackout: usize,
 }
 
 impl App {
@@ -101,6 +106,7 @@ impl App {
             inventory_mode: InventoryMode::List,
             crafting: None,
             wearing: None,
+            blackout: 0,
         };
         match seed {
             Some(seed) => app.start_new_game(seed),
@@ -134,33 +140,60 @@ impl App {
     /// or a cursor. Returns whether something was open, and so took the
     /// key (even a key it does nothing with).
     fn on_open_screen(&mut self, key: KeyEvent) -> bool {
-        if let Some(asking) = self.asking_direction {
-            self.answer_direction(key, asking);
-            return true;
+        // `||` stops at the first that takes the key, so they're tried in
+        // order: the blacked-out box first, since it takes every key.
+        self.on_blackout_key(key)
+            || self.on_question_key(key)
+            || self.on_list_screen_key(key)
+            || self.on_cursor_key(key)
+    }
+
+    /// While you're blacked out, the box asking to wake up or quit takes
+    /// every key. Returns whether it's up.
+    fn on_blackout_key(&mut self, key: KeyEvent) -> bool {
+        let out_cold = matches!(&self.screen, Screen::Playing(world) if !world.is_conscious());
+        if out_cold && let Some(action) = keys::blackout_action(key) {
+            self.on_blackout(action);
         }
+        out_cold
+    }
+
+    /// The key that answers a question waiting for a direction, if one is.
+    fn on_question_key(&mut self, key: KeyEvent) -> bool {
+        let Some(asking) = self.asking_direction else {
+            return false;
+        };
+        self.answer_direction(key, asking);
+        true
+    }
+
+    /// A key for the inventory, crafting or wear screen, whichever is open.
+    fn on_list_screen_key(&mut self, key: KeyEvent) -> bool {
         if self.inventory.is_some() {
             self.on_inventory_key(key);
-            return true;
-        }
-        if self.crafting.is_some() {
+        } else if self.crafting.is_some() {
             if let Some(action) = keys::crafting_action(key) {
                 self.on_crafting(action);
             }
-            return true;
-        }
-        if self.wearing.is_some() {
+        } else if self.wearing.is_some() {
             if let Some(action) = keys::wear_action(key) {
                 self.on_wear(action);
             }
-            return true;
+        } else {
+            return false;
         }
-        if self.cursor.is_some() {
-            if let Some(action) = keys::cursor_action(key, self.actions()) {
-                self.on_cursor(action);
-            }
-            return true;
+        true
+    }
+
+    /// A key for the look or interact cursor, if it's up.
+    fn on_cursor_key(&mut self, key: KeyEvent) -> bool {
+        if self.cursor.is_none() {
+            return false;
         }
-        false
+        if let Some(action) = keys::cursor_action(key, self.actions()) {
+            self.on_cursor(action);
+        }
+        true
     }
 
     /// The actions of the game being played (from `data/actions/`), or
@@ -196,11 +229,7 @@ impl App {
             GameAction::Save => {
                 self.save_game();
             }
-            GameAction::ToTitle => {
-                if self.save_game() {
-                    self.show_title(None);
-                }
-            }
+            GameAction::ToTitle => self.quit_to_title(),
             GameAction::ToTitleWithoutSaving => self.show_title(None),
             GameAction::Exit => self.quit = self.save_game(),
             GameAction::ToggleOverlay(_)
@@ -594,21 +623,62 @@ impl App {
         for line in lines {
             self.push_log(line);
         }
-        self.end_game_if_blacked_out();
+        self.close_screens_if_blacked_out();
     }
 
-    /// Until there's a base to wake up in (decision D5), blacking out ends
-    /// the game: back to the title menu, *without* saving, so Continue picks
-    /// up from the last save.
-    fn end_game_if_blacked_out(&mut self) {
+    /// Blacked out, nothing else stays open: the box asking to wake up or
+    /// quit takes over (decision D63), its first option highlighted.
+    fn close_screens_if_blacked_out(&mut self) {
+        if let Screen::Playing(world) = &self.screen
+            && !world.is_conscious()
+        {
+            self.inventory = None;
+            self.inventory_mode = InventoryMode::List;
+            self.crafting = None;
+            self.wearing = None;
+            self.cursor = None;
+            self.asking_direction = None;
+            self.blackout = 0;
+        }
+    }
+
+    /// Moves the blacked-out box's highlight, wakes up beside your stasis
+    /// chamber, or saves and goes back to the title menu.
+    fn on_blackout(&mut self, action: BlackoutAction) {
         let Screen::Playing(world) = &self.screen else {
             return;
         };
-        let Some(cause) = world.blackout_cause() else {
-            return;
+        let options = ui::blackout_options(world);
+        let last = options.len().saturating_sub(1);
+        let chosen = match action {
+            BlackoutAction::Up => {
+                self.blackout = self.blackout.saturating_sub(1);
+                return;
+            }
+            BlackoutAction::Down => {
+                self.blackout = (self.blackout + 1).min(last);
+                return;
+            }
+            BlackoutAction::Choose => options.get(self.blackout).copied(),
+            BlackoutAction::Wake => options
+                .first()
+                .copied()
+                .filter(|&o| o == BlackoutOption::WakeUp),
+            BlackoutAction::Quit => Some(BlackoutOption::Quit),
         };
-        let message = blackout_message(cause, world.now());
-        self.show_title(Some(message));
+        match chosen {
+            Some(BlackoutOption::WakeUp) => self.apply(Command::WakeUp),
+            Some(BlackoutOption::Quit) => self.quit_to_title(),
+            None => {}
+        }
+    }
+
+    /// Saves, then goes back to the title menu; if the save fails, stays
+    /// in the game (the log says why).
+    fn quit_to_title(&mut self) {
+        if self.save_game() {
+            self.show_title(None);
+        }
     }
 
     /// Saves the current game and logs the result. Returns `false` only if a
@@ -668,18 +738,6 @@ fn repeats(last: &str, line: &str) -> Option<u32> {
     count.parse().ok()
 }
 
-/// The title menu's message after blacking out: why, when, and that the
-/// game wasn't saved.
-fn blackout_message(cause: Cause, when: DateTime) -> String {
-    let why = match cause {
-        Cause::Air => "from lack of air",
-        Cause::Cold => "from the cold",
-    };
-    format!(
-        "You blacked out {why} at {when}. The game was not saved; Continue loads your last save."
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -735,8 +793,11 @@ mod tests {
         said.map_or("", String::as_str)
     }
 
+    /// Whether `line` is a ship noise, counted ("… (×2)") or not.
     fn is_ambient_line(line: &str) -> bool {
-        Sound::ALL.iter().any(|&s| text::sound_text(s) == line)
+        Sound::ALL
+            .iter()
+            .any(|&s| line.starts_with(text::sound_text(s)))
     }
 
     // --- Opening the app -------------------------------------------------
@@ -1109,48 +1170,89 @@ mod tests {
 
     // --- Blacking out ---------------------------------------------------------
 
-    #[test]
-    fn the_blackout_message_names_the_cause() {
-        let when = nighthawk_sim::SHIP_START;
-        assert!(
-            blackout_message(Cause::Air, when).starts_with("You blacked out from lack of air at")
+    /// An app on a deck with no air, wearing a jumpsuit, two steps from
+    /// your stasis chamber (`pod`) or with none, and already blacked out:
+    /// with the crafting screen open, to show blacking out closes it.
+    fn airless(pod: bool) -> (App, tempfile::TempDir) {
+        let rows = if pod {
+            ["HHHHHH", "H@.PPH", "HHHHHH"]
+        } else {
+            ["HHHHHH", "H@...H", "HHHHHH"]
+        };
+        let json = format!(
+            r##"{{ "id": "t", "name": "T", "player_wears": [ {{ "item": "jumpsuit" }} ],
+                 "legend": {{ "H": "hull_plating", ".": "deck_plating", "@": "deck_plating",
+                     "P": {{ "structure": "deck_plating", "furniture": "your_stasis_chamber" }} }},
+                 "decks": [ {{ "rows": {rows:?}, "pressure": 0 }} ] }}"##
         );
-        assert!(
-            blackout_message(Cause::Cold, when).starts_with("You blacked out from the cold at")
-        );
+        let data = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../data");
+        let content = crate::content::load_content(&data).unwrap();
+        let map = nighthawk_sim::parse_map(&json, &content).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = App::new(map, Some(SaveSlot::in_dir(dir.path())), Some(1), fixed_seed);
+        app.crafting = Some(0);
+        for _ in 0..50 {
+            app.apply(Command::Wait);
+        }
+        assert!(!world(&app).is_conscious(), "out cold");
+        (app, dir)
     }
 
     #[test]
-    fn blacking_out_returns_to_the_title_without_saving() {
-        // Walk to the breached bunk room on the crew deck, open its door,
-        // and stand there until the air (and the player) give out.
-        let (mut app, dir) = new_app(Some(7));
-        let route = std::iter::repeat_n('k', 5)
-            .chain(std::iter::repeat_n('l', 23))
-            .chain(['>'])
-            .chain(std::iter::repeat_n('j', 4))
-            .chain(std::iter::repeat_n('h', 22))
-            .chain(['j']); // opens the breached room's door
-        for c in route {
-            app.handle_key(key(KeyCode::Char(c)));
-        }
-        for _ in 0..2_000 {
-            if current_world(&app).is_none() {
-                break;
-            }
-            app.handle_key(key(KeyCode::Char('.')));
-        }
+    fn blacking_out_opens_a_box_that_takes_every_key_and_wakes_you_by_the_chamber() {
+        let (mut app, _dir) = airless(true);
+        assert_eq!(
+            (app.crafting, app.blackout),
+            (None, 0),
+            "the box, not crafting"
+        );
+        let before = world(&app).seconds();
+        press_all(&mut app, "l.iCe");
+        app.handle_key(key(KeyCode::Esc));
+        assert_eq!(world(&app).seconds(), before, "nothing else happens");
+        assert_eq!((app.inventory, app.cursor), (None, None));
+        press_all(&mut app, "jj");
+        assert_eq!(app.blackout, 1, "Quit, the last");
+        press_all(&mut app, "k");
+        assert_eq!(app.blackout, 0, "Wake up");
+        app.handle_key(key(KeyCode::Enter));
+        assert!(world(&app).is_conscious());
+        assert_eq!(
+            world(&app).player(),
+            Pos::new(2, 1, 0),
+            "beside the chamber"
+        );
+        assert!(
+            last_said(&app).starts_with("You come to beside the stasis chamber"),
+            "{}",
+            last_said(&app)
+        );
+        press_all(&mut app, "....");
+        assert!(world(&app).is_conscious(), "its air keeps you going");
+    }
 
-        let message = menu(&app).message().expect("a message on the title menu");
-        assert!(
-            message.starts_with("You blacked out from lack of air at 25 Nov 2631"),
-            "{message}"
-        );
-        assert!(message.contains("not saved"));
-        assert!(
-            !SaveSlot::in_dir(dir.path()).exists(),
-            "blacking out must not save"
-        );
+    #[test]
+    fn quitting_while_blacked_out_saves_and_continue_brings_the_box_back() {
+        let (mut app, dir) = airless(true);
+        press_all(&mut app, "q");
+        assert!(current_world(&app).is_none(), "on the title menu");
+        assert!(SaveSlot::in_dir(dir.path()).exists(), "saved");
+        press_all(&mut app, "c");
+        assert!(!world(&app).is_conscious(), "still out cold");
+        press_all(&mut app, "w");
+        assert!(world(&app).is_conscious(), "w wakes you");
+    }
+
+    #[test]
+    fn with_nothing_to_revive_you_only_quitting_is_offered() {
+        let (mut app, dir) = airless(false);
+        press_all(&mut app, "wj");
+        assert!(!world(&app).is_conscious(), "w does nothing");
+        assert_eq!(app.blackout, 0, "one option");
+        app.handle_key(key(KeyCode::Enter));
+        assert!(current_world(&app).is_none(), "Enter quits");
+        assert!(SaveSlot::in_dir(dir.path()).exists());
+        app.on_blackout(BlackoutAction::Up); // no game: ignored
     }
 
     // --- Look mode ------------------------------------------------------------

@@ -217,8 +217,9 @@ precise error and exits with code 1 before entering raw mode.
   with LASER 1, 30 s), and puts the player on
   `"floor"` if the legend doesn't say what `@` is. Test furniture: a
   `"crate"` in the way, a `"bench"` two tiles across, a walkable `"stool"`,
-  a `"cabinet"` that blocks sight and holds 1 L, and a `"dock"` that holds
-  1 L and charges cells in it at 100 W. Test rooms are dark
+  a `"cabinet"` that blocks sight and holds 1 L, a `"dock"` that holds
+  1 L and charges cells in it at 100 W, and a `"pod"` two tiles across
+  that revives you. Test rooms are dark
   (you see only the tiles beside you) unless their map has a light: put a
   `*` in a wall with `"*": "lamp"` in the legend. Integration tests share
   `crates/nighthawk-sim/tests/common/mod.rs`, which loads the real `data/`;

@@ -98,6 +98,11 @@ pub enum Command {
     },
     /// Put something on, or take something off (D61).
     Dress(Dress),
+    /// Come to after blacking out, beside the furniture that revives you
+    /// (your stasis chamber), with everything you wore and carried
+    /// (D63). Does nothing while you're awake, or if nothing can revive
+    /// you.
+    WakeUp,
 }
 
 /// Putting on or taking off clothes (and packs): one thing per slot.
@@ -265,6 +270,11 @@ pub enum Event {
     /// The player couldn't put something on or take it off, and `blocked`
     /// says why. No time passes.
     CannotDress(Blocked),
+    /// The player came to beside furniture of kind number `beside` (their
+    /// stasis chamber) after blacking out.
+    WokeUp {
+        beside: u16,
+    },
     /// The player followed a recipe for action number `action` on the tile
     /// at `at`, which was structure number `was` and is now what the
     /// recipe makes (it cut through a door, patched a crack…).
@@ -347,6 +357,9 @@ pub const SWITCH_SECONDS: u64 = 1;
 pub const PUT_ON_SECONDS: u64 = 20;
 /// Taking one off.
 pub const TAKE_OFF_SECONDS: u64 = 10;
+/// How long you're out after blacking out, before you come to beside your
+/// stasis chamber (decision D63).
+pub const WAKE_SECONDS: u64 = 1800;
 
 /// How far you can reach into furniture, in steps: the tiles right around
 /// you (and your own). You can put things in furniture that close, and
@@ -665,11 +678,22 @@ impl World {
     /// moves forward (decision D7). An action that fails, like bumping a
     /// wall, costs no time.
     pub fn apply(&mut self, command: Command) -> Vec<Event> {
-        // A blacked-out player can't do anything.
-        if !self.is_conscious() {
+        // A blacked-out player can only wake up.
+        let events = if self.is_conscious() {
+            self.act(command)
+        } else if command == Command::WakeUp {
+            self.wake_up()
+        } else {
             return Vec::new();
-        }
-        let events = match command {
+        };
+        self.remember_carried();
+        self.refresh_view();
+        events
+    }
+
+    /// Does `command` for a player who's awake.
+    fn act(&mut self, command: Command) -> Vec<Event> {
+        match command {
             Command::Move(dir) => self.walk(dir),
             Command::Climb(way) => self.climb(way),
             Command::Interact { at, action } => self.interact(at, action),
@@ -683,10 +707,67 @@ impl World {
                 self.pass_time(WAIT_SECONDS, &mut events);
                 events
             }
+            // Already awake: nothing to do.
+            Command::WakeUp => Vec::new(),
+        }
+    }
+
+    /// Where you'd come to after blacking out (decision D63): the first
+    /// free tile around the first furniture that revives (your stasis
+    /// chamber), looking around each of its tiles in turn. `None` if
+    /// there's no such furniture left, or nowhere free around it.
+    pub fn wake_spot(&self) -> Option<(Pos, u16)> {
+        let kinds = self.content.furniture();
+        let revives = |p: &&Piece| kinds.get(usize::from(p.kind)).is_some_and(|k| k.revives);
+        let piece = self.furniture.pieces().iter().find(revives)?;
+        let kind = &kinds[usize::from(piece.kind)];
+        let around = piece.tiles(kind).flat_map(|t| Dir::ALL.map(|d| t.step(d)));
+        let mut free = around.filter(|&p| {
+            self.map.get(p).is_some_and(Tile::is_walkable) && !self.furniture_in_the_way(p)
+        });
+        free.next().map(|p| (p, piece.kind))
+    }
+
+    /// Whether you're within reach of furniture that revives you, like your
+    /// stasis chamber: the lifepod's emergency air line and heater keep you
+    /// breathing and warm there, however thin or cold the air around it
+    /// (decisions D15, D63). It's enough to come round and recover, not to
+    /// live on.
+    fn beside_lifepod(&self) -> bool {
+        // The tiles around you, seen or not: an air line doesn't need
+        // light. (What you can see isn't worked out again until a command
+        // ends, and waking up moves you partway through one.)
+        let kinds = self.content.furniture();
+        let around = std::iter::once(self.player).chain(Dir::ALL.map(|d| self.player.step(d)));
+        around
+            .filter_map(|p| self.furniture.at(&self.map, p))
+            .any(|piece| {
+                kinds
+                    .get(usize::from(piece.kind))
+                    .is_some_and(|k| k.revives)
+            })
+    }
+
+    /// Comes to beside your stasis chamber, breath and warmth restored and
+    /// everything you had still on you, after being out for
+    /// [`WAKE_SECONDS`]; or nothing, if nothing can revive you.
+    fn wake_up(&mut self) -> Vec<Event> {
+        let Some((at, beside)) = self.wake_spot() else {
+            return Vec::new();
         };
-        self.remember_carried();
-        self.refresh_view();
-        events
+        self.player = at;
+        self.breath = BREATH_FULL;
+        self.warmth = WARMTH_FULL;
+        let mut while_out = Vec::new();
+        self.pass_time(WAKE_SECONDS, &mut while_out);
+        // Out cold, you heard none of the ship's noises; anything else (air
+        // hissing out, a light gone flat) you notice as you come to.
+        let noticed = while_out
+            .into_iter()
+            .filter(|e| !matches!(e, Event::Ambient(_)));
+        std::iter::once(Event::WokeUp { beside })
+            .chain(noticed)
+            .collect()
     }
 
     /// Adds every kind of item the player wears or carries now to the
@@ -1611,6 +1692,12 @@ impl World {
     /// One second of breathing the air on the player's tile.
     fn breathe(&mut self, events: &mut Vec<Event>) {
         let o2 = self.map.air(self.player).map_or(0, |mix| mix.o2);
+        // Beside your stasis chamber, its emergency air line tops you up.
+        let o2 = if self.beside_lifepod() {
+            o2.max(body::SAFE_O2_PA)
+        } else {
+            o2
+        };
         let before = self.breath;
         self.breath = body::breath_after(before, o2);
         let levels = body::breath_levels(before, self.breath);
@@ -1628,7 +1715,14 @@ impl World {
             return;
         }
         let before = self.warmth;
-        self.warmth = body::warmth_after(before, self.map.temperature(self.player));
+        let air_mk = self.map.temperature(self.player);
+        // Beside your stasis chamber, its heater keeps you warm enough.
+        let air_mk = if self.beside_lifepod() {
+            Some(air_mk.map_or(body::COMFORT_MK, |mk| mk.max(body::COMFORT_MK)))
+        } else {
+            air_mk
+        };
+        self.warmth = body::warmth_after(before, air_mk);
         let levels = body::warmth_levels(before, self.warmth);
         events.extend(levels.into_iter().map(Event::Warmth));
         if self.warmth == 0 {
@@ -3888,6 +3982,86 @@ mod tests {
         assert_eq!(world.carried().len(), 1);
         let nothing = [Event::CannotDress(Blocked::NotPossible)];
         assert_eq!(dress(&mut world, Dress::TakeOff(5)), nothing);
+    }
+
+    // --- Waking up (D63) ---------------------------------------------------
+
+    /// A lit room drawn by `rows`; in [`POD_ROOM`], a pod `PP` that revives
+    /// you at (1, 1)–(2, 1), and you at `@` (3, 2), in the test suit and
+    /// carrying a scrap:
+    ///
+    /// ```text
+    /// #*####
+    /// #PP..#
+    /// #..@.#
+    /// ######
+    /// ```
+    fn pod_room(rows: &[&str]) -> World {
+        let json = format!(
+            r##"{{ "id": "t", "name": "T", "player_wears": [ {{ "item": "suit" }} ],
+                  "legend": {{ "#": "wall", ".": "floor", "*": "lamp",
+                     "P": {{ "structure": "floor", "furniture": "pod" }} }},
+                  "decks": [ {{ "rows": {rows:?} }} ] }}"##
+        );
+        let mut world = World::new(parse_map(&json).expect("test map is valid"), TEST_SEED);
+        pocket(&mut world, SCRAP, 0);
+        world
+    }
+
+    const POD_ROOM: [&str; 4] = ["#*####", "#PP..#", "#..@.#", "######"];
+
+    #[test]
+    fn blacked_out_you_come_to_beside_the_pod_with_everything_you_had() {
+        let mut world = pod_room(&POD_ROOM);
+        world.breath = 0;
+        assert_eq!(world.apply(Command::Move(Dir::West)), [], "out cold");
+        let pod = world.content().furniture_index("pod").unwrap();
+        let events = world.apply(Command::WakeUp);
+        assert_eq!(events, [Event::WokeUp { beside: pod }], "no noises heard");
+        // Around the pod's first tile, (1, 1): wall, lamp, the pod itself,
+        // then the floor at (2, 2).
+        assert_eq!(world.player(), Pos::new(2, 2, 0));
+        assert!(world.is_conscious());
+        assert_eq!((world.breath(), world.warmth()), (BREATH_FULL, WARMTH_FULL));
+        assert_eq!(world.seconds(), WAKE_SECONDS, "out for half an hour");
+        assert_eq!(world.carried_count(SCRAP), 1, "still carrying it");
+        assert_eq!(world.worn().len(), 1, "still wearing the suit");
+    }
+
+    #[test]
+    fn beside_the_pod_its_emergency_air_and_heat_keep_you_going() {
+        let mut world = pod_room(&POD_ROOM);
+        // Vacuum everywhere: no air, and it feels freezing.
+        for p in world.map.positions().collect::<Vec<_>>() {
+            world.map.set_air(p, crate::air::Mix::VACUUM);
+        }
+        world.player = Pos::new(2, 2, 0); // beside the pod
+        for _ in 0..20 {
+            world.apply(Command::Wait);
+        }
+        assert_eq!((world.breath(), world.warmth()), (BREATH_FULL, WARMTH_FULL));
+        world.apply(Command::Move(Dir::East));
+        world.apply(Command::Move(Dir::East)); // (4, 2): out of the pod's reach
+        world.apply(Command::Wait);
+        assert!(world.breath() < BREATH_FULL && world.warmth() < WARMTH_FULL);
+    }
+
+    #[test]
+    fn waking_up_while_awake_does_nothing() {
+        let mut world = pod_room(&POD_ROOM);
+        assert_eq!(world.apply(Command::WakeUp), []);
+        assert_eq!((world.player(), world.seconds()), (Pos::new(3, 2, 0), 0));
+    }
+
+    #[test]
+    fn with_no_pod_or_nowhere_free_beside_it_nothing_revives_you() {
+        let mut no_pod = pod_room(&["#*####", "#...@#", "######"]);
+        no_pod.warmth = 0;
+        assert_eq!(no_pod.wake_spot(), None);
+        assert_eq!(no_pod.apply(Command::WakeUp), []);
+        assert!(!no_pod.is_conscious(), "still out cold");
+        let boxed_in = pod_room(&["#*#####", "#PP#@.#", "#####.#", "#######"]);
+        assert_eq!(boxed_in.wake_spot(), None, "walls all round it");
     }
 
     // --- Moving things between pockets (D62) --------------------------------

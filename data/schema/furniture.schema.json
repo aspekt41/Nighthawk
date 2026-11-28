@@ -105,6 +105,11 @@
           "description": "How it's shown to the player, like \"stasis chamber\".",
           "type": "string"
         },
+        "revives": {
+          "description": "Whether it revives you: after blacking out, you come to beside the\nfirst piece that does, like your own stasis chamber (decision D63).\nOptional: it doesn't.",
+          "type": "boolean",
+          "default": false
+        },
         "size": {
           "description": "Its width and height in tiles, from 1 to 4, as it stands unturned:\n`[2, 1]` is two tiles across and one down. Optional: `[1, 1]`.",
           "type": "array",

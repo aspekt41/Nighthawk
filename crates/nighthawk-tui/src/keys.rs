@@ -102,6 +102,36 @@ pub fn inventory_action(key: KeyEvent) -> Option<InventoryAction> {
     })
 }
 
+/// Something the player wants from the box shown while they're blacked
+/// out (decision D63).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BlackoutAction {
+    Up,
+    Down,
+    /// Do the highlighted option.
+    Choose,
+    /// Wake up, if anything can still revive you.
+    Wake,
+    /// Save and go back to the title menu.
+    Quit,
+}
+
+/// The action for a key pressed while blacked out: up and down choose,
+/// Enter does the highlighted option, `w` wakes up and `q` quits.
+pub fn blackout_action(key: KeyEvent) -> Option<BlackoutAction> {
+    if !is_press(key) {
+        return None;
+    }
+    match (key.code, direction(key)) {
+        (KeyCode::Enter, _) => Some(BlackoutAction::Choose),
+        (KeyCode::Char('w'), _) => Some(BlackoutAction::Wake),
+        (KeyCode::Char('q'), _) => Some(BlackoutAction::Quit),
+        (_, Some(Dir::North)) => Some(BlackoutAction::Up),
+        (_, Some(Dir::South)) => Some(BlackoutAction::Down),
+        _ => None,
+    }
+}
+
 /// The action for a key pressed while choosing a pocket to move an item
 /// to: up and down choose, Enter moves it, Esc, `i` or `q` cancel.
 pub fn pocket_action(key: KeyEvent) -> Option<ListAction> {
@@ -682,6 +712,23 @@ mod tests {
             assert_eq!(crafting_action(press(code)), action, "{code:?}");
         }
         assert_eq!(crafting_action(release(KeyCode::Enter)), None);
+    }
+
+    #[test]
+    fn blacked_out_you_choose_with_the_movement_keys_and_enter_or_w_and_q() {
+        let cases = [
+            (KeyCode::Char('k'), Some(BlackoutAction::Up)),
+            (KeyCode::Down, Some(BlackoutAction::Down)),
+            (KeyCode::Enter, Some(BlackoutAction::Choose)),
+            (KeyCode::Char('w'), Some(BlackoutAction::Wake)),
+            (KeyCode::Char('q'), Some(BlackoutAction::Quit)),
+            (KeyCode::Esc, None),
+            (KeyCode::Char('l'), None),
+        ];
+        for (code, action) in cases {
+            assert_eq!(blackout_action(press(code)), action, "{code:?}");
+        }
+        assert_eq!(blackout_action(release(KeyCode::Enter)), None);
     }
 
     #[test]

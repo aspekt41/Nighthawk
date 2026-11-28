@@ -67,6 +67,11 @@ pub struct FurnitureType {
     /// it charges nothing. Only a container can charge.
     #[serde(default)]
     pub charges_w: u32,
+    /// Whether it revives you: after blacking out, you come to beside the
+    /// first piece that does, like your own stasis chamber (decision D63).
+    /// Optional: it doesn't.
+    #[serde(default)]
+    pub revives: bool,
 }
 
 /// The default size: one tile. Serde's `default = "..."` names a function.
@@ -92,7 +97,8 @@ impl FurnitureType {
             .u8(u8::from(self.walkable))
             .u8(u8::from(self.blocks_sight))
             .u64(u64::from(self.holds_ml))
-            .u64(u64::from(self.charges_w));
+            .u64(u64::from(self.charges_w))
+            .u8(u8::from(self.revives));
     }
 }
 
@@ -443,8 +449,9 @@ pub(crate) mod tests {
 
     /// Test furniture, all steel: a one-tile `"crate"` in the way, a
     /// `"bench"` two tiles across, a `"stool"` you can walk through, a
-    /// `"cabinet"` that hides what's behind it and holds a litre, and a
-    /// `"dock"` that holds a litre and charges cells in it at 100 W.
+    /// `"cabinet"` that hides what's behind it and holds a litre, a
+    /// `"dock"` that holds a litre and charges cells in it at 100 W, and a
+    /// `"pod"` two tiles across that revives you.
     pub(crate) fn test_furniture_json() -> String {
         r#"{ "furniture": [
             { "id": "crate", "name": "crate", "description": "A crate.",
@@ -457,7 +464,9 @@ pub(crate) mod tests {
               "glyph": "{", "material": "steel", "blocks_sight": true, "colour": "red",
               "holds_ml": 1000 },
             { "id": "dock", "name": "dock", "description": "A dock.",
-              "glyph": "0", "material": "steel", "holds_ml": 1000, "charges_w": 100 }
+              "glyph": "0", "material": "steel", "holds_ml": 1000, "charges_w": 100 },
+            { "id": "pod", "name": "pod", "description": "A pod.",
+              "glyph": "0", "material": "steel", "size": [2, 1], "revives": true }
         ] }"#
             .into()
     }
@@ -477,7 +486,7 @@ pub(crate) mod tests {
     #[test]
     fn a_valid_file_loads_with_defaults_filled_in() {
         let all = test_furniture();
-        assert_eq!(all.list().len(), 5);
+        assert_eq!(all.list().len(), 6);
         assert_eq!(all.index_of("bench"), Some(1));
         assert_eq!(all.index_of("sofa"), None);
         let crate_ = &all.list()[0];
@@ -559,7 +568,8 @@ pub(crate) mod tests {
             h.finish()
         };
         let base = test_furniture();
-        let changes: [fn(&mut FurnitureType); 11] = [
+        let changes: [fn(&mut FurnitureType); 12] = [
+            |f| f.revives = true,
             |f| f.holds_ml = 5,
             |f| f.charges_w = 5,
             |f| f.id.push('!'),
