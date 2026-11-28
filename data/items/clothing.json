@@ -10,6 +10,7 @@
       "volume_ml": 2000,
       "solid_percent": 30,
       "wear": {
+        "slot": "body",
         "pockets": [
           {
             "name": "left hip pocket",
@@ -30,6 +31,57 @@
             "name": "right leg pocket",
             "volume_ml": 1000,
             "max_mass_g": 2500
+          }
+        ]
+      }
+    },
+    {
+      "id": "deck_shoes",
+      "name": "deck shoes",
+      "description": "Soft-soled ship shoes with grip strips, the kind the crew wore on watch. Quiet on the plating, and not much else.",
+      "glyph": "[",
+      "material": "polyester",
+      "volume_ml": 600,
+      "solid_percent": 30,
+      "wear": {
+        "slot": "feet",
+        "pockets": []
+      }
+    },
+    {
+      "id": "work_boots",
+      "name": "work boots",
+      "description": "Heavy maintenance boots with sealed seams and a slim sheath stitched inside the right one, just big enough for a blade.",
+      "glyph": "[",
+      "material": "polyester",
+      "volume_ml": 1600,
+      "solid_percent": 40,
+      "wear": {
+        "slot": "feet",
+        "pockets": [
+          {
+            "name": "boot sheath",
+            "volume_ml": 150,
+            "max_mass_g": 600
+          }
+        ]
+      }
+    },
+    {
+      "id": "sling_pack",
+      "name": "sling pack",
+      "description": "Fabric scrap sewn into a deep bag and hung from one shoulder on a twisted cord. It holds far more than your pockets, if you don't mind it swinging.",
+      "glyph": "[",
+      "material": "polyester",
+      "volume_ml": 1200,
+      "solid_percent": 20,
+      "wear": {
+        "slot": "back",
+        "pockets": [
+          {
+            "name": "sling pack",
+            "volume_ml": 8000,
+            "max_mass_g": 12000
           }
         ]
       }

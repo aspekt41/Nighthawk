@@ -290,7 +290,7 @@ is, plus whatever is in its pockets.
       "cell": { "capacity_kj": 300 } },
     { "id": "jumpsuit", "name": "jumpsuit", "description": "A crew jumpsuit.",
       "glyph": "[", "material": "cotton_fabric", "volume_ml": 2000, "solid_percent": 30,
-      "wear": { "pockets": [
+      "wear": { "slot": "body", "pockets": [
         { "name": "left hip pocket", "volume_ml": 1000, "max_mass_g": 2500 } ] } }
   ]
 }
@@ -305,7 +305,7 @@ is, plus whatever is in its pockets.
 | `volume_ml` | How much room it takes, in millilitres (above 0). |
 | `solid_percent` | How much of that volume is solid material, 1 to 100: 100 for a lump of scrap, 50 for a tool full of air and wiring. |
 | `qualities` | Optional. Tool qualities it has, levels 1 to 10, like `{ "LASER": 1 }`. Each must be a quality from `qualities/`. |
-| `wear` | Optional. Makes it wearable; `pockets` lists what it gives you to carry things in, each with a `name`, a `volume_ml` and a `max_mass_g`. |
+| `wear` | Optional. Makes it wearable: `slot` is where it goes (`"body"`, `"feet"`, `"back"`; any name), and you wear one thing in each slot, so boots replace shoes; `pockets` lists what it gives you to carry things in, each with a `name`, a `volume_ml` and a `max_mass_g` (a sling pack's is 8 L). You put things on and take them off on the wear screen (`W`), from your pockets, the floor beside you or a locker beside you. |
 | `light` | Optional. It gives light, reaching this many tiles (1 to 20): around it where it lies, or around you when you wear or carry it (the brightest thing you have counts). The hand lamp reaches 4. With `power`, only while it's switched on (`a` on the inventory screen) and its cell isn't flat. |
 | `cell` | Optional. Makes it a power cell holding `capacity_kj` kilojoules when full (1 to 4000). Each cell keeps its own charge, in joules. |
 | `power` | Optional. It runs on a power cell: `cell` names the cell item it takes, and `watts` (at least 1) is what it draws. A light draws it every second it's on, and goes out, switched off, when its cell runs flat. A tool draws it for every second of work it does: a recipe or craft that needs one of its qualities takes the recipe's `seconds` × `watts` joules from its cell, and the tool only counts if its cell holds that much ("The basic laser cutter's cell is too low for that"). A tool that needs no cell is used first. `r` on the inventory screen loads the fullest cell you carry, `u` takes it out. Not both `cell` and `power`. |
@@ -344,7 +344,7 @@ once, and the legend says what it stands on (something walkable).
 | `legend[].furniture` | Optional, in the object form: furniture standing on that tile, like `"C": { "structure": "deck_plating", "furniture": "stasis_chamber" }`. Draw **every tile the furniture covers** with that character: `CC` is one chamber two tiles long, and `CCCC` is two side by side. The loader cuts the drawing into pieces in reading order (the first tile of a piece it meets is its top-left), and a drawing that doesn't fit says where, like `deck 0, row 1, column 22: the stasis_chamber 'C' starting here also needs row 1, column 23 drawn as 'C'`. Furniture needs a walkable structure under it, and `@` can only stand on furniture you can walk through. |
 | `legend[].turned` | Optional, with `furniture`: turns it a quarter, swapping its width and height, so a chamber two tiles across runs two tiles down: `"c": { "structure": "deck_plating", "furniture": "stasis_chamber", "turned": true }`. |
 | `legend[].contents` | Optional, with `furniture` that holds things (`holds_ml`): items inside it, written like `items`: `"G": { "structure": "deck_plating", "furniture": "locker", "contents": [ { "item": "hand_lamp" } ] }`. Every piece drawn with that character gets its own. They must fit: `legend entry 'G': its contents take 900 ml, but a crate holds 0 ml`. |
-| `player_wears` | Optional. What the player starts out wearing, as a list of items like `[ { "item": "jumpsuit" } ]`. Everything in it must be wearable. |
+| `player_wears` | Optional. What the player starts out wearing, as a list of items like `[ { "item": "jumpsuit" }, { "item": "deck_shoes" } ]`. Everything in it must be wearable, and no two in the same slot. |
 | `decks` | Listed bottom to top: the first is deck 0. All decks must be the same size. |
 | `decks[].name` | Optional. Shown as the map panel's title on that deck. Without it the deck is "Deck 0", "Deck 1" and so on. |
 | `decks[].pressure` | Optional. The deck's starting air pressure as a percentage of normal ship air (101.3 kPa: 21% O2, 79% N2, a trace of CO2), from 0 (vacuum) to 200. Default 100. Each second, air evens out across every connected open space (joined by open floor, open doors and ladders), so a deck at 60% next to a full one shares their air as soon as time passes. |

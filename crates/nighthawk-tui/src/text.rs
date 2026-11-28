@@ -27,7 +27,31 @@ pub fn describe_in(world: &World, event: Event) -> Option<String> {
         // stays under the complexity limit.
         _ => item_event_text(world, event)
             .or_else(|| power_text(Some(world), event))
+            .or_else(|| dress_text(Some(world), event))
             .or_else(|| describe(event)),
+    }
+}
+
+/// Log lines for putting things on and taking them off (decision D61).
+/// `world`, if given, names the item. `None` for any other event.
+fn dress_text(world: Option<&World>, event: Event) -> Option<String> {
+    let name = |id| world.map_or_else(|| "item".into(), |w| item_name(w, id));
+    match event {
+        Event::PutOn(item) => Some(format!("You put on the {}.", name(item))),
+        Event::TookOff(item) => Some(format!("You take off the {}.", name(item))),
+        Event::CannotDress(blocked) => Some(cannot_dress_text(world, blocked)),
+        _ => None,
+    }
+}
+
+/// Why you can't put something on or take it off: "Take off your deck
+/// shoes first." `world`, if given, names what's in the way.
+pub fn cannot_dress_text(world: Option<&World>, blocked: Blocked) -> String {
+    match blocked {
+        Blocked::Wearing { item } => {
+            format!("Take off your {} first.", item_type_name(world, item))
+        }
+        _ => "You can't wear that.".into(),
     }
 }
 
@@ -197,7 +221,9 @@ fn storing_text(event: Event) -> String {
     match event {
         Event::Stored { .. } => "You put it away.".into(),
         Event::CannotStore(blocked) => cannot_store_text(blocked),
-        _ => power_text(None, event).unwrap_or_else(|| movement_text(event).into()),
+        _ => power_text(None, event)
+            .or_else(|| dress_text(None, event))
+            .unwrap_or_else(|| movement_text(event).into()),
     }
 }
 
@@ -925,6 +951,41 @@ mod tests {
         assert_eq!(
             blocked_short(missing, 0, Some(&world)),
             "needs 1 ductile scr"
+        );
+    }
+
+    #[test]
+    fn putting_on_and_taking_off_say_what_and_why_not() {
+        let world = real_world();
+        let shoes = ItemRef {
+            kind: world.item_type_index("deck_shoes").unwrap(),
+            material: world.content().material_index("polyester").unwrap(),
+        };
+        let line = |event| describe_in(&world, event).unwrap_or_default();
+        assert_eq!(
+            line(Event::PutOn(shoes)),
+            "You put on the deck shoes (Polyester)."
+        );
+        assert_eq!(
+            line(Event::TookOff(shoes)),
+            "You take off the deck shoes (Polyester)."
+        );
+        let wearing = Blocked::Wearing { item: shoes.kind };
+        assert_eq!(
+            line(Event::CannotDress(wearing)),
+            "Take off your deck shoes first."
+        );
+        assert_eq!(
+            line(Event::CannotDress(Blocked::NotPossible)),
+            "You can't wear that."
+        );
+        assert_eq!(
+            describe(Event::PutOn(shoes)).as_deref(),
+            Some("You put on the item.")
+        );
+        assert_eq!(
+            describe(Event::CannotDress(wearing)).as_deref(),
+            Some("Take off your item first.")
         );
     }
 

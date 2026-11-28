@@ -265,12 +265,15 @@ fn the_shipped_materials_have_the_agreed_laser_levels() {
 }
 
 #[test]
-fn you_start_in_a_jumpsuit_with_four_one_litre_pockets() {
+fn you_start_in_a_jumpsuit_with_four_one_litre_pockets_and_deck_shoes() {
     let world = common::start_world(1);
-    let worn = world.worn();
-    assert_eq!(worn.len(), 1);
-    let jumpsuit = &world.item_types()[usize::from(worn[0].kind)];
-    assert_eq!(jumpsuit.id, "jumpsuit");
+    let worn: Vec<&str> = world
+        .worn()
+        .iter()
+        .map(|w| world.item_types()[usize::from(w.kind)].id.as_str())
+        .collect();
+    assert_eq!(worn, ["jumpsuit", "deck_shoes"]);
+    let jumpsuit = &world.item_types()[usize::from(world.worn()[0].kind)];
     let pockets: Vec<(&str, u32, u32)> = jumpsuit
         .pockets()
         .iter()

@@ -14,9 +14,9 @@
 //! ```
 
 use nighthawk_sim::{
-    ActionOption, BREATH_FULL, Colour, CraftMaterial, Item, ItemRef, Levels, Material, Mix, Piece,
-    PocketType, Pos, Tile, Use, WARMTH_FULL, World, celsius_to_mk, mk_to_tenths_celsius,
-    options_at,
+    ActionOption, BREATH_FULL, Colour, CraftMaterial, Dress, Item, ItemAt, ItemRef, Levels,
+    Material, Mix, Piece, PocketType, Pos, Tile, Use, WARMTH_FULL, World, celsius_to_mk,
+    mk_to_tenths_celsius, options_at,
 };
 use ratatui::Frame;
 use ratatui::buffer::Buffer;
@@ -83,6 +83,8 @@ pub struct View {
     pub inventory: Option<usize>,
     /// The highlighted craft, while the crafting screen is open.
     pub crafting: Option<usize>,
+    /// The highlighted line, while the wear screen is open.
+    pub wearing: Option<usize>,
 }
 
 /// Draws whichever screen the app is on.
@@ -92,6 +94,7 @@ pub fn render(app: &App, frame: &mut Frame) {
         cursor: app.cursor,
         inventory: app.inventory,
         crafting: app.crafting,
+        wearing: app.wearing,
     };
     match &app.screen {
         Screen::Title(menu) => render_title(menu, frame),
@@ -196,11 +199,12 @@ fn render_game(world: &World, log_lines: &[String], view: View, frame: &mut Fram
         overlay: view.overlay,
         cursor: view.cursor.map(|c| c.at),
     };
-    // The inventory or crafting screen, if open, takes the map's place.
-    match (view.inventory, view.crafting) {
-        (Some(selected), _) => frame.render_widget(inventory_panel(world, selected), map_area),
-        (None, Some(selected)) => frame.render_widget(crafting_panel(world, selected), map_area),
-        (None, None) => frame.render_widget(map_view, map_inner),
+    // The inventory, crafting or wear screen, if open, takes the map's place.
+    match (view.inventory, view.crafting, view.wearing) {
+        (Some(selected), _, _) => frame.render_widget(inventory_panel(world, selected), map_area),
+        (None, Some(selected), _) => frame.render_widget(crafting_panel(world, selected), map_area),
+        (None, None, Some(selected)) => frame.render_widget(wear_panel(world, selected), map_area),
+        (None, None, None) => frame.render_widget(map_view, map_inner),
     }
 
     let log_lines_shown = log_area.height.saturating_sub(2);
@@ -508,8 +512,8 @@ fn sidebar_lines(world: &World) -> Vec<Line<'static>> {
         Line::styled("move hjkl yubn  wait .", dim),
         Line::styled(format!("climb < >{}", shortcut_hints(world)), dim),
         Line::styled("look V  use e  items i", dim),
-        Line::styled("air a  heat t  save S", dim),
-        Line::styled("craft C  menu q/Q", dim),
+        Line::styled("wear W  craft C  air a", dim),
+        Line::styled("heat t  save S  menu q", dim),
     ]);
     lines
 }
@@ -877,6 +881,80 @@ fn use_text(world: &World, used: &Use) -> String {
 /// long it takes, greyed with the reason if you can't make it now; then
 /// what the highlighted one makes. It takes the map's place, like the
 /// inventory.
+/// The wear screen's lines, as what choosing each does: what you wear (to
+/// take off), then what you could put on, carried or within reach. The
+/// app and the screen both use it, so they always agree.
+pub fn wear_entries(world: &World) -> Vec<Dress> {
+    let off = (0..world.worn().len()).map(Dress::TakeOff);
+    let wearables = world.wearables_at_hand().into_iter();
+    off.chain(wearables.map(|(at, _)| Dress::PutOn(at)))
+        .collect()
+}
+
+/// The wear screen (`W`), in the map's place (decision D61).
+fn wear_panel(world: &World, selected: usize) -> Paragraph<'static> {
+    Paragraph::new(wear_lines(world, selected)).block(Block::bordered().title(" Wear "))
+}
+
+fn wear_lines(world: &World, selected: usize) -> Vec<Line<'static>> {
+    let dim = Style::new().fg(Color::DarkGray);
+    let chosen = Style::new().add_modifier(Modifier::REVERSED);
+    let style = |i: usize| if i == selected { chosen } else { Style::new() };
+    let mut lines = vec![Line::styled("Wearing", dim)];
+    for (i, item) in world.worn().iter().enumerate() {
+        let text = format!(
+            "  {}  {}",
+            text::item_name(world, item.id()),
+            slot_of(world, item)
+        );
+        lines.push(Line::styled(text, style(i)));
+    }
+    lines.push(Line::styled("To put on", dim));
+    let worn = world.worn().len();
+    let wearables = world.wearables_at_hand();
+    if wearables.is_empty() {
+        lines.push(Line::styled("  nothing within reach", dim));
+    }
+    for (n, (at, item)) in wearables.into_iter().enumerate() {
+        let name = text::item_name(world, item.id());
+        let text = format!("  {name}  {}, {}", slot_of(world, item), place(world, at));
+        lines.push(Line::styled(text, style(worn + n)));
+        if let Some(blocked) = world.put_on_blocked(at) {
+            let why = text::cannot_dress_text(Some(world), blocked);
+            lines.push(Line::styled(format!("    {why}"), dim));
+        }
+    }
+    lines.extend([
+        Line::raw(""),
+        Line::styled("j/k choose   Enter put on or take off   Esc close", dim),
+    ]);
+    lines
+}
+
+/// Where something you could put on is: "carried", "on the floor", or
+/// "in the locker".
+fn place(world: &World, at: ItemAt) -> String {
+    match at {
+        ItemAt::Carried(_) => "carried".into(),
+        ItemAt::Floor(_) => "on the floor".into(),
+        ItemAt::Inside { piece, .. } => {
+            let kind = world.furniture().get(piece).map(|p| p.kind);
+            let furniture = kind.and_then(|k| world.content().furniture().get(usize::from(k)));
+            format!(
+                "in the {}",
+                furniture.map_or("container", |f| f.name.as_str())
+            )
+        }
+    }
+}
+
+/// Where `item` is worn, like "feet": its slot.
+fn slot_of(world: &World, item: &Item) -> String {
+    let kind = world.item_types().get(usize::from(item.kind));
+    kind.and_then(|k| k.wear.as_ref())
+        .map_or_else(String::new, |w| w.slot.clone())
+}
+
 fn crafting_panel(world: &World, selected: usize) -> Paragraph<'static> {
     Paragraph::new(crafting_lines(world, selected))
         .wrap(Wrap { trim: false })
@@ -1292,7 +1370,7 @@ mod tests {
         assert!(screen.contains("Deck 0/1  Pos 3, 2"));
         assert!(screen.contains("Seed  1"));
         assert!(screen.contains("look V  use e  items i"));
-        assert!(screen.contains("menu q/Q"));
+        assert!(screen.contains("menu q") && screen.contains("wear W"));
         assert!(screen.contains("You wake in the stasis bay."));
     }
 
@@ -1754,6 +1832,7 @@ mod tests {
             cursor: None,
             inventory: None,
             crafting: None,
+            wearing: None,
         };
         let bay = draw_screen(80, 24, |f| render_game(&world, &[], heat, f));
         assert!(bay.contains("[heat overlay]"));
@@ -1796,6 +1875,7 @@ mod tests {
             cursor: None,
             inventory: None,
             crafting: None,
+            wearing: None,
         }
     }
 
@@ -1945,6 +2025,7 @@ mod tests {
             }),
             inventory: None,
             crafting: None,
+            wearing: None,
         };
         let screen = draw_screen(80, 24, |f| render_game(&world, &[], view, f));
         assert!(screen.contains("[looking]"));
@@ -2118,6 +2199,7 @@ mod tests {
             }),
             inventory: None,
             crafting: None,
+            wearing: None,
         };
         let log = ["You need a tool with LASER 1 for that.".to_string()];
         let screen = draw_screen(80, 24, |f| render_game(&world, &log, view, f));
@@ -2178,8 +2260,13 @@ mod tests {
             lines[1],
             "  Left hip pocket  0.0/1.0 L  0.0/2.5 kg  (empty)"
         );
-        assert_eq!(lines.len(), 9, "four pockets, total, blank, two of help");
-        assert_eq!(lines[5], "Carrying 0.9 kg in all");
+        assert_eq!(
+            lines.len(),
+            10,
+            "four pockets, shoes, total, blank, two of help"
+        );
+        assert_eq!(lines[5], "Wearing deck shoes (Polyester)  0.2 kg");
+        assert_eq!(lines[6], "Carrying 1.2 kg in all");
     }
 
     #[test]
@@ -2284,6 +2371,74 @@ mod tests {
         assert_eq!(rags[9], "Needs a tool with CUT 1.");
     }
 
+    /// A small lit room on the real content: you wear a jumpsuit and deck
+    /// shoes, standing on a pair of work boots.
+    fn boots_at_your_feet() -> World {
+        let rows = ["###E###", "#..@..#", "#######"];
+        let json = format!(
+            r##"{{ "id": "t", "name": "T",
+                 "player_wears": [ {{ "item": "jumpsuit" }}, {{ "item": "deck_shoes" }} ],
+                 "legend": {{ "#": "bulkhead", ".": "deck_plating", "E": "emergency_light",
+                     "@": {{ "structure": "deck_plating",
+                             "items": [ {{ "item": "work_boots" }} ] }} }},
+                 "decks": [ {{ "rows": {rows:?} }} ] }}"##
+        );
+        let data = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../data");
+        let content = crate::content::load_content(&data).unwrap();
+        World::new(parse_map(&json, &content).unwrap(), 1)
+    }
+
+    fn wear_texts(world: &World, selected: usize) -> Vec<String> {
+        wear_lines(world, selected)
+            .iter()
+            .map(ToString::to_string)
+            .collect()
+    }
+
+    #[test]
+    fn the_wear_screen_lists_what_you_wear_then_what_you_could_put_on() {
+        let world = boots_at_your_feet();
+        let lines = wear_lines(&world, 2);
+        let texts = wear_texts(&world, 2);
+        assert_eq!(texts[0], "Wearing");
+        assert_eq!(texts[1], "  jumpsuit (Cotton Fabric)  body");
+        assert_eq!(texts[2], "  deck shoes (Polyester)  feet");
+        assert_eq!(texts[3], "To put on");
+        assert_eq!(texts[4], "  work boots (Polyester)  feet, on the floor");
+        assert!(lines[4].style.add_modifier.contains(Modifier::REVERSED));
+        assert!(!lines[1].style.add_modifier.contains(Modifier::REVERSED));
+        assert_eq!(texts[5], "    Take off your deck shoes first.");
+        assert_eq!(wear_entries(&world).len(), 3);
+        let mut world = real_world();
+        let nothing = wear_texts(&world, 0);
+        assert_eq!(nothing[4], "  nothing within reach");
+        world.apply(Command::Dress(Dress::TakeOff(1)));
+        let carried = wear_texts(&world, 0);
+        assert_eq!(carried[3], "  deck shoes (Polyester)  feet, carried");
+        let in_locker = ItemAt::Inside { piece: 0, index: 0 };
+        assert_eq!(place(&world, in_locker), "in the stasis chamber");
+        let nowhere = ItemAt::Inside {
+            piece: 999,
+            index: 0,
+        };
+        assert_eq!(place(&world, nowhere), "in the container");
+    }
+
+    #[test]
+    fn the_wear_screen_replaces_the_map() {
+        let world = real_world();
+        let view = View {
+            overlay: None,
+            cursor: None,
+            inventory: None,
+            crafting: None,
+            wearing: Some(0),
+        };
+        let screen = draw_screen(80, 24, |f| render_game(&world, &[], view, f));
+        assert!(screen.contains(" Wear ") && screen.contains("Enter put on or take off"));
+        assert!(!screen.contains(" Stasis bay "), "no map while it's open");
+    }
+
     #[test]
     fn the_crafting_screen_replaces_the_map() {
         let world = with_scrap();
@@ -2292,6 +2447,7 @@ mod tests {
             cursor: None,
             inventory: None,
             crafting: Some(0),
+            wearing: None,
         };
         let screen = draw_screen(80, 24, |f| render_game(&world, &[], view, f));
         assert!(screen.contains(" Crafting ") && screen.contains("Enter make"));
@@ -2313,6 +2469,7 @@ mod tests {
             cursor: None,
             inventory: Some(0),
             crafting: None,
+            wearing: None,
         };
         let screen = draw_screen(80, 24, |f| render_game(&world, &[], view, f));
         assert!(screen.contains(" Inventory "));

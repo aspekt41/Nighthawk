@@ -38,10 +38,14 @@ pub struct PocketType {
     pub max_mass_g: u32,
 }
 
-/// What wearing an item gives you. For now, just its pockets.
+/// What wearing an item gives you, and where it goes.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Wear {
+    /// Where on you it's worn, like `"body"`, `"feet"` or `"back"`: you
+    /// can wear one thing in each slot (decision D61). Any name will do;
+    /// the game only compares them.
+    pub slot: String,
     pub pockets: Vec<PocketType>,
 }
 
@@ -97,6 +101,7 @@ impl ItemType {
             .u8(self.light);
         hash_levels(&self.qualities, h);
         power::hash_power(self.cell.as_ref(), self.power.as_ref(), h);
+        h.str(self.wear.as_ref().map_or("", |w| w.slot.as_str()));
         let pockets = self.wear.as_ref().map(|w| w.pockets.as_slice());
         h.u64(pockets.map_or(u64::MAX, |p| p.len() as u64));
         for pocket in pockets.unwrap_or_default() {
@@ -105,6 +110,18 @@ impl ItemType {
                 .u64(u64::from(pocket.max_mass_g));
         }
     }
+}
+
+/// The slot of the first of `worn` that goes where an earlier one already
+/// is, if two share a slot; items that can't be worn are skipped (the
+/// caller checks those).
+pub(crate) fn shared_slot<'a>(worn: &[Item], types: &'a [ItemType]) -> Option<&'a str> {
+    let slots: Vec<&str> = worn
+        .iter()
+        .filter_map(|item| types.get(usize::from(item.kind))?.wear.as_ref())
+        .map(|w| w.slot.as_str())
+        .collect();
+    (1..slots.len()).find_map(|i| slots[..i].contains(&slots[i]).then_some(slots[i]))
 }
 
 /// Feeds a list of item types into a state hash.
@@ -602,7 +619,7 @@ pub(crate) mod tests {
         r#"{ "items": [
             { "id": "suit", "name": "suit", "description": "A suit.", "glyph": "[",
               "material": "steel", "volume_ml": 2000, "solid_percent": 30,
-              "wear": { "pockets": [
+              "wear": { "slot": "body", "pockets": [
                   { "name": "left pocket", "volume_ml": 1000, "max_mass_g": 2500 },
                   { "name": "right pocket", "volume_ml": 1000, "max_mass_g": 2500 } ] } },
             { "id": "cutter", "name": "cutter", "description": "A cutter.", "glyph": "(",
@@ -620,7 +637,11 @@ pub(crate) mod tests {
               "power": { "watts": 10, "cell": "cell" } },
             { "id": "saw", "name": "saw", "description": "A saw.", "glyph": "(",
               "material": "steel", "volume_ml": 300, "solid_percent": 50,
-              "qualities": { "LASER": 2 }, "power": { "watts": 100, "cell": "cell" } }
+              "qualities": { "LASER": 2 }, "power": { "watts": 100, "cell": "cell" } },
+            { "id": "boots", "name": "boots", "description": "Boots.", "glyph": "[",
+              "material": "steel", "volume_ml": 1500, "solid_percent": 20,
+              "wear": { "slot": "feet", "pockets": [
+                  { "name": "boot pocket", "volume_ml": 100, "max_mass_g": 500 } ] } }
         ] }"#
             .to_string()
     }
@@ -647,7 +668,7 @@ pub(crate) mod tests {
     #[test]
     fn a_valid_file_loads() {
         let items = test_items();
-        assert_eq!(items.list().len(), 7);
+        assert_eq!(items.list().len(), 8);
         assert_eq!(items.index_of("cutter"), Some(1));
         assert_eq!(items.index_of("cheese"), None);
         assert_eq!(items.list()[0].pockets().len(), 2);
@@ -794,6 +815,21 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn two_worn_items_may_not_share_a_slot() {
+        let items = test_items();
+        let new = |kind| Item::new(kind, 0, items.list());
+        let types = items.list();
+        assert_eq!(shared_slot(&[new(0), new(7)], types), None, "body and feet");
+        assert_eq!(shared_slot(&[new(0), new(7), new(0)], types), Some("body"));
+        assert_eq!(
+            shared_slot(&[new(2), new(2)], types),
+            None,
+            "scrap isn't worn"
+        );
+        assert_eq!(shared_slot(&[], types), None);
+    }
+
+    #[test]
     fn a_cell_in_its_slot_weighs_with_what_it_is_in() {
         let (items, materials) = (test_items(), test_materials());
         let ctx = context(&items, &materials);
@@ -858,7 +894,7 @@ pub(crate) mod tests {
         // Each change, and which type (0 the suit, 1 the cutter, 4 the cell,
         // 5 the torch) it's made to.
         type Change = (usize, fn(&mut ItemType));
-        let changes: [Change; 8] = [
+        let changes: [Change; 9] = [
             (4, |t| t.cell.as_mut().unwrap().capacity_kj += 1),
             (5, |t| t.power.as_mut().unwrap().watts += 1),
             (1, |t| t.light += 1),
@@ -866,6 +902,7 @@ pub(crate) mod tests {
             (0, |t| t.volume_ml += 1),
             (1, |t| t.qualities.clear()),
             (0, |t| t.wear = None),
+            (0, |t| t.wear.as_mut().unwrap().slot.push('!')),
             (0, |t| t.wear.as_mut().unwrap().pockets[0].max_mass_g += 1),
         ];
         for (which, change) in changes {

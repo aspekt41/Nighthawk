@@ -35,7 +35,7 @@ use crate::air::Mix;
 use crate::content::Content;
 use crate::furniture::{FurnitureType, Piece};
 use crate::heat::{MAX_CELSIUS, MIN_CELSIUS, celsius_to_mk};
-use crate::item::{FloorItem, Item, ItemContext};
+use crate::item::{self, FloorItem, Item, ItemContext, ItemType};
 use crate::map::{Map, StairsError, Tile};
 use crate::pos::Pos;
 
@@ -81,6 +81,12 @@ pub enum ItemSpecError {
         item: String,
         problem: &'static str,
     },
+    /// Something in `player_wears` that goes where something before it in
+    /// the list already is (decision D61).
+    SlotTaken {
+        item: String,
+        slot: String,
+    },
     /// Something in `player_wears` that can't be worn.
     NotWearable {
         item: String,
@@ -98,6 +104,10 @@ impl fmt::Display for ItemSpecError {
             ItemSpecError::NoneOf { item } => write!(f, "{item:?} has a count of 0"),
             ItemSpecError::Charge { item, problem } => write!(f, "{item:?} {problem}"),
             ItemSpecError::NotWearable { item } => write!(f, "{item:?} can't be worn"),
+            ItemSpecError::SlotTaken { item, slot } => write!(
+                f,
+                "{item:?} is worn on the {slot}, where something else already is"
+            ),
         }
     }
 }
@@ -702,8 +712,27 @@ fn worn_items(specs: &[ItemSpec], content: &Content) -> Result<Vec<Item>, MapErr
         Some(item) => Err(MapError::Wearing(ItemSpecError::NotWearable {
             item: types[usize::from(item.kind)].id.clone(),
         })),
-        None => Ok(items),
+        None => slots_free(items, types),
     }
+}
+
+/// `items`, if no two of them are worn in the same slot.
+fn slots_free(items: Vec<Item>, types: &[ItemType]) -> Result<Vec<Item>, MapError> {
+    let Some(slot) = item::shared_slot(&items, types) else {
+        return Ok(items);
+    };
+    // The second item in that slot is the one that doesn't fit.
+    let in_slot = |i: &&Item| {
+        types[usize::from(i.kind)]
+            .wear
+            .as_ref()
+            .is_some_and(|w| w.slot == slot)
+    };
+    let second = items.iter().filter(in_slot).nth(1).map_or(0, |i| i.kind);
+    Err(MapError::Wearing(ItemSpecError::SlotTaken {
+        item: types[usize::from(second)].id.clone(),
+        slot: slot.to_string(),
+    }))
 }
 
 /// Turns the legend's one-character string keys into `char`s, and each
@@ -1433,7 +1462,7 @@ mod item_tests {
         assert!(loaded.floor_items.iter().all(|f| f.at == Pos::new(1, 0, 0)));
         assert_eq!(loaded.floor_items[0].item.kind, 1);
         assert_eq!(loaded.floor_items[3].item.kind, 2);
-        assert_eq!(loaded.content.item_types().len(), 7);
+        assert_eq!(loaded.content.item_types().len(), 8);
         assert!(loaded.worn.is_empty(), "nothing worn unless the map says");
     }
 
@@ -1513,6 +1542,18 @@ mod item_tests {
         assert_eq!(
             error("[]", r#""player_wears": [ { "item": "toga" } ],"#),
             r#"player_wears: "toga" isn't an item"#
+        );
+    }
+
+    #[test]
+    fn the_player_wears_one_thing_in_each_slot() {
+        let two = r#""player_wears": [ { "item": "suit" }, { "item": "boots" } ],"#;
+        assert_eq!(map_with("[]", two).unwrap().worn.len(), 2, "body and feet");
+        let three = r#""player_wears": [ { "item": "boots" }, { "item": "suit" },
+                                           { "item": "boots" } ],"#;
+        assert_eq!(
+            error("[]", three),
+            r#"player_wears: "boots" is worn on the feet, where something else already is"#
         );
     }
 }

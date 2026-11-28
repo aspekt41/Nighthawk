@@ -116,7 +116,8 @@ fn rags_become_cordage_and_cordage_and_scrap_a_hammer() {
             "cordage",
             "wire",
             "metal_plate",
-            "makeshift_hammer"
+            "makeshift_hammer",
+            "sling_pack"
         ],
         "plate-made tools come to mind once you've held a plate"
     );

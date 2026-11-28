@@ -6,16 +6,16 @@
 //! of it can be tested directly.
 
 use nighthawk_sim::{
-    ActionOption, Blocked, Cause, Command, DateTime, ItemPath, LoadedMap, Pos, PowerAct, World,
-    options_at,
+    ActionOption, Blocked, Cause, Command, DateTime, Dress, ItemPath, LoadedMap, Pos, PowerAct,
+    World, options_at,
 };
 use ratatui::crossterm::event::KeyEvent;
 
-use crate::keys::{self, CraftingAction, CursorAction, GameAction, InventoryAction, TitleAction};
+use crate::keys::{self, CursorAction, GameAction, InventoryAction, ListAction, TitleAction};
 use crate::saves::SaveSlot;
 use crate::text;
 use crate::title::{MenuItem, TitleMenu};
-use crate::ui::{Cursor, CursorMode, Overlay};
+use crate::ui::{self, Cursor, CursorMode, Overlay};
 
 /// How many log lines to keep. The log panel shows as many as fit.
 pub const LOG_LIMIT: usize = 100;
@@ -70,6 +70,9 @@ pub struct App {
     /// While the crafting screen is open (`C`), which of the crafts you
     /// know is highlighted.
     pub crafting: Option<usize>,
+    /// While the wear screen is open (`W`), which line is highlighted
+    /// (see [`ui::wear_entries`]).
+    pub wearing: Option<usize>,
 }
 
 impl App {
@@ -93,6 +96,7 @@ impl App {
             cursor: None,
             inventory: None,
             crafting: None,
+            wearing: None,
         };
         match seed {
             Some(seed) => app.start_new_game(seed),
@@ -139,6 +143,12 @@ impl App {
         if self.crafting.is_some() {
             if let Some(action) = keys::crafting_action(key) {
                 self.on_crafting(action);
+            }
+            return true;
+        }
+        if self.wearing.is_some() {
+            if let Some(action) = keys::wear_action(key) {
+                self.on_wear(action);
             }
             return true;
         }
@@ -195,7 +205,8 @@ impl App {
             | GameAction::Look
             | GameAction::Interact
             | GameAction::Inventory
-            | GameAction::Crafting => self.change_view(action),
+            | GameAction::Crafting
+            | GameAction::Wear => self.change_view(action),
             GameAction::BeginShortcut(action) => {
                 let name = match &self.screen {
                     Screen::Playing(world) => text::action_name(world, action).to_string(),
@@ -210,33 +221,64 @@ impl App {
     }
 
     /// The actions that only change what's shown: overlays, the look and
-    /// interact cursors, the inventory and crafting screens. None of them
-    /// spends any time. `fn on_game` sends only those here, so the last
-    /// arm is crafting.
+    /// interact cursors, the inventory, crafting and wear screens. None of
+    /// them spends any time. `fn on_game` sends only those here, so the
+    /// last arm is the wear screen.
     fn change_view(&mut self, action: GameAction) {
         match action {
             GameAction::ToggleOverlay(overlay) => self.toggle_overlay(overlay),
             GameAction::Look => self.raise_cursor(CursorMode::Look),
             GameAction::Interact => self.raise_cursor(CursorMode::Interact),
             GameAction::Inventory => self.inventory = Some(0),
-            _ => self.crafting = Some(0),
+            GameAction::Crafting => self.crafting = Some(0),
+            _ => self.wearing = Some(0),
+        }
+    }
+
+    /// Moves the wear screen's highlight, puts on or takes off the
+    /// highlighted thing, or closes the screen, which stays open after
+    /// dressing so you can do more.
+    fn on_wear(&mut self, action: ListAction) {
+        let (Screen::Playing(world), Some(selected)) = (&self.screen, self.wearing) else {
+            return;
+        };
+        let entries = ui::wear_entries(world);
+        let last = entries.len().saturating_sub(1);
+        match action {
+            ListAction::Close => self.wearing = None,
+            ListAction::Up => self.wearing = Some(selected.saturating_sub(1)),
+            ListAction::Down => self.wearing = Some((selected + 1).min(last)),
+            ListAction::Choose => match entries.get(selected) {
+                Some(&dress) => self.dress(dress),
+                None => self.push_log("You have nothing to put on or take off.".into()),
+            },
+        }
+    }
+
+    /// Puts something on or takes it off, keeping the wear screen's
+    /// highlight on its list.
+    fn dress(&mut self, dress: Dress) {
+        self.apply(Command::Dress(dress));
+        if let (Screen::Playing(world), Some(selected)) = (&self.screen, self.wearing) {
+            let last = ui::wear_entries(world).len().saturating_sub(1);
+            self.wearing = Some(selected.min(last));
         }
     }
 
     /// Moves the crafting highlight, makes the highlighted craft, or
     /// closes the screen. The screen stays open after making something, so
     /// you can make another.
-    fn on_crafting(&mut self, action: CraftingAction) {
+    fn on_crafting(&mut self, action: ListAction) {
         let (Screen::Playing(world), Some(selected)) = (&self.screen, self.crafting) else {
             return;
         };
         let known = world.known_crafts();
         let last = known.len().saturating_sub(1);
         match action {
-            CraftingAction::Close => self.crafting = None,
-            CraftingAction::Up => self.crafting = Some(selected.saturating_sub(1)),
-            CraftingAction::Down => self.crafting = Some((selected + 1).min(last)),
-            CraftingAction::Make => match known.get(selected) {
+            ListAction::Close => self.crafting = None,
+            ListAction::Up => self.crafting = Some(selected.saturating_sub(1)),
+            ListAction::Down => self.crafting = Some((selected + 1).min(last)),
+            ListAction::Choose => match known.get(selected) {
                 Some(&craft) => self.apply(Command::Craft(craft)),
                 None => self.push_log("You don't know how to make anything yet.".into()),
             },
@@ -457,6 +499,7 @@ impl App {
         self.cursor = None;
         self.inventory = None;
         self.crafting = None;
+        self.wearing = None;
         let can_continue = self.slot.as_ref().is_some_and(SaveSlot::exists);
         self.screen = Screen::Title(TitleMenu::new(can_continue).with_message(message));
     }
@@ -1460,12 +1503,50 @@ mod tests {
     }
 
     #[test]
+    fn capital_w_opens_the_wear_screen_where_enter_takes_off_and_puts_on() {
+        let (mut app, _dir) = new_app(Some(7));
+        press_all(&mut app, "W");
+        assert_eq!(app.wearing, Some(0));
+        // The jumpsuit, then the deck shoes: take the shoes off. They go in
+        // a pocket, and are next on the list, to put back on.
+        press_all(&mut app, "j");
+        app.handle_key(key(KeyCode::Enter));
+        assert_eq!(last_said(&app), "You take off the deck shoes (Polyester).");
+        assert_eq!(world(&app).seconds(), nighthawk_sim::TAKE_OFF_SECONDS);
+        assert_eq!(app.wearing, Some(1), "still open, on the shoes");
+        app.handle_key(key(KeyCode::Enter));
+        assert_eq!(last_said(&app), "You put on the deck shoes (Polyester).");
+        press_all(&mut app, "jjjkW");
+        assert_eq!(app.wearing, None, "W closes it again");
+    }
+
+    #[test]
+    fn with_nothing_on_and_nothing_to_hand_the_wear_screen_says_so() {
+        let rows = ["###", "#@#", "###"];
+        let json = format!(
+            r##"{{ "id": "t", "name": "T", "legend": {{ "#": "bulkhead", "@": "deck_plating" }},
+                 "decks": [ {{ "rows": {rows:?} }} ] }}"##
+        );
+        let data = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../data");
+        let content = crate::content::load_content(&data).unwrap();
+        let map = nighthawk_sim::parse_map(&json, &content).unwrap();
+        let mut app = App::new(map, None, Some(1), fixed_seed);
+        press_all(&mut app, "W");
+        app.handle_key(key(KeyCode::Enter));
+        assert_eq!(last_log(&app), "You have nothing to put on or take off.");
+        app.show_title(None);
+        assert_eq!(app.wearing, None, "leaving the game closes it");
+        app.on_wear(ListAction::Down); // no game: ignored
+        assert_eq!(app.wearing, None);
+    }
+
+    #[test]
     fn leaving_the_game_closes_the_crafting_screen() {
         let (mut app, _dir) = new_app(Some(7));
         press_all(&mut app, "C");
         app.show_title(None);
         assert_eq!(app.crafting, None);
-        app.on_crafting(CraftingAction::Down); // no game: ignored
+        app.on_crafting(ListAction::Down); // no game: ignored
         assert_eq!(app.crafting, None);
     }
 

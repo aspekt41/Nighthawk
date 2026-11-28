@@ -33,7 +33,7 @@ pub const SAVE_FORMAT: &str = "nighthawk-save";
 
 /// The save layout this build reads and writes. Bump it when `World` (or
 /// anything inside it) changes shape, and update the save-format test.
-pub const SAVE_VERSION: u32 = 22;
+pub const SAVE_VERSION: u32 = 23;
 
 /// Everything that can be wrong with a save file.
 #[derive(Debug)]
@@ -189,13 +189,13 @@ mod tests {
     fn save_text_is_tagged_and_versioned() {
         let text = save_to_string(&small_world());
         assert!(text.contains(r#""format": "nighthawk-save""#));
-        assert!(text.contains(r#""version": 22"#));
+        assert!(text.contains(r#""version": 23"#));
     }
 
     /// The exact text of the tiny save in `the_save_format_is_stable`.
     const EXPECTED_SAVE: &str = r#"{
   "format": "nighthawk-save",
-  "version": 22,
+  "version": 23,
   "world": {
     "deck_names": [
       "Deck 0"
@@ -323,6 +323,7 @@ mod tests {
           "solid_percent": 1,
           "qualities": {},
           "wear": {
+            "slot": "body",
             "pockets": []
           },
           "light": 0,
@@ -396,7 +397,7 @@ mod tests {
                 "items" => {
                     r#"{ "items": [ { "id": "smock", "name": "smock", "description": "A smock.",
                          "glyph": "[", "material": "steel", "volume_ml": 1, "solid_percent": 1,
-                         "wear": { "pockets": [] } } ] }"#
+                         "wear": { "slot": "body", "pockets": [] } } ] }"#
                 }
                 _ => return Vec::new(),
             };
@@ -443,20 +444,20 @@ mod tests {
 
     #[test]
     fn a_save_without_a_version_is_not_a_save() {
-        let text = save_with("\"version\": 22,", "");
+        let text = save_with("\"version\": 23,", "");
         assert!(matches!(load_from_str(&text), Err(SaveError::NotASave)));
     }
 
     #[test]
     fn saves_from_other_versions_are_rejected_clearly() {
-        // A save from before power cells: exactly what an old save file on
+        // A save from before wear slots: exactly what an old save file on
         // disk looks like after this build is installed.
-        let text = save_with(r#""version": 22"#, r#""version": 21"#);
+        let text = save_with(r#""version": 23"#, r#""version": 22"#);
         let err = load_from_str(&text).unwrap_err();
-        assert!(matches!(err, SaveError::UnsupportedVersion { found: 21 }));
+        assert!(matches!(err, SaveError::UnsupportedVersion { found: 22 }));
         assert_eq!(
             err.to_string(),
-            "save file is version 21, but this build only reads version 22"
+            "save file is version 22, but this build only reads version 23"
         );
     }
 

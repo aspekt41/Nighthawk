@@ -74,6 +74,9 @@ pub enum Blocked {
     NoCell,
     /// For switching on: its cell is flat.
     Flat,
+    /// For putting something on: you're already wearing item type number
+    /// `item` in its slot (decision D61).
+    Wearing { item: u16 },
 }
 
 /// One line of the interact menu: an action (its number), and why it can't
@@ -635,7 +638,8 @@ mod tests {
     fn with_tool(world: World, quality: &str, level: u8) -> World {
         let mut json: serde_json::Value = serde_json::to_value(&world).unwrap();
         json["content"]["item_types"][1]["qualities"] = serde_json::json!({ quality: level });
-        json["content"]["item_types"][1]["wear"] = serde_json::json!({ "pockets": [] });
+        json["content"]["item_types"][1]["wear"] =
+            serde_json::json!({ "slot": "hand", "pockets": [] });
         json["worn"] = serde_json::json!([ { "kind": 1, "material": 0, "pockets": [] } ]);
         let mut world: World = serde_json::from_value(json).unwrap();
         world.finish_loading().unwrap(); // saves don't keep tiles: rebuild them

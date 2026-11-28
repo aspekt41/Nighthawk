@@ -20,6 +20,8 @@
     "P": { "structure": "deck_plating", "furniture": "your_stasis_chamber" },
     "J": "jammed_door",
     "K": { "structure": "deck_plating", "furniture": "locker" },
+    "B": { "structure": "deck_plating", "furniture": "locker",
+           "contents": [ { "item": "work_boots" } ] },
     "G": { "structure": "deck_plating", "furniture": "locker",
            "contents": [ { "item": "basic_laser_cutter", "charge_percent": 50 },
                          { "item": "hand_lamp", "charge_percent": 40 },
@@ -33,7 +35,7 @@
     "b": { "structure": "deck_plating", "items": [ { "item": "scrap", "material": "bone", "count": 2 } ] },
     "y": { "structure": "deck_plating", "items": [ { "item": "scrap", "material": "polyester", "count": 2 } ] }
   },
-  "player_wears": [ { "item": "jumpsuit" } ],
+  "player_wears": [ { "item": "jumpsuit" }, { "item": "deck_shoes" } ],
   "decks": [
     {
       "name": "Stasis bay",
@@ -63,7 +65,7 @@
         "HHHHHHHHHHHHHHHHHHHHHHHxHHHHHHHHHHHHHH",
         "H######==.....==k#==......==.#.......H",
         "H######..........#...........#...<...H",
-        "H######..h.......#..........K#.......H",
+        "H######..h.......#..........B#.......H",
         "H##########J##########+#######.......H",
         "H#####E..............................H",
         "H######..............................H",

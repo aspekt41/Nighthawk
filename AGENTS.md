@@ -200,10 +200,11 @@ precise error and exits with code 1 before entering raw mode.
   structures (one for each kind of tile, named for it
   it: `"wall"`, `"floor"`, `"door"`, `"open_door"`…, plus `"frame"`, a
   floor, and `"lamp"`, a wall with light 20) and items
-  (`"suit"` with two 1 L pockets, `"cutter"` with LASER 1, `"scrap"`,
+  (`"suit"`, worn on the `"body"`, with two 1 L pockets, `"cutter"` with LASER 1, `"scrap"`,
   `"lamp"` with light 2 and no cell; then `"cell"`, a 10 kJ power cell,
   `"torch"`, a light 3 lamp drawing 10 W, and `"saw"`, LASER 2 drawing
-  100 W, both taking the cell) and
+  100 W, both taking the cell; then `"boots"`, worn on the `"feet"`, 1.5 L,
+  with a 100 ml pocket) and
   recipes (cutting a `"door"` or a `"wall"` leaves `"floor"`, in 60 s;
   repairing a `"hull_crack"` with 2 metal scrap makes a `"wall"` of the
   scrap's material, in 30 s; smashing a `"crate"` gives 0 to 2 scrap

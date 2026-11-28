@@ -193,7 +193,7 @@
       ]
     },
     "Wear": {
-      "description": "What wearing an item gives you. For now, just its pockets.",
+      "description": "What wearing an item gives you, and where it goes.",
       "type": "object",
       "properties": {
         "pockets": {
@@ -201,10 +201,15 @@
           "items": {
             "$ref": "#/$defs/PocketType"
           }
+        },
+        "slot": {
+          "description": "Where on you it's worn, like `\"body\"`, `\"feet\"` or `\"back\"`: you\ncan wear one thing in each slot (decision D61). Any name will do;\nthe game only compares them.",
+          "type": "string"
         }
       },
       "additionalProperties": false,
       "required": [
+        "slot",
         "pockets"
       ]
     }

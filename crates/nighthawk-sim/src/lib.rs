@@ -76,7 +76,7 @@ pub use schema::data_schemas;
 pub use sight::Remembered;
 pub use structure::{Structure, StructureError};
 pub use world::{
-    CLIMB_SECONDS, Command, DIAGONAL_STEP_SECONDS, DROP_SECONDS, Event, PowerAct, REACH,
-    RELOAD_SECONDS, STEP_SECONDS, STORE_SECONDS, SWITCH_SECONDS, Sound, UNLOAD_SECONDS,
-    WAIT_SECONDS, World,
+    CLIMB_SECONDS, Command, DIAGONAL_STEP_SECONDS, DROP_SECONDS, Dress, Event, ItemAt,
+    PUT_ON_SECONDS, PowerAct, REACH, RELOAD_SECONDS, STEP_SECONDS, STORE_SECONDS, SWITCH_SECONDS,
+    Sound, TAKE_OFF_SECONDS, UNLOAD_SECONDS, WAIT_SECONDS, World,
 };

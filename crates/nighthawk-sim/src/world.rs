@@ -95,6 +95,29 @@ pub enum Command {
         item: ItemPath,
         act: PowerAct,
     },
+    /// Put something on, or take something off (D61).
+    Dress(Dress),
+}
+
+/// Putting on or taking off clothes (and packs): one thing per slot.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Dress {
+    /// Put on the item at `.0`: one you carry, or one lying within reach.
+    PutOn(ItemAt),
+    /// Take off worn item number `.0` (its place in [`World::worn`]): it
+    /// goes in a pocket if it fits, or at your feet, with whatever is in
+    /// its own pockets still inside.
+    TakeOff(usize),
+}
+
+/// Where an item you could take or put on is: in a pocket, lying on the
+/// floor (its place in [`World::floor_items`]), or inside furniture (item
+/// number `index` in piece number `piece` of [`World::furniture`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ItemAt {
+    Carried(ItemPath),
+    Floor(usize),
+    Inside { piece: usize, index: usize },
 }
 
 /// What to do with something that runs on a power cell.
@@ -217,6 +240,13 @@ pub enum Event {
     /// The player couldn't load, unload or switch something, and
     /// `blocked` says why. No time passes.
     CannotPower(Blocked),
+    /// The player put this on.
+    PutOn(ItemRef),
+    /// The player took this off.
+    TookOff(ItemRef),
+    /// The player couldn't put something on or take it off, and `blocked`
+    /// says why. No time passes.
+    CannotDress(Blocked),
     /// The player followed a recipe for action number `action` on the tile
     /// at `at`, which was structure number `was` and is now what the
     /// recipe makes (it cut through a door, patched a crack…).
@@ -293,6 +323,10 @@ pub const RELOAD_SECONDS: u64 = 10;
 pub const UNLOAD_SECONDS: u64 = 5;
 /// Switching a light on or off.
 pub const SWITCH_SECONDS: u64 = 1;
+/// Putting on a piece of clothing, boots or a pack.
+pub const PUT_ON_SECONDS: u64 = 20;
+/// Taking one off.
+pub const TAKE_OFF_SECONDS: u64 = 10;
 
 /// How far you can reach into furniture, in steps: the tiles right around
 /// you (and your own). You can put things in furniture that close, and
@@ -623,6 +657,7 @@ impl World {
             Command::Craft(craft) => self.craft(craft),
             Command::Store { item, into } => self.store(item, into),
             Command::Power { item, act } => self.power(item, act),
+            Command::Dress(dress) => self.dress(dress),
             Command::Wait => {
                 let mut events = vec![Event::Waited];
                 self.pass_time(WAIT_SECONDS, &mut events);
@@ -962,11 +997,8 @@ impl World {
 
     /// Everything inside the furniture within reach.
     fn items_in_reach(&self) -> Vec<&Item> {
-        let pieces = self.furniture.pieces();
-        self.pieces_in_reach()
-            .into_iter()
-            .flat_map(|(number, _)| &pieces[number].contents)
-            .collect()
+        let inside = self.inside_in_reach().into_iter();
+        inside.map(|(_, item)| item).collect()
     }
 
     /// How many items of type number `kind` the player has at hand: in
@@ -1226,6 +1258,123 @@ impl World {
             on: item.on,
         }];
         Ok((events, SWITCH_SECONDS))
+    }
+
+    /// Puts something on or takes something off (D61). Anything that
+    /// can't be done costs no time.
+    fn dress(&mut self, dress: Dress) -> Vec<Event> {
+        let done = match dress {
+            Dress::PutOn(at) => self.put_on(at),
+            Dress::TakeOff(index) => self.take_off(index),
+        };
+        match done {
+            Ok((mut events, seconds)) => {
+                self.pass_time(seconds, &mut events);
+                events
+            }
+            Err(blocked) => vec![Event::CannotDress(blocked)],
+        }
+    }
+
+    /// The item at `at`, if it's there: carried, or lying or inside
+    /// furniture within reach.
+    fn item_at(&self, at: ItemAt) -> Option<&Item> {
+        match at {
+            ItemAt::Carried(path) => item::get(&self.worn, path),
+            ItemAt::Floor(i) => {
+                let lying = self.floor_items.get(i)?;
+                self.in_reach(lying.at).then_some(&lying.item)
+            }
+            ItemAt::Inside { piece, index } => {
+                let reachable = self.pieces_in_reach().iter().any(|&(n, _)| n == piece);
+                let inside = &self.furniture.pieces().get(piece)?.contents;
+                inside.get(index).filter(|_| reachable)
+            }
+        }
+    }
+
+    /// Whether you can reach the tile at `p`: in sight, and within
+    /// [`REACH`] on your own deck.
+    fn in_reach(&self, p: Pos) -> bool {
+        self.is_visible(p) && self.player.steps_to(p).is_some_and(|d| d <= REACH)
+    }
+
+    /// Why the item at `at` can't be put on, if it can't: it isn't there
+    /// or isn't something you wear (`NotPossible`), or something you wear
+    /// already takes its slot (`Wearing`, naming it).
+    pub fn put_on_blocked(&self, at: ItemAt) -> Option<Blocked> {
+        let types = self.item_types();
+        let slot_of = |item: &Item| types[usize::from(item.kind)].wear.as_ref().map(|w| &w.slot);
+        let Some(slot) = self.item_at(at).and_then(slot_of) else {
+            return Some(Blocked::NotPossible);
+        };
+        let in_the_way = self.worn.iter().find(|w| slot_of(w) == Some(slot));
+        in_the_way.map(|w| Blocked::Wearing { item: w.kind })
+    }
+
+    /// Puts on the item at `at`, if nothing blocks it.
+    fn put_on(&mut self, at: ItemAt) -> Result<(Vec<Event>, u64), Blocked> {
+        if let Some(blocked) = self.put_on_blocked(at) {
+            return Err(blocked);
+        }
+        // `put_on_blocked` checked it's there.
+        let item = match at {
+            ItemAt::Carried(path) => item::take(&mut self.worn, path),
+            ItemAt::Floor(i) => Some(self.floor_items.remove(i).item),
+            ItemAt::Inside { piece, index } => {
+                let piece = self.furniture.number_mut(piece);
+                piece.map(|p| p.contents.remove(index))
+            }
+        };
+        let item = item.ok_or(Blocked::NotPossible)?;
+        let events = vec![Event::PutOn(item.id())];
+        self.worn.push(item);
+        Ok((events, PUT_ON_SECONDS))
+    }
+
+    /// Takes off worn item number `index` into a pocket, or at your feet.
+    fn take_off(&mut self, index: usize) -> Result<(Vec<Event>, u64), Blocked> {
+        if index >= self.worn.len() {
+            return Err(Blocked::NotPossible);
+        }
+        let item = self.worn.remove(index);
+        let mut events = vec![Event::TookOff(item.id())];
+        events.extend(self.pocket_or_drop(Some(item)));
+        Ok((events, TAKE_OFF_SECONDS))
+    }
+
+    /// Everything you could put on, with where it is: what you carry, then
+    /// what lies within reach, then what's in furniture within reach, if
+    /// it's something you wear. (What's in the way of wearing it is
+    /// [`World::put_on_blocked`].)
+    pub fn wearables_at_hand(&self) -> Vec<(ItemAt, &Item)> {
+        let wearable = |item: &Item| {
+            let kind = self.item_types().get(usize::from(item.kind));
+            kind.is_some_and(|k| k.wear.is_some())
+        };
+        let carried = self.carried().into_iter();
+        let carried = carried.map(|(path, item)| (ItemAt::Carried(path), item));
+        let lying = (0..).zip(&self.floor_items);
+        let lying = lying
+            .filter(|(_, f)| self.in_reach(f.at))
+            .map(|(i, f)| (ItemAt::Floor(i), &f.item));
+        carried
+            .chain(lying)
+            .chain(self.inside_in_reach())
+            .filter(|(_, item)| wearable(item))
+            .collect()
+    }
+
+    /// Everything inside furniture within reach, with where it is.
+    fn inside_in_reach(&self) -> Vec<(ItemAt, &Item)> {
+        let pieces = self.furniture.pieces();
+        self.pieces_in_reach()
+            .into_iter()
+            .flat_map(|(piece, _)| {
+                let contents = (0..).zip(&pieces[piece].contents);
+                contents.map(move |(index, item)| (ItemAt::Inside { piece, index }, item))
+            })
+            .collect()
     }
 
     /// Puts `item`, if there is one, in the first pocket it fits, or at
@@ -1535,16 +1684,7 @@ impl World {
                 return Err(format!("an item lies inside something at {:?}", floor.at));
             }
         }
-        for worn in &self.worn {
-            item::check_item(worn, ctx)?;
-            let kind = &self.item_types()[usize::from(worn.kind)];
-            if kind.wear.is_none() {
-                return Err(format!(
-                    "the player is wearing a {}, which can't be worn",
-                    kind.id
-                ));
-            }
-        }
+        self.check_worn(ctx)?;
         self.check_contents(ctx)?;
         let kinds = self.item_types().len();
         match self
@@ -1560,6 +1700,25 @@ impl World {
     }
 
     /// Checks everything inside furniture makes sense and fits in it.
+    /// Checks what's worn: real items, each something you can wear, and no
+    /// two in the same slot (decision D61).
+    fn check_worn(&self, ctx: ItemContext) -> Result<(), String> {
+        for worn in &self.worn {
+            item::check_item(worn, ctx)?;
+            let kind = &self.item_types()[usize::from(worn.kind)];
+            if kind.wear.is_none() {
+                return Err(format!(
+                    "the player is wearing a {}, which can't be worn",
+                    kind.id
+                ));
+            }
+        }
+        match item::shared_slot(&self.worn, self.item_types()) {
+            Some(slot) => Err(format!("the player wears two things on the {slot}")),
+            None => Ok(()),
+        }
+    }
+
     fn check_contents(&self, ctx: ItemContext) -> Result<(), String> {
         let kinds = self.content.furniture();
         for piece in self.furniture.pieces() {
@@ -3357,7 +3516,7 @@ mod tests {
         assert_eq!(world.items_at(PILE).count(), 4);
         assert_eq!(world.items_at(world.player()).count(), 0);
         assert_eq!(world.floor_items().len(), 4);
-        assert_eq!(world.item_types().len(), 7);
+        assert_eq!(world.item_types().len(), 8);
         assert_eq!(world.worn().len(), 1);
     }
 
@@ -3488,6 +3647,189 @@ mod tests {
             world.check_consistent(),
             Err("the player is wearing a scrap, which can't be worn".to_string())
         );
+
+        let mut world = world_with_items();
+        let second_suit = Item::new(0, 0, world.item_types());
+        world.worn.push(second_suit);
+        assert_eq!(
+            world.check_consistent(),
+            Err("the player wears two things on the body".to_string())
+        );
+    }
+
+    // --- Wearing (D61) ----------------------------------------------------------
+
+    /// The test suit (worn on the body) and boots (feet, 1.5 L, with a
+    /// 100 ml pocket).
+    const SUIT: u16 = 0;
+    const BOOTS: u16 = 7;
+
+    /// The lit cabinet room (`#@c.#`), wearing the suit, with `lying` on
+    /// the floor where you stand.
+    fn dressing_room(lying: &[u16]) -> World {
+        let mut world = cabinet_world("[]");
+        let at = world.player();
+        for &kind in lying {
+            let item = Item::new(kind, 0, world.item_types());
+            world.floor_items.push(FloorItem { at, item });
+        }
+        world
+    }
+
+    fn dress(world: &mut World, dress: Dress) -> Vec<Event> {
+        without_ambient(world.apply(Command::Dress(dress)))
+    }
+
+    fn worn_kinds(world: &World) -> Vec<u16> {
+        world.worn().iter().map(|w| w.kind).collect()
+    }
+
+    fn id(kind: u16) -> ItemRef {
+        ItemRef { kind, material: 0 }
+    }
+
+    #[test]
+    fn putting_on_boots_from_the_floor_wears_them_in_twenty_seconds() {
+        let mut world = dressing_room(&[BOOTS]);
+        let events = dress(&mut world, Dress::PutOn(ItemAt::Floor(0)));
+        assert_eq!(events, [Event::PutOn(id(BOOTS))]);
+        assert_eq!(world.seconds(), PUT_ON_SECONDS);
+        assert_eq!(worn_kinds(&world), [SUIT, BOOTS]);
+        assert!(world.floor_items().is_empty());
+        assert_eq!(
+            world.worn()[1].pockets.len(),
+            1,
+            "their pocket is yours now"
+        );
+    }
+
+    #[test]
+    fn something_small_enough_can_be_put_on_from_a_pocket() {
+        let mut world = dressing_room(&[]);
+        let boots = Item::new(BOOTS, 0, world.item_types());
+        world.worn[0].pockets[0].push(boots);
+        dress(&mut world, Dress::PutOn(ItemAt::Carried(FIRST)));
+        assert_eq!(worn_kinds(&world), [SUIT, BOOTS]);
+        assert!(world.carried().is_empty());
+    }
+
+    #[test]
+    fn you_wear_only_one_thing_in_each_slot() {
+        let mut world = dressing_room(&[SUIT]);
+        let in_the_way = Blocked::Wearing { item: SUIT };
+        assert_eq!(world.put_on_blocked(ItemAt::Floor(0)), Some(in_the_way));
+        let events = dress(&mut world, Dress::PutOn(ItemAt::Floor(0)));
+        assert_eq!(events, [Event::CannotDress(in_the_way)]);
+        assert_eq!(world.seconds(), 0, "no time passes");
+    }
+
+    #[test]
+    fn only_wearable_things_you_have_or_can_reach_can_be_put_on() {
+        let mut world = dressing_room(&[SCRAP, BOOTS]);
+        // A third pair of boots, behind the cabinet, out of reach and sight.
+        let behind = FloorItem {
+            at: Pos::new(3, 1, 0),
+            item: Item::new(BOOTS, 0, world.item_types()),
+        };
+        world.floor_items.push(behind);
+        let not_possible = Some(Blocked::NotPossible);
+        assert_eq!(
+            world.put_on_blocked(ItemAt::Floor(0)),
+            not_possible,
+            "scrap"
+        );
+        assert_eq!(
+            world.put_on_blocked(ItemAt::Floor(2)),
+            not_possible,
+            "too far"
+        );
+        assert_eq!(
+            world.put_on_blocked(ItemAt::Floor(9)),
+            not_possible,
+            "nothing"
+        );
+        let nothing = ItemAt::Carried(FIRST);
+        assert_eq!(world.put_on_blocked(nothing), not_possible, "empty pockets");
+        assert_eq!(world.put_on_blocked(ItemAt::Floor(1)), None);
+        let at_hand: Vec<ItemAt> = world
+            .wearables_at_hand()
+            .iter()
+            .map(|&(at, _)| at)
+            .collect();
+        assert_eq!(at_hand, [ItemAt::Floor(1)], "only the boots you can reach");
+    }
+
+    #[test]
+    fn boots_too_big_for_a_pocket_can_be_put_on_from_a_cabinet_beside_you() {
+        // The boots go in by hand: at 1.5 L they're more than the test
+        // cabinet's litre, which a map would refuse.
+        let with_boots = |mut world: World, at: Pos| {
+            let boots = Item::new(BOOTS, 0, world.item_types());
+            world
+                .furniture
+                .at_mut(&world.map, at)
+                .unwrap()
+                .contents
+                .push(boots);
+            world
+        };
+        let mut world = with_boots(cabinet_world(r#"[ { "item": "scrap" } ]"#), CABINET);
+        let in_cabinet = ItemAt::Inside { piece: 0, index: 1 };
+        let at_hand: Vec<ItemAt> = world
+            .wearables_at_hand()
+            .iter()
+            .map(|&(at, _)| at)
+            .collect();
+        assert_eq!(at_hand, [in_cabinet]);
+        let scrap = ItemAt::Inside { piece: 0, index: 0 };
+        assert_eq!(world.put_on_blocked(scrap), Some(Blocked::NotPossible));
+        let missing = ItemAt::Inside { piece: 3, index: 0 };
+        assert_eq!(world.put_on_blocked(missing), Some(Blocked::NotPossible));
+        dress(&mut world, Dress::PutOn(in_cabinet));
+        assert_eq!(worn_kinds(&world), [SUIT, BOOTS]);
+        assert_eq!(world.furniture_at(CABINET).unwrap().contents.len(), 1);
+        // From two steps away, the cabinet is out of reach.
+        let far = cabinet_room(&["#*###", "#@.c#", "#####"], "[]");
+        let mut far = with_boots(far, Pos::new(3, 1, 0));
+        let in_far_cabinet = ItemAt::Inside { piece: 0, index: 0 };
+        assert_eq!(
+            far.put_on_blocked(in_far_cabinet),
+            Some(Blocked::NotPossible)
+        );
+        far.apply(Command::Move(Dir::East));
+        assert_eq!(far.put_on_blocked(in_far_cabinet), None);
+    }
+
+    #[test]
+    fn taking_off_puts_it_in_a_pocket_if_it_fits_or_at_your_feet() {
+        let mut world = dressing_room(&[BOOTS]);
+        dress(&mut world, Dress::PutOn(ItemAt::Floor(0)));
+        let before = world.seconds();
+        let events = dress(&mut world, Dress::TakeOff(1));
+        assert_eq!(events, [Event::TookOff(id(BOOTS)), Event::Fell(id(BOOTS))]);
+        assert_eq!(world.seconds() - before, TAKE_OFF_SECONDS);
+        assert_eq!(worn_kinds(&world), [SUIT], "1.5 L boots fit no pocket");
+        // Smaller boots go in a pocket instead.
+        world.content.item_types.list_mut()[usize::from(BOOTS)].volume_ml = 500;
+        dress(&mut world, Dress::PutOn(ItemAt::Floor(0)));
+        assert_eq!(
+            dress(&mut world, Dress::TakeOff(1)),
+            [Event::TookOff(id(BOOTS))]
+        );
+        assert_eq!(world.carried().len(), 1);
+        let nothing = [Event::CannotDress(Blocked::NotPossible)];
+        assert_eq!(dress(&mut world, Dress::TakeOff(5)), nothing);
+    }
+
+    #[test]
+    fn what_is_in_a_pocket_goes_with_what_you_take_off() {
+        let mut world = dressing_room(&[]);
+        let scrap = Item::new(SCRAP, 0, world.item_types());
+        world.worn[0].pockets[0].push(scrap);
+        dress(&mut world, Dress::TakeOff(0));
+        assert!(world.worn().is_empty());
+        let suit = &world.floor_items()[0].item;
+        assert_eq!(suit.pockets[0].len(), 1, "the scrap, still in the suit");
     }
 
     #[test]
